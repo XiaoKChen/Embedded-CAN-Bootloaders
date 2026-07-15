@@ -27,7 +27,12 @@ FSP_SOURCE += $(TOP)/hw/mcu/renesas/fsp/ra/fsp/src/r_gpt/r_gpt.c
 # Pure-logic boot core + polled CAN0 driver live in the repo /src tree, two
 # levels up from this vendored fork; vpath keeps the object paths inside
 # $(BUILD)/obj (no ".." segments in make target names).
+#
+# Enabled by default. Build the plain stock-equivalent bootloader (no CAN)
+# with `make -f Makefile.minima CAN_LOADER=0 ...` for size comparison.
 # ---------------------------------------------------------------------------
+CAN_LOADER ?= 1
+ifeq ($(CAN_LOADER),1)
 vpath %.c ../..
 CAN_BOOT_SOURCE = \
 	src/boot/can_update.c \
@@ -39,6 +44,7 @@ CFLAGS += -DCAN_LOADER
 # Code flash is memory-mapped at address 0: keep GCC from folding away the
 # (const uint8_t *)0 flash-base accesses as undefined null dereferences.
 CFLAGS += -fno-delete-null-pointer-checks
+endif
 
 SRC_C += $(addprefix $(CURRENT_PATH)/, $(EXAMPLE_SOURCE))
 SRC_C += $(FSP_SOURCE)

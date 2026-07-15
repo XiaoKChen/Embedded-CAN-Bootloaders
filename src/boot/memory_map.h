@@ -46,6 +46,19 @@ extern "C" {
 #define METADATA_BLOCK_SIZE FLASH_BLOCK_SIZE
 
 /* -----------------------------------------------------------------------------
+ * Data flash (RA4M1: 8 KB at 0x4010_0000..0x4010_1FFF, 1 KB erase blocks).
+ * Separately mapped from code flash; readable via normal loads once
+ * R_FLASH_LP_Open() has enabled DFLCTL.DFLEN. Holds the optional flash-time DFU
+ * name config block (dfu_config.h) in the last 1 KB block — frozen shared
+ * contract with the provisioning flasher, do not move.
+ * ----------------------------------------------------------------------------- */
+#define DATA_FLASH_BASE        0x40100000u
+#define DATA_FLASH_SIZE        0x00002000u  /* 8 KB                              */
+#define DATA_FLASH_BLOCK_SIZE  1024u        /* data flash erase block            */
+
+#define DFU_CONFIG_ADDR        0x40101C00u  /* last 1 KB block; DFU name config  */
+
+/* -----------------------------------------------------------------------------
  * SRAM
  * ----------------------------------------------------------------------------- */
 #define SRAM_BASE           0x20000000u
@@ -64,6 +77,9 @@ _Static_assert(METADATA_ADDR + METADATA_BLOCK_SIZE == FLASH_BASE + FLASH_SIZE,
                "metadata block must be the last flash block");
 _Static_assert(APP_SLOT_SIZE % FLASH_BLOCK_SIZE == 0u,
                "app slot must be a whole number of erase blocks");
+_Static_assert(DFU_CONFIG_ADDR + DATA_FLASH_BLOCK_SIZE ==
+               DATA_FLASH_BASE + DATA_FLASH_SIZE,
+               "DFU config block must be the last data-flash block");
 
 #ifdef __cplusplus
 }

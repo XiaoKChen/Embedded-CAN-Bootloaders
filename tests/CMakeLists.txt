@@ -33,6 +33,7 @@ add_library(boot_core STATIC
     ${BOOT_DIR}/crc32.c
     ${BOOT_DIR}/image_validate.c
     ${BOOT_DIR}/can_update.c
+    ${BOOT_DIR}/dfu_config.c
 )
 target_include_directories(boot_core PUBLIC ${BOOT_DIR})
 
@@ -45,3 +46,4 @@ endfunction()
 add_host_test(test_crc32)
 add_host_test(test_image_validate)
 add_host_test(test_can_update)
+add_host_test(test_dfu_config)

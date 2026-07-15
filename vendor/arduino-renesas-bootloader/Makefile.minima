@@ -32,23 +32,44 @@ FSP_SOURCE += $(TOP)/hw/mcu/renesas/fsp/ra/fsp/src/r_gpt/r_gpt.c
 # with `make -f Makefile.minima CAN_LOADER=0 ...` for size comparison.
 # ---------------------------------------------------------------------------
 CAN_LOADER ?= 1
-ifeq ($(CAN_LOADER),1)
+DFU_CUSTOM_NAME ?= 1
+
+# Shared pure-logic boot core lives in the repo /src tree, two levels up from
+# this vendored fork; vpath keeps object paths inside $(BUILD)/obj (no ".."
+# segments in make target names). crc32.c is used by BOTH features below, so
+# the vpath, include dir and crc32 object are added exactly once when either
+# feature is enabled — listing crc32.c twice would duplicate the symbol.
+ifneq ($(filter 1,$(CAN_LOADER) $(DFU_CUSTOM_NAME)),)
 vpath %.c ../..
+INC += ../../src ../../src/boot
+BOOT_CORE_SOURCE += src/boot/crc32.c
+endif
+
+ifeq ($(CAN_LOADER),1)
 CAN_BOOT_SOURCE = \
 	src/boot/can_update.c \
-	src/boot/crc32.c \
 	src/boot/image_validate.c \
 	src/drivers/can_polled.c
-INC += ../../src
 CFLAGS += -DCAN_LOADER
 # Code flash is memory-mapped at address 0: keep GCC from folding away the
 # (const uint8_t *)0 flash-base accesses as undefined null dereferences.
 CFLAGS += -fno-delete-null-pointer-checks
 endif
 
+# Flash-time-configurable USB DFU manufacturer/product strings, read from a
+# config block in RA4M1 data flash (src/boot/dfu_config.*). Independent of the
+# CAN path; default on for the minima build. Other boards' Makefiles omit the
+# flag, so the shared descriptor code returns the compiled defaults untouched.
+ifeq ($(DFU_CUSTOM_NAME),1)
+DFU_NAME_SOURCE = src/boot/dfu_config.c
+CFLAGS += -DDFU_CUSTOM_NAME
+endif
+
 SRC_C += $(addprefix $(CURRENT_PATH)/, $(EXAMPLE_SOURCE))
 SRC_C += $(FSP_SOURCE)
 SRC_C += $(CAN_BOOT_SOURCE)
+SRC_C += $(DFU_NAME_SOURCE)
+SRC_C += $(BOOT_CORE_SOURCE)
 
 CFLAGS += -Os -flto
 CFLAGS += -ffunction-sections -fdata-sections

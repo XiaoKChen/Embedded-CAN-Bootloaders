@@ -27,6 +27,13 @@
 #include "class/dfu/dfu_device.h"
 #include "bsp_api.h"
 
+#ifdef DFU_CUSTOM_NAME
+/* Flash-time-configurable manufacturer (index 1) / product (index 2) strings,
+ * read from a config block in RA4M1 data flash. Independent of CAN_LOADER. */
+#include "memory_map.h"
+#include "dfu_config.h"
+#endif
+
 //--------------------------------------------------------------------+
 // Device Descriptors
 //--------------------------------------------------------------------+
@@ -142,6 +149,36 @@ char const* string_desc_arr [] =
 
 static uint16_t _desc_str[128];
 
+#ifdef DFU_CUSTOM_NAME
+// Widen the flash-provisioned string for manufacturer (index 1) / product
+// (index 2) into _desc_str[1..] as UTF-16LE and report its length. Returns
+// false when no valid config block is present, so the caller falls back to the
+// compiled default. Data flash is memory-mapped and made readable by
+// R_FLASH_LP_Open() (DFLCTL.DFLEN = 1), which main() calls before run_bootloader()
+// -> tud_init(), so the block is readable by the time enumeration reaches here.
+static bool dfu_custom_string(uint8_t index, size_t* out_len)
+{
+  const char* mfr;
+  const char* prod;
+  uint8_t mfr_len;
+  uint8_t prod_len;
+
+  if (dfu_config_parse((const uint8_t*) DFU_CONFIG_ADDR,
+                       &mfr, &mfr_len, &prod, &prod_len) != DFU_CFG_OK) {
+    return false;
+  }
+
+  const char* str = (index == 1) ? mfr : prod;
+  uint8_t len     = (index == 1) ? mfr_len : prod_len;
+
+  for (uint8_t i = 0; i < len; i++) {
+    _desc_str[1 + i] = (uint16_t)(uint8_t) str[i];
+  }
+  *out_len = len;
+  return true;
+}
+#endif
+
 // Invoked when received GET STRING DESCRIPTOR request
 // Application return pointer to descriptor, whose contents must exist long enough for transfer to complete
 uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
@@ -172,13 +209,24 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
         utox8(t->unique_id_words[3], &idString[24]);
     }
 
-    // Cap at max char
-    chr_count = (uint8_t) strlen(str);
+    bool custom = false;
+#ifdef DFU_CUSTOM_NAME
+    // Manufacturer (index 1) / product (index 2): use the flash-provisioned
+    // strings when a valid config block exists, else the compiled default.
+    if (index == 1 || index == 2) {
+      custom = dfu_custom_string(index, &chr_count);
+    }
+#endif
 
-    // Convert ASCII string into UTF-16
-    for(uint8_t i=0; i<chr_count; i++)
-    {
-      _desc_str[1+i] = str[i];
+    if (!custom) {
+      // Cap at max char
+      chr_count = (uint8_t) strlen(str);
+
+      // Convert ASCII string into UTF-16
+      for(uint8_t i=0; i<chr_count; i++)
+      {
+        _desc_str[1+i] = str[i];
+      }
     }
   }
 

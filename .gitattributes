@@ -1,0 +1,9 @@
+# Normalize all text to LF in the repo (built on Windows + Linux/WSL)
+* text=auto eol=lf
+
+# Binary / verbatim artifacts — never touch line endings
+*.hex binary
+*.bin binary
+*.elf binary
+*.pdf binary
+*.png binary

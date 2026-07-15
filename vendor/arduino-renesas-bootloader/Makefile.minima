@@ -1,0 +1,92 @@
+TOP ?= $(TINYUSB_ROOT)
+BOARD ?= uno_r4
+
+# run 
+# python tools/get_deps.py ra
+# once in the tinyusb root folder
+
+include $(TOP)/examples/build_system/make/make.mk
+
+INC += \
+	src \
+	$(TOP)/hw \
+
+EXAMPLE_SOURCE += $(wildcard src/*.c)
+FSP_SOURCE += $(TOP)/hw/mcu/renesas/fsp/ra/fsp/src/r_flash_lp/r_flash_lp.c
+CFLAGS += -DFLASH_LP_CFG_CODE_FLASH_PROGRAMMING_ENABLE -DFLASH_LP_CFG_DATA_FLASH_PROGRAMMING_ENABLE
+CFLAGS += -DUSB_PID=0x0369 -DBOARD_NAME=\"UNO\ R4\ Minima\"
+CFLAGS += -DLED_FADE_PWM_OUT_A=1 -DLED_FADE_PWM_OUT_B=0 -DLED_FADE_PWM_CHANNEL=3 -DLED_TIMER_SOURCE_DIV=2
+CFLAGS += -DLED_FADE_GPIO=BSP_IO_PORT_01_PIN_11
+CFLAGS += -DDFU_LOADER
+CFLAGS += -DOVERRIDE_VECTOR_TABLE=1
+CFLAGS += -DCODE_FLASH_DESCRIPTOR=\"@CodeFlash\ /0x00000000/8*2Ka,120*2Kg\"
+FSP_SOURCE += $(TOP)/hw/mcu/renesas/fsp/ra/fsp/src/r_gpt/r_gpt.c
+
+# ---------------------------------------------------------------------------
+# Flash-over-CAN update path (docs/research/r4-minima-can-bootloader.md).
+# Pure-logic boot core + polled CAN0 driver live in the repo /src tree, two
+# levels up from this vendored fork; vpath keeps the object paths inside
+# $(BUILD)/obj (no ".." segments in make target names).
+# ---------------------------------------------------------------------------
+vpath %.c ../..
+CAN_BOOT_SOURCE = \
+	src/boot/can_update.c \
+	src/boot/crc32.c \
+	src/boot/image_validate.c \
+	src/drivers/can_polled.c
+INC += ../../src
+CFLAGS += -DCAN_LOADER
+# Code flash is memory-mapped at address 0: keep GCC from folding away the
+# (const uint8_t *)0 flash-base accesses as undefined null dereferences.
+CFLAGS += -fno-delete-null-pointer-checks
+
+SRC_C += $(addprefix $(CURRENT_PATH)/, $(EXAMPLE_SOURCE))
+SRC_C += $(FSP_SOURCE)
+SRC_C += $(CAN_BOOT_SOURCE)
+
+CFLAGS += -Os -flto
+CFLAGS += -ffunction-sections -fdata-sections
+LDFLAGS += -Wl,--gc-sections -flto
+
+CFLAGS += --warn-no-undef
+
+include $(TOP)/examples/build_system/make/rules.mk
+
+LD_FILE = $(FAMILY_PATH)/linker/gcc/$(MCU_VARIANT).ld
+
+# ---------------------------------------------------------------------------
+# can_polled.c compiles against the self-contained vendored device headers
+# (vendor/ra4m1-headers: R7FA4M1AB.h needs IRQn_Type pre-defined, which its
+# sibling bsp_exceptions.h provides; the FSP tree vendored via tinyusb ships
+# an older header generation and no bsp_exceptions.h). Exactly ONE device-
+# header source per translation unit — so this TU drops every other -I.
+# ---------------------------------------------------------------------------
+CAN_POLLED_CFLAGS := $(filter-out -I%,$(CFLAGS)) -I../../vendor/ra4m1-headers
+$(BUILD)/obj/src/drivers/can_polled.o: CFLAGS = $(CAN_POLLED_CFLAGS)
+
+# ---------------------------------------------------------------------------
+# Size gate: the bootloader region is 8 x 2 KB (memory_map.h BOOT_SIZE); a
+# .bin that no longer fits must fail the build, not brick a board.
+# ---------------------------------------------------------------------------
+BOOT_REGION_LIMIT = 16384
+all: sizegate
+.PHONY: sizegate
+sizegate: $(BUILD)/$(PROJECT).bin
+	@size=$$(wc -c < $<) ; \
+	 if [ "$$size" -gt $(BOOT_REGION_LIMIT) ] ; then \
+	   echo "SIZE GATE FAILED: $$size B exceeds the $(BOOT_REGION_LIMIT) B bootloader region" ; \
+	   exit 1 ; \
+	 else \
+	   echo "SIZE GATE OK: $$size / $(BOOT_REGION_LIMIT) bytes" ; \
+	 fi
+
+# ---------------------------------------------------------------------------
+# Windows host: tinyusb's make.mk latches SHELL := cmd.exe when it sees a
+# semicolon in PATH, but the escaped-space -D defines above require a POSIX
+# sh. Pass BOOTLOADER_SHELL=<absolute path to sh.exe, path without spaces>.
+# A makefile-level assignment is required — GNU make on Windows ignores a
+# command-line SHELL for recipe execution once cmd.exe is latched.
+# ---------------------------------------------------------------------------
+ifdef BOOTLOADER_SHELL
+SHELL := $(BOOTLOADER_SHELL)
+endif

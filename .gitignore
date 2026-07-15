@@ -1,0 +1,32 @@
+# Build outputs
+/build-host/
+build/
+_build/
+vendor/arduino-renesas-bootloader/_build/
+
+# Stray in-tree firmware artifacts (canonical output lives in _build/)
+vendor/arduino-renesas-bootloader/*.elf
+vendor/arduino-renesas-bootloader/*.elf.map
+vendor/arduino-renesas-bootloader/*.bin
+vendor/arduino-renesas-bootloader/*.hex
+
+# Re-fetchable tinyusb build dependencies (pinned commits in docs/build.md).
+# Not committed to keep the repo lean; restore before building (see that doc).
+vendor/tinyusb/lib/CMSIS_5/
+vendor/tinyusb/hw/mcu/renesas/fsp/
+
+# Toolchains / archives must never be committed (fetch per docs/build.md)
+*.zip
+xpack-*/
+gcc-arm-none-eabi-*/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*-venv/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp

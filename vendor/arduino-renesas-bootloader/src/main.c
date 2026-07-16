@@ -189,8 +189,123 @@ static void set_can_update_request(uint32_t data)
 
 static bool dfu_config_readable = false;
 
+#ifdef CAN_DIAG
+/* ---- CAN_DIAG bench instrumentation (throwaway) --------------------------
+ * Stage-marker frames {0xD1, stage, ...} emitted during the magic-entry path
+ * (run_can_update_mode) so a bench candump shows exactly where entry dies.
+ * The real update engine stays fully functional. Nothing in any CAN_DIAG
+ * block compiles in a CAN_DIAG=0 build (byte-identical). One deliberate
+ * SUBTRACTION: the production USB-rail power-up (can_xcvr_usb_rail_power_on)
+ * is compiled OUT of CAN_DIAG builds, so the staircase keeps reproducing the
+ * unpowered-rail failure it diagnosed and the diag image stays inside the
+ * 16 KiB gate. */
+#define CAN_DIAG_MARKER              0xD1u
+#define CAN_DIAG_STAGE_CAN_UP        0x00u  /* after default-ID can_polled_init  */
+#define CAN_DIAG_STAGE_FLASH_GATE    0x01u  /* after flash_lp_open_df_read_ready */
+#define CAN_DIAG_STAGE_IDS_LOADED    0x02u  /* after can_load_ids                */
+#define CAN_DIAG_STAGE_REFILTER      0x03u  /* after re-init on the loaded ID    */
+#define CAN_DIAG_STAGE_STAIR_RESULT  0xE4u  /* DIAG4 staircase verdict frame     */
+#define CAN_DIAG_STAGE_STAIR_LOG     0xE5u  /* DIAG4 failed-attempt register log */
+#define CAN_DIAG_STAGE_HEARTBEAT     0xFBu
+#define CAN_DIAG_NO_REINIT           0xEEu  /* stage-3 status: IDs = defaults    */
+/* Crude ~500 ms heartbeat period by busy loop count: no SysTick guaranteed in
+ * this loop, and no interrupts allowed. One empty-FIFO service pass is a
+ * handful of register reads at 48 MHz — order-of-magnitude is all we need. */
+#define CAN_DIAG_HEARTBEAT_LOOPS     500000u
+
+/* DIAG3 retry-bisect knobs. One attempt is bounded by the driver's ~200 ms
+ * SENTDATA wait (twice, with the second-send probe) plus the 100 ms settle,
+ * so the 3 s budget dominates when sends time out slowly and the attempt cap
+ * when they fail fast; both together keep the loop finite even if SysTick
+ * (board_millis) were dead. */
+#define CAN_DIAG_RETRY_MAX_ATTEMPTS  30u
+#define CAN_DIAG_RETRY_BUDGET_MS     3000u
+#define CAN_DIAG_RETRY_SETTLE_MS     100u
+#define CAN_DIAG_SECOND_SEND         0x80u  /* b2 flag: 2nd TX of the attempt */
+
+static uint16_t can_diag_open_err;   /* fsp_err_t of R_FLASH_LP_Open  */
+static uint16_t can_diag_reset_err;  /* fsp_err_t of R_FLASH_LP_Reset */
+
+static void can_diag_send(uint32_t id, uint8_t stage, uint8_t b2, uint8_t b3,
+                          uint8_t b4, uint8_t b5, uint8_t b6, uint8_t b7)
+{
+  const uint8_t frame[8] = { CAN_DIAG_MARKER, stage, b2, b3, b4, b5, b6, b7 };
+  (void) can_polled_send(id, 8, frame);  /* diag marker: loss is acceptable */
+}
+
+/* ---- DIAG3: retry-based bring-up bisect ----------------------------------
+ * DIAG2 established that one init+send right after board_init() NEVER
+ * transmits while the identical calls later in the DFU path do. One attempt
+ * here = can_polled_init -> marker send -> (on failure) ONE more send on the
+ * SAME init -> deinit + 100 ms settle -> retry, until a frame is ACKed on
+ * the wire or the budget runs out. The first frame that arrives carries the
+ * whole story:
+ *   b2  attempt number (1-based); bit7 SET = the frame went out on the
+ *       SECOND send of its attempt — init was fine and only the first TX
+ *       after bring-up is lost (first-TX quirk, not settle time)
+ *   b3  init status of the winning attempt
+ *   b4  previous attempt's last send status (0xFF = none, first attempt)
+ *   b5  RSTSR1 low byte (bit2 SWRF = software-reset entry), b6 RSTSR2
+ *   b7  previous attempt's TECR, captured right after its failed send and
+ *       before deinit: 0 = the controller never drove the bus (mode/sync
+ *       problem); >= 8 and climbing toward 128+ = it DID transmit but every
+ *       frame died on the wire (bit-timing/ACK problem)
+ * On total failure the last attempt's init is deliberately left in place
+ * (module clocked, registers safe to poll) and *out_sent stays false. */
+static can_polled_status_t can_diag_bringup_retry(uint8_t stage, bool *out_sent)
+{
+  uint8_t rstsr1_lo = (uint8_t) R_SYSTEM->RSTSR1;
+  uint8_t rstsr2    = (uint8_t) R_SYSTEM->RSTSR2;
+  uint8_t prev_send = 0xFFu;                       /* no previous attempt */
+  uint8_t prev_tecr = 0;
+  can_polled_status_t init_status = CAN_POLLED_ERROR;
+  uint32_t start_ms = board_millis();
+
+  *out_sent = false;
+  for (uint8_t attempt = 1; ; attempt++) {
+    init_status = can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT);
+
+    uint8_t frame[8] = { CAN_DIAG_MARKER, stage, attempt, (uint8_t) init_status,
+                         prev_send, rstsr1_lo, rstsr2, prev_tecr };
+    can_polled_status_t send_status = init_status;
+    if (init_status == CAN_POLLED_OK) {
+      send_status = can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame);
+      if (send_status != CAN_POLLED_OK) {
+        /* Priming probe: retry on the SAME init, no delay, no reinit. */
+        frame[2] = (uint8_t) (attempt | CAN_DIAG_SECOND_SEND);
+        send_status = can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame);
+      }
+    }
+    if (send_status == CAN_POLLED_OK) {
+      *out_sent = true;
+      return init_status;
+    }
+    if ((attempt >= CAN_DIAG_RETRY_MAX_ATTEMPTS) ||
+        ((board_millis() - start_ms) >= CAN_DIAG_RETRY_BUDGET_MS)) {
+      return init_status;  /* leave the last init up: register polls stay safe */
+    }
+    prev_send = (uint8_t) send_status;
+    prev_tecr = R_CAN0->TECR;      /* before deinit's reset clears the counter */
+    can_polled_deinit();
+    R_BSP_SoftwareDelay(CAN_DIAG_RETRY_SETTLE_MS, BSP_DELAY_UNITS_MILLISECONDS);
+  }
+}
+#endif /* CAN_DIAG */
+
 static bool flash_lp_open_df_read_ready(void)
 {
+#ifdef CAN_DIAG
+  /* Same calls/short-circuits as stock, with the fsp_err_t values latched
+   * for the stage-1 marker frame. */
+  can_diag_open_err = (uint16_t) R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
+  if (can_diag_open_err != (uint16_t) FSP_SUCCESS) {
+    return false;
+  }
+  can_diag_reset_err = (uint16_t) R_FLASH_LP_Reset(g_flash.p_ctrl);
+  if (can_diag_reset_err != (uint16_t) FSP_SUCCESS) {
+    return false;
+  }
+#else
   if (R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg) != FSP_SUCCESS) {
     /* Driver down: every flash HAL op fails cleanly (FSP_ERR_NOT_OPEN). */
     return false;
@@ -198,6 +313,7 @@ static bool flash_lp_open_df_read_ready(void)
   if (R_FLASH_LP_Reset(g_flash.p_ctrl) != FSP_SUCCESS) {
     return false;
   }
+#endif
   /* Open guarantees DFLEN = 1 on success; re-assert and settle anyway so the
    * read gate holds by local proof, not by FSP internals. Safe here: the
    * successful Reset above left the FACI in read mode. */
@@ -367,6 +483,55 @@ static void can_service_once(void)
   }
 }
 
+#ifndef CAN_DIAG
+/* ---- CAN transceiver rail power-up (production fix) ----------------------
+ * Hardware-confirmed via the DIAG4 staircase (one boot, real bus): CAN0 TX
+ * is dead on the magic-entry path — operate mode reached, TRMREQ set, TEC
+ * frozen at 0, i.e. the engine never sees bus-idle — at every preamble step
+ * UNTIL tud_init() + board_init_after_tusb() run, after which the first send
+ * succeeds. Board-level dependency: the external CAN transceiver/level-
+ * shifter path is powered from the RA4M1's on-chip USB regulator rail
+ * (VCC_USB), so CRX0 never shows recessive until that regulator is on. The
+ * DFU path always powers it; this CAN-only path never did — the original
+ * "silent CAN update mode" bug.
+ *
+ * Replicate ONLY the power-relevant writes of the proven DFU bring-up, in
+ * its order, without starting the USB stack:
+ *   1. USBFS module-stop release, MSTPCRB b11 (rusb2_ra.h:84-91)
+ *   2. SYSCFG.SCKE = 1 — USB clock supply, gates the other USBFS registers
+ *      (dcd_rusb2.c:696-697)
+ *   3. USBMC.VDCEN = 1 — USB LDO regulator ON (board_init_after_tusb,
+ *      hw/bsp/ra/family.c:138; RA4M1 USBMC b7 "Regulator ON/OFF control")
+ * then let the regulator soak before the first CAN access. Harmless on
+ * boards without the dependency: the LDO merely energizes an unused VCC_USB
+ * pad. Compiled OUT of CAN_DIAG builds — the staircase must keep reproducing
+ * the unpowered-rail conditions it diagnosed, and the diag image is 32 B
+ * under the 16 KiB gate. */
+#define CAN_USB_RAIL_SCKE_TIMEOUT_LOOPS  1000u
+#define CAN_USB_RAIL_SETTLE_MS           5u
+
+static void can_xcvr_usb_rail_power_on(void)
+{
+  R_BSP_MODULE_START(FSP_IP_USBFS, 0);
+
+  R_USB_FS0->SYSCFG |= R_USB_FS0_SYSCFG_SCKE_Msk;
+  for (uint32_t i = 0; i < CAN_USB_RAIL_SCKE_TIMEOUT_LOOPS; i++) {
+    if (R_USB_FS0->SYSCFG & R_USB_FS0_SYSCFG_SCKE_Msk) {
+      break;
+    }
+  }
+  /* An SCKE timeout falls through deliberately: worst case the VDCEN write
+   * below is lost and the board parks serving CAN exactly as before this
+   * fix — degraded, never dead. */
+
+  R_USB_FS0->USBMC |= R_USB_FS0_USBMC_VDCEN_Msk;
+
+  /* FSP and the HW manual give no VDCEN ramp figure; 5 ms is comfortably
+   * above typical LDO start-up plus downstream rail charge. */
+  R_BSP_SoftwareDelay(CAN_USB_RAIL_SETTLE_MS, BSP_DELAY_UNITS_MILLISECONDS);
+}
+#endif /* !CAN_DIAG */
+
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; the only
  * exits are the GO reset above or an external reset. This entry always
  * follows the application's NVIC_SystemReset(), so the flash open runs
@@ -376,6 +541,77 @@ static void can_service_once(void)
  * the board still parks and serves CAN on the compiled default IDs. */
 static void run_can_update_mode(void)
 {
+#ifdef CAN_DIAG
+  /* Stage 0 (DIAG3): retry-based CAN bring-up on the COMPILED default IDs
+   * BEFORE any flash call — the real bisect target. The winning frame's
+   * attempt count quantifies the settle time this path needs; if every
+   * attempt fails the board still parks and serves the CAN loop below on the
+   * last init (deliberate: a diag board never resets off the bench). */
+  bool stage0_sent;
+  can_polled_status_t init_status = can_diag_bringup_retry(CAN_DIAG_STAGE_CAN_UP,
+                                                           &stage0_sent);
+  can_initialized = (init_status == CAN_POLLED_OK);
+  (void) stage0_sent;  /* the bench reads success off the wire, not this flag */
+
+  /* Stage 1: the data-flash read gate. byte7 = DFLCTL as found on entry —
+   * directly tests the "DFLEN survived the software reset" hypothesis the
+   * gate comment above documents. */
+  uint8_t dflctl_on_entry = (uint8_t) R_FACI_LP->DFLCTL;
+  dfu_config_readable = flash_lp_open_df_read_ready();
+  can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_FLASH_GATE,
+                dfu_config_readable ? 1u : 0u,
+                (uint8_t) can_diag_open_err, (uint8_t) (can_diag_open_err >> 8),
+                (uint8_t) can_diag_reset_err, (uint8_t) (can_diag_reset_err >> 8),
+                dflctl_on_entry);
+
+  /* Stage 2: per-device IDs from the v2 config block (or defaults). */
+  can_load_ids();
+  can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_IDS_LOADED,
+                dfu_config_readable ? 1u : 0u,
+                (uint8_t) can_cmd_id, (uint8_t) (can_cmd_id >> 8),
+                (uint8_t) can_reply_id, (uint8_t) (can_reply_id >> 8), 0);
+
+  /* Stage 3: re-filter onto the loaded cmd ID when it differs from the
+   * default; the marker goes out on the LOADED reply ID so the bench proves
+   * that ID actually transmits. */
+  uint8_t refilter_status = CAN_DIAG_NO_REINIT;
+  if (can_cmd_id != CAN_ID_HOST_TO_BOOT) {
+    can_polled_deinit();
+    init_status = can_polled_init(CAN_BITRATE_BPS, can_cmd_id);
+    can_initialized = (init_status == CAN_POLLED_OK);
+    refilter_status = (uint8_t) init_status;
+  }
+  can_diag_send(can_reply_id, CAN_DIAG_STAGE_REFILTER, refilter_status,
+                0, 0, 0, 0, 0);
+
+  /* Engine matches on whatever cmd ID is now in effect (stock semantics).
+   * Deliberate diag deviation: a failed CAN init parks here instead of
+   * resetting into the normal boot path — a diag board must stay on the
+   * bench, and every init failure path above leaves the CAN module clocked
+   * (module-stop is released before any failing step), so the register
+   * polls below stay safe. */
+  can_update_init(&can_state, &can_hal, can_cmd_id);
+
+  uint32_t hb_loops = 0;
+  uint8_t hb_seq = 0;
+  while (1) {
+    can_service_once();
+    if (++hb_loops >= CAN_DIAG_HEARTBEAT_LOOPS) {
+      hb_loops = 0;
+      can_diag_send(can_reply_id, CAN_DIAG_STAGE_HEARTBEAT, hb_seq, 0, 0, 0, 0, 0);
+      /* Every 4th heartbeat also on the default reply ID, so the board is
+       * provably alive no matter which reply ID the bench watches. */
+      if (((hb_seq & 3u) == 0u) && (can_reply_id != CAN_ID_BOOT_TO_HOST)) {
+        can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_HEARTBEAT, hb_seq, 0, 0, 0, 0, 0);
+      }
+      hb_seq++;
+    }
+  }
+#else
+  /* Power the CAN transceiver rail (USB LDO) BEFORE any CAN register access
+   * — see can_xcvr_usb_rail_power_on above for the board-level dependency. */
+  can_xcvr_usb_rail_power_on();
+
   dfu_config_readable = flash_lp_open_df_read_ready();
 
   can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
@@ -387,6 +623,7 @@ static void run_can_update_mode(void)
   while (1) {
     can_service_once();
   }
+#endif /* CAN_DIAG */
 }
 #endif /* CAN_LOADER */
 
@@ -427,6 +664,146 @@ ioport_instance_ctrl_t port_ctrl;
 
 int pwm_channel = LED_FADE_PWM_OUT_A ? GPT_IO_PIN_GTIOCA : GPT_IO_PIN_GTIOCB;
 
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+/* ---- DIAG4: one-boot self-bisecting staircase -----------------------------
+ * DIAG3 (hardware-confirmed via SWD readback) ruled timing out: 30 bare
+ * init+send attempts over 3 s right after board_init() never put a frame on
+ * a live, ACKing bus — while the IDENTICAL driver calls after the DFU
+ * preamble (IOPORT open -> GPT open/start -> FLASH_LP open/reset ->
+ * tud_init) always transmit. So at least one preamble piece is a hard
+ * functional prerequisite for CAN0 TX. The staircase finds WHICH in one
+ * boot. Bench verdict (2026-07, real bus): step 4 (+tud_init) won on its
+ * first attempt after 12 failures across steps 0-3, every one TX-timeout
+ * with TEC = 0 in operate mode -> the USB LDO (USBMC.VDCEN) powers the
+ * external CAN transceiver rail; production fix in
+ * can_xcvr_usb_rail_power_on. The staircase does NOT duplicate the preamble
+ * calls (a first cut did, and
+ * LTO's constprop clones of tud_init/R_GPT_Open/R_GPT_PeriodSet cost 636 B
+ * the 16 KiB region does not have). Instead, the staircase boot jumps into
+ * the REAL `bootloader:` path with a can_diag_stair_probe() interleaved
+ * after each preamble piece, gated on can_diag_stair_active, and ends in a
+ * reset before the DFU loop. Fidelity is exact by construction: the pieces
+ * that run are the production calls themselves, in production order.
+ *
+ * Each probe: can_polled_init on the compiled default IDs, then up to
+ * CAN_DIAG_STAIR_SEND_TRIES sends. Every attempt's payload IS the verdict
+ * frame, so the first frame on the bus names the winner:
+ *   {0xD1, 0xE4, step, attempt, STR lo, STR hi, TECR, ECSR}
+ *   step: 0 = bare (would contradict DIAG3), 1 = +IOPORT, 2 = +GPT,
+ *         3 = +FLASH_LP open/reset, 4 = +tud_init, 0xFF = nothing worked
+ *   (registers sampled after init, just before that attempt's TRMREQ).
+ * The success latch stops later probes, so exactly one step ever reports.
+ *
+ * Every FAILED attempt records {STR, ECSR, TECR} into a one-entry "last
+ * failure before success" snapshot, emitted right after the verdict:
+ *   {0xD1, 0xE5, idx, STR lo, STR hi, ECSR, TECR, kind}
+ *   idx = number of failed attempts preceding the success (0 = none -> no
+ *   E5 frame). idx maps back to (step, attempt) because attempts run in
+ *   fixed step order, SEND_TRIES per step. STR RSTST/HLTST/SLPST (bits
+ *   8/9/10) = mode the controller was REALLY in; TECR = 0 -> it never
+ *   drove the bus (mode/clock problem), climbing -> frames died on the
+ *   wire; ECSR error-code flags (ADEF/ACKEF/SEF/FEF/AEF/BE0F/BE1F) say HOW
+ *   they died — ACKEF = nobody ACKed, stuff/bit errors = bit-timing wrong.
+ *   kind: 0xA5 = TX timed out (registers sampled after the driver's abort;
+ *   MCTL0 latch evidence not captured), 0xEE = can_polled_init failed.
+ * Additionally, attempts 2..SEND_TRIES of any step carry post-failure
+ * TECR/ECSR/STR in their OWN E4 payload (same init, sampled pre-send), so
+ * a step that wins on attempt >= 2 documents its own failures.
+ * (DIAG4 size cuts, in order applied: [1] the spec'd 8-entry per-attempt
+ * register log -> one-entry last-failure snapshot; [2] the raw-MCTL TX
+ * probe (captured MCTL[0] before the driver's abort-clear) -> driver sends,
+ * losing the "did TRMREQ/SENTDATA latch" byte. Both forced by the 16 KiB
+ * region: full design measured 16,604 B, snapshot-only 16,472 B, this
+ * layout fits. The 0xEE/0xA5 kind byte preserves the E5 frame format.)
+ *
+ * Run-once / cannot-boot-loop design: VBTBKR[8..11] (VBATT backup domain,
+ * the proven mechanism behind the double-tap and CAN-update magics) holds a
+ * "staircase done" word. Garbage on the first boot after power-up -> run
+ * the staircase, but write the flag FIRST so even a crash mid-staircase
+ * cannot re-enter it, then end in one NVIC_SystemReset so the app/DFU/CAN
+ * boot decisions always start from clean peripherals (GPT/USB/flash state
+ * from the staircase never leaks into the app). If the flag readback ever
+ * failed to stick, the board parks in the normal DFU+CAN service loop
+ * instead of resetting — degraded but bounded: no reset loop, no brick.
+ * Later boots skip every probe until the next power cycle. A pending
+ * double-tap or CAN-update magic is left untouched by the staircase boot
+ * and honored one boot (~1 s) later. */
+#define CAN_DIAG_STAIR_DONE_DATA   (*((volatile uint32_t *) (uintptr_t) &R_SYSTEM->VBTBKR[8]))
+#define CAN_DIAG_STAIR_DONE_MAGIC  0x5D1A6435u
+#define CAN_DIAG_STAIR_SEND_TRIES  3u
+#define CAN_DIAG_STAIR_STEP_NONE   0xFFu
+#define CAN_DIAG_STAIR_TX_FAILED   0xA5u    /* kind: send timed out          */
+#define CAN_DIAG_STAIR_INIT_FAILED 0xEEu    /* kind: init failed, no TX done */
+
+static bool can_diag_stair_active;          /* this boot is the staircase boot */
+static bool can_diag_stair_won;             /* success latch: stop later probes */
+
+/* One struct, one base address: five separate statics cost five literal-pool
+ * entries and the diag build is 16 B from the region limit. */
+static struct {
+  uint16_t str;
+  uint8_t  ecsr;
+  uint8_t  tecr;
+  uint8_t  kind;
+  uint8_t  count;
+} can_diag_stair_fail;
+
+static void can_diag_stair_log_add(uint8_t kind)
+{
+  can_diag_stair_fail.count++;
+  can_diag_stair_fail.str  = R_CAN0->STR;
+  can_diag_stair_fail.ecsr = R_CAN0->ECSR;
+  can_diag_stair_fail.tecr = R_CAN0->TECR;
+  can_diag_stair_fail.kind = kind;
+}
+
+/* One staircase level: bring CAN up, try to get the verdict frame for
+ * `step` onto the bus, tear CAN down again (the next preamble piece must
+ * run with CAN down, exactly like the production path). No-op on non-
+ * staircase boots and after a step has already won. */
+static void can_diag_stair_probe(uint8_t step)
+{
+  if (!can_diag_stair_active || can_diag_stair_won) {
+    return;
+  }
+  if (can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT) != CAN_POLLED_OK) {
+    can_diag_stair_log_add(CAN_DIAG_STAIR_INIT_FAILED);
+    can_polled_deinit();
+    return;
+  }
+  for (uint8_t attempt = 1; attempt <= CAN_DIAG_STAIR_SEND_TRIES; attempt++) {
+    /* The attempt's payload IS the E4 verdict frame; registers sampled just
+     * before the send, so attempts >= 2 carry the previous failure's TECR/
+     * ECSR (same init — can_polled_send's abort clears no error state). */
+    uint16_t str = R_CAN0->STR;
+    const uint8_t frame[8] = { CAN_DIAG_MARKER, CAN_DIAG_STAGE_STAIR_RESULT,
+                               step, attempt, (uint8_t) str, (uint8_t) (str >> 8),
+                               R_CAN0->TECR, R_CAN0->ECSR };
+    if (can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame) == CAN_POLLED_OK) {
+      if (can_diag_stair_fail.count != 0) {
+        can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_STAIR_LOG,
+                      can_diag_stair_fail.count,
+                      (uint8_t) can_diag_stair_fail.str,
+                      (uint8_t) (can_diag_stair_fail.str >> 8),
+                      can_diag_stair_fail.ecsr, can_diag_stair_fail.tecr,
+                      can_diag_stair_fail.kind);
+      }
+      can_diag_stair_won = true;
+      break;
+    }
+    can_diag_stair_log_add(CAN_DIAG_STAIR_TX_FAILED);
+  }
+  can_polled_deinit();
+}
+
+static void can_diag_stair_set_done(void)
+{
+  R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_PRC1_UNLOCK;
+  CAN_DIAG_STAIR_DONE_DATA = CAN_DIAG_STAIR_DONE_MAGIC;
+  R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_LOCK;
+}
+#endif /* CAN_LOADER && CAN_DIAG */
+
 /* ***
  * UNO R4 MINIMA AND C33 BOOTLOADER ** ONLY DFU **
  * *** */
@@ -436,6 +813,23 @@ __WEAK void run_bootloader() {
   if (board_init_after_tusb) {
     board_init_after_tusb();
   }
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  can_diag_stair_probe(4);  /* + tud_init: the full DFU preamble has now run */
+  if (can_diag_stair_active) {
+    /* Nothing worked? One last round (step 0xFF) so the verdict + snapshot
+     * get a chance on the fully-brought-up board; a no-op if a step won. */
+    can_diag_stair_probe(CAN_DIAG_STAIR_STEP_NONE);
+    if (CAN_DIAG_STAIR_DONE_DATA == CAN_DIAG_STAIR_DONE_MAGIC) {
+      NVIC_SystemReset();  /* staircase boot ends: clean re-entry for the
+                            * real boot decision, run-once flag is set */
+    }
+    /* Flag write did not stick (never observed: the double-tap word proves
+     * VBTBKR works). Resetting would loop forever — park in the normal
+     * DFU+CAN service loop below instead. */
+    can_diag_stair_active = false;
+  }
+#endif
 
 #ifdef CAN_LOADER
   /* Recovery/parked mode keeps BOTH transports alive (research §5.2): DFU
@@ -461,6 +855,24 @@ __WEAK void run_bootloader() {
 int main(void)
 {
   board_init();
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  /* DIAG4 staircase entry (replaces DIAG3's E0 loop): runs once per power
+   * cycle, from the exact spot DIAG3 confirmed bare CAN TX dead. The only
+   * new instruction before probe 0 is the VBTBKR[8] flag read here — a
+   * VBATT read cannot be the E0 killer, since E0 failed with no VBTBKR
+   * access at all. The staircase boot rides the real `bootloader:` preamble
+   * with probes interleaved and ends in one software reset, so the
+   * double-tap / CAN-magic / app decisions below always start from clean
+   * peripherals; a pending magic survives that boot untouched and is
+   * honored one boot later. See the staircase block above run_bootloader()
+   * for the design and the no-boot-loop argument. */
+  if (CAN_DIAG_STAIR_DONE_DATA != CAN_DIAG_STAIR_DONE_MAGIC) {
+    can_diag_stair_set_done();  /* BEFORE the run: a crash cannot re-enter */
+    can_diag_stair_active = true;
+    goto bootloader;
+  }
+#endif
 
   // set magic for double tap
   if (BOOT_DOUBLE_TAP_DATA == DOUBLE_TAP_MAGIC) {
@@ -519,12 +931,24 @@ int main(void)
 
 bootloader:
 
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  can_diag_stair_probe(0);  /* bare: board_init only (DIAG3's E0 conditions) */
+#endif
+
   R_IOPORT_Open(&port_ctrl, &pin_cfg);
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  can_diag_stair_probe(1);  /* + IOPORT open */
+#endif
 
   R_GPT_Open(&pwm_ctrl, &pwm_cfg);
   R_GPT_PeriodSet(&pwm_ctrl, PERIOD);
   R_GPT_DutyCycleSet(&pwm_ctrl, 0, pwm_channel);
   R_GPT_Start(&pwm_ctrl);
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  can_diag_stair_probe(2);  /* + GPT open/period/duty/start */
+#endif
 
 #if BSP_FEATURE_FLASH_HP_VERSION
   R_FLASH_HP_Open(g_flash.p_ctrl, g_flash.p_cfg);
@@ -541,6 +965,10 @@ bootloader:
   R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
   R_FLASH_LP_Reset(g_flash.p_ctrl);
  #endif
+#endif
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
+  can_diag_stair_probe(3);  /* + FLASH_LP open/reset (data-flash gate) */
 #endif
 
   run_bootloader();

@@ -56,6 +56,18 @@ CFLAGS += -DCAN_LOADER
 CFLAGS += -fno-delete-null-pointer-checks
 endif
 
+# Bench diagnostic build: stage-marker CAN frames ({0xD1, stage, ...}) on the
+# magic-entry (VBTBKR[4]) path — see the CAN_DIAG blocks in src/main.c. Only
+# meaningful with CAN_LOADER=1. Default off; a CAN_DIAG=0 build is
+# byte-identical to a build without this flag. NOTE: a CAN_DIAG=1 build also
+# OMITS the production USB-rail power-up in the magic path
+# (can_xcvr_usb_rail_power_on in src/main.c) — deliberate, so the staircase
+# keeps reproducing the unpowered-rail failure it diagnosed.
+CAN_DIAG ?= 0
+ifeq ($(CAN_DIAG),1)
+CFLAGS += -DCAN_DIAG
+endif
+
 # Flash-time-configurable USB DFU manufacturer/product strings, read from a
 # config block in RA4M1 data flash (src/boot/dfu_config.*). Independent of the
 # CAN path; default on for the minima build. Other boards' Makefiles omit the

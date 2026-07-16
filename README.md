@@ -1,77 +1,138 @@
-# <Project Name>
+# Arduino UNO R4 Minima — CAN + DFU Bootloader
 
-<One-paragraph description: what the firmware does, target MCU/board, key
-peripherals it drives, and how it communicates with the rest of the system.>
+A fork of Arduino's stock TinyUSB **USB DFU** bootloader for the UNO R4 Minima
+(Renesas **RA4M1**, Cortex-M4F), extended with three added features while keeping
+the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
+
+1. **Flash-over-CAN** — program an application `.bin` over classic CAN 2.0B on
+   **D4 (CTX0) / D5 (CRX0)**, using a small polled CAN0 driver and a windowed,
+   CRC32-checked update protocol (**CAN Update Protocol v1**).
+2. **Flash-time-configurable USB DFU names** — the DFU manufacturer/product
+   strings are read at boot from a config block in data flash (written by the
+   ESP-Prog-2 flasher), falling back to the compiled defaults when unset.
+3. **Per-device CAN IDs** — each board's bootloader can be assigned its own CAN
+   update ID pair (in that same config block), so multiple boards can sit in
+   bootloader mode on one bus simultaneously and be addressed individually.
+   Unprovisioned boards default to `0x79E` (host→boot) / `0x79F` (boot→host).
+
+> Full project map: **[PROJECT.md](PROJECT.md)**. Build & flash guide:
+> **[docs/build.md](docs/build.md)**. Design/decision record:
+> **[docs/research/r4-minima-can-bootloader.md](docs/research/r4-minima-can-bootloader.md)**.
 
 ---
 
 ## Hardware / Peripherals
 
-<Describe wiring location — usually `src/main.{c,cpp}` — and tabulate the
-actuators, sensors, and bus configuration.>
+- **MCU / board:** Renesas RA4M1 (R7FA4M1AB) on the Arduino UNO R4 Minima, 5 V logic.
+- **CAN:** the RA4M1's single classic **CAN0** channel — **D4 = P103 = CTX0**,
+  **D5 = P102 = CRX0**. The board has **no on-board transceiver**: an external
+  **5 V** CAN transceiver (TJA1050 / MCP2551 / MCP2562) is required, with 120 Ω
+  termination at both bus ends.
+- **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (HOCO-clocked; prefer
+  250 k for clock-tolerance margin).
 
-### Actuators
+## CAN Update Protocol v1
 
-| Device | Driver | Bus / Channel | Notes |
-| ------ | ------ | ------------- | ----- |
-|        |        |               |       |
+Two fixed CAN IDs per device (default `0x79E` host→boot / `0x79F` boot→host, or
+the per-device pair from the config block). 8-byte frames:
 
-### Sensors
+```
+HELLO → SIZE → ERASE → DATA windows → VERIFY → GO
+```
 
-| Device | Driver | Bus / Channel | Notes |
-| ------ | ------ | ------------- | ----- |
-|        |        |               |       |
-
-### Bus configuration
-
-| Bus | Configuration |
-| --- | ------------- |
-|     |               |
-
----
-
-## Communication
-
-<Describe the transport (CAN, UART, Modbus, etc.), the message schema
-(Protocol Buffers, plain bytes, …), and the request/response endpoints
-the board exposes.>
-
----
+Each 2 KB flash block is one ACK-paced DATA window (342 frames); the image is
+CRC32-validated (IEEE/zlib) and a metadata block is written last so power loss
+never bricks the device. `INFO (0x07)` returns the board's product name so a
+parked board can be identified over CAN. The pure-logic engine
+(`src/boot/can_update.c`) is host-tested; `tools/can-flash/` is the host side.
 
 ## Build & Flash
 
-<Build system: PlatformIO, CMake, Make, etc. Include the exact commands.>
+Built by compiling the pure-logic `src/boot/` core into the vendored
+`arduino-renesas-bootloader` fork (behind the `CAN_LOADER` and `DFU_CUSTOM_NAME`
+Makefile flags). See **[docs/build.md](docs/build.md)** for the exact toolchain
+(gcc 14.2.1 xPack, GNU Make + POSIX sh, the space-free-path `subst`), the size
+gate, and the flashing/unbrick procedures (rfp-cli ROM boot mode, pyOCD/SWD).
 
 ```sh
-# Build
-<command>
+# Firmware (from the vendored fork, via CMake wrapper or direct Make — see docs/build.md)
+cmake --build build-host --target bootloader
 
-# Flash
-<command>
+# Host tests (pure-logic core: crc32, image_validate, can_update, dfu_config)
+cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
 
-# Monitor
-<command>
+# Flash the built bootloader to a board (SWD)
+pyocd flash -e chip -a 0x0 -t r7fa4m1ab vendor/arduino-renesas-bootloader/_build/uno_r4/arduino-renesas-bootloader.hex
 ```
 
-Language standards: **C `<standard>`** and **C++ `<standard>`**. CPU flags:
-`<-mcpu=... -mfpu=... -mfloat-abi=... -mthumb>`.
+Language standards: **C11** (firmware), C++17 reserved for Arduino-framework
+targets. CPU flags: `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb`.
 
----
+## Flashing an application over CAN
+
+Host tool: `tools/can-flash/can_flash.py` (uv-runnable; TUI on bare invocation,
+CLI with flags). Requires an external 5 V transceiver on D4/D5.
+
+```sh
+# Interactive TUI
+uv run tools/can-flash/can_flash.py
+
+# Headless: reboot a running app into the bootloader, then flash
+uv run tools/can-flash/can_flash.py firmware.bin --interface socketcan --channel can0 --enter-bootloader
+
+# Discover all boards parked in the bootloader (per-device IDs)
+uv run tools/can-flash/can_flash.py --scan
+```
+
+A device enters CAN update mode when the application writes the magic
+`0xB007CAFE` to `VBTBKR[4]` and resets (or when no valid app is present). The
+sibling **AIRFORM-PKG `airform-tui-can-flasher`** provides the same flow as a
+pure-bash Debian package for ARM/Linux hosts.
+
+## Releases & CI
+
+Prebuilt bootloader binaries (`.hex`/`.bin`/`.elf`) are published on the
+**[Releases](https://github.com/XiaoKChen/Arduino-Custom-Bootloader/releases)**
+page — grab `bootloader-uno_r4-<version>.hex` and flash it over SWD (see above).
+
+Builds are automated by GitHub Actions
+(`.github/workflows/release.yml`, which calls `scripts/ci-build.sh`):
+
+- **Every push / PR to `main`** builds the firmware on Linux with the pinned
+  xPack **gcc 14.2.1** toolchain, fetches the `.gitignore`d CMSIS_5/FSP deps,
+  and enforces the 16,384-byte size gate — the build artifacts are attached to
+  the run.
+- **Pushing a `v*` tag** additionally publishes a GitHub Release with the
+  version-named `.hex`/`.bin`/`.elf` and auto-generated notes.
+
+```sh
+# Cut a release: tag and push — CI builds and publishes it.
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The bootloader firmware has no embedded version field; "version" here is the
+release tag and the artifact filenames.
 
 ## Repo Layout
 
 ```
 .
-├── src/         <one-line description>
-├── include/     <one-line description>
-├── lib/         <one-line description>
-├── test/        <one-line description>
-└── <build-config-file>
+├── src/boot/     pure-logic core (host-testable): memory_map, image/dfu-config
+│                 validation, crc32, CAN Update Protocol v1 state machine
+├── src/drivers/  polled register-level RA4M1 CAN0 driver (D4/D5)
+├── tests/        Unity/CTest host tests for the pure-logic core
+├── tools/        python-can host flasher (can-flash/)
+├── docs/         build/flash guide, research doc, reference artifacts (stock hex, .ld)
+├── scripts/      ci-build.sh — Linux dep-fetch + Make build used by CI
+├── .github/      GitHub Actions build + tag-driven release workflow
+├── vendor/       vendored third-party (arduino-renesas-bootloader fork, tinyusb, FSP, CMSIS_5)
+└── CMakeLists.txt  root wrapper: `bootloader` target (wraps Make) + host tests
 ```
-
----
 
 ## Dependencies
 
-<List runtime libraries, where they are declared (lib_deps, submodules,
-vendor/), and how they are pulled in.>
+Vendored under `vendor/` (no external package manager): the
+`arduino-renesas-bootloader` fork (where `src/` is integrated), tinyusb 0.17.0,
+Renesas FSP, ARM CMSIS_5, and standalone RA4M1 device headers. CMSIS_5 and FSP
+are `.gitignore`d and fetched per `docs/build.md`. The host flasher depends on
+`python-can`, `can-isotp`, and `textual` (see `tools/can-flash/requirements.txt`).

@@ -19,8 +19,13 @@ extern "C" {
 /* -----------------------------------------------------------------------------
  * CAN bus (classic CAN 2.0B, 11-bit IDs, DLC 8 on every protocol frame)
  * ----------------------------------------------------------------------------- */
-#define CAN_ID_HOST_TO_BOOT 0x79Eu       /* host -> bootloader commands        */
-#define CAN_ID_BOOT_TO_HOST 0x79Fu       /* bootloader -> host ACK/NAK         */
+/* DEFAULT per-device CAN update IDs. A v2 DFU config block (dfu_config.h) can
+ * override them per board so several parked boards share one bus; an
+ * unprovisioned board, a v1 block, or an out-of-range field falls back to these
+ * (dfu_config_can_ids()). The engine and the CAN service take the effective IDs
+ * at runtime — these constants are only the fallback. */
+#define CAN_ID_HOST_TO_BOOT 0x79Eu       /* default host -> bootloader commands */
+#define CAN_ID_BOOT_TO_HOST 0x79Fu       /* default bootloader -> host ACK/NAK  */
 #define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3) */
 
 /* -----------------------------------------------------------------------------

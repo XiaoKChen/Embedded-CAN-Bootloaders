@@ -72,6 +72,7 @@ static can_update_state_t  s_state;
 static uint8_t             s_reply[8];
 static bool                s_replied;
 static can_update_action_t s_action;
+static uint32_t            s_cmd_id;  /* host -> boot ID the engine is keyed on */
 
 static void store_le32(uint8_t *p, uint32_t v)
 {
@@ -84,7 +85,7 @@ static void store_le32(uint8_t *p, uint32_t v)
 static bool send_frame(const uint8_t data[8])
 {
     memset(s_reply, 0, sizeof(s_reply));
-    s_replied = can_update_handle_frame(&s_state, CAN_ID_HOST_TO_BOOT, 8u, data,
+    s_replied = can_update_handle_frame(&s_state, s_cmd_id, 8u, data,
                                         s_reply, &s_action);
     return s_replied;
 }
@@ -200,8 +201,9 @@ void setUp(void)
     s_last_program_len   = 0u;
     s_seq                = 0u;
     s_action             = CAN_UPDATE_ACTION_NONE;
+    s_cmd_id             = CAN_ID_HOST_TO_BOOT;  /* default; overridden per-test */
     build_test_image();
-    can_update_init(&s_state, &s_hal);
+    can_update_init(&s_state, &s_hal, s_cmd_id);
 }
 
 void tearDown(void) {}
@@ -450,6 +452,34 @@ static void test_malformed_dlc_naks_state(void)
     assert_reply(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_ERR_STATE, 0u);
 }
 
+/* Per-device ID: an engine keyed on a non-default cmd_id answers only on that
+ * ID (the default 0x79E is now ignored), and the full protocol still works. */
+static void test_custom_cmd_id_is_matched_and_default_ignored(void)
+{
+    const uint32_t custom_id = 0x123u;
+    s_cmd_id = custom_id;
+    can_update_init(&s_state, &s_hal, custom_id);
+
+    /* The old default ID no longer addresses this engine. */
+    uint8_t hello[8];
+    memset(hello, 0xFF, sizeof(hello));
+    hello[0] = CAN_UPDATE_CMD_HELLO;
+    hello[1] = CAN_UPDATE_PROTOCOL_VERSION;
+    TEST_ASSERT_FALSE(can_update_handle_frame(&s_state, CAN_ID_HOST_TO_BOOT, 8u,
+                                              hello, s_reply, &s_action));
+
+    /* Full transfer on the custom ID: framing/acks unchanged. */
+    transfer_whole_image();
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_RESET, s_action);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -466,5 +496,6 @@ int main(void)
     RUN_TEST(test_program_failure_naks_and_window_retransmit_recovers);
     RUN_TEST(test_hello_restarts_session_mid_transfer);
     RUN_TEST(test_malformed_dlc_naks_state);
+    RUN_TEST(test_custom_cmd_id_is_matched_and_default_ignored);
     return UNITY_END();
 }

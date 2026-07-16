@@ -3,8 +3,14 @@
  * =============================================================================
  * Frame-in / frame-out engine for the flash-over-CAN update path. The engine
  * touches no hardware: the CAN driver feeds it received frames, sends replies
- * it produces on CAN_ID_BOOT_TO_HOST, and flash access goes through the
+ * it produces on the boot -> host reply ID, and flash access goes through the
  * injected HAL — so the whole protocol unit-tests on the host.
+ *
+ * Per-device IDs: the host -> boot command ID the engine matches on is a
+ * runtime value supplied to can_update_init (default CAN_ID_HOST_TO_BOOT); the
+ * caller transmits every reply on the paired boot -> host ID (default
+ * CAN_ID_BOOT_TO_HOST). This lets several parked boards share one bus, each
+ * addressed on its own ID (see dfu_config.h v2 config block).
  *
  * Protocol v1 (classic CAN, 11-bit IDs, every frame DLC 8, unused bytes 0xFF):
  *
@@ -70,6 +76,12 @@ extern "C" {
 #define CAN_UPDATE_CMD_SIZE          0x04u
 #define CAN_UPDATE_CMD_VERIFY        0x05u
 #define CAN_UPDATE_CMD_GO            0x06u
+/* INFO is answered by the bootloader integration layer (main.c CAN service),
+ * NOT by this engine: its reply is 5 frames, which the single-reply engine
+ * cannot express. The constant is reserved here so main and the engine agree
+ * on 0x07; if a frame with this command ever reaches the engine it falls
+ * through to the default case and is NAKed as an unknown command. */
+#define CAN_UPDATE_CMD_INFO          0x07u
 
 #define CAN_UPDATE_REPLY_MARKER      0x79u  /* byte0 of every ACK/NAK          */
 #define CAN_UPDATE_OK                0x00u  /* byte2 of an ACK                 */
@@ -118,6 +130,7 @@ typedef enum {
 
 typedef struct {
     const can_update_hal_t *hal;
+    uint32_t cmd_id;               /* host -> boot ID this engine answers      */
     can_update_phase_t phase;
     uint32_t image_size;           /* from SIZE                                */
     uint32_t bytes_received;       /* image bytes accepted so far              */
@@ -131,14 +144,16 @@ typedef struct {
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
-void can_update_init(can_update_state_t *st, const can_update_hal_t *hal);
+void can_update_init(can_update_state_t *st, const can_update_hal_t *hal,
+                     uint32_t cmd_id);
 
 /**
  * Feed one received CAN frame to the engine.
  *
  * @param st          Engine state.
- * @param id          Received CAN ID; frames not addressed to
- *                    CAN_ID_HOST_TO_BOOT are silently ignored.
+ * @param id          Received CAN ID; frames not addressed to the engine's
+ *                    configured cmd_id (see can_update_init) are silently
+ *                    ignored.
  * @param dlc         Received DLC; protocol frames must be DLC 8.
  * @param data        8 payload bytes.
  * @param reply_data  Out: 8-byte reply payload for CAN_ID_BOOT_TO_HOST.

@@ -41,6 +41,7 @@
  * docs/research/r4-minima-can-bootloader.md and src/boot/memory_map.h. */
 #include "boot/can_update.h"
 #include "boot/crc32.h"
+#include "boot/dfu_config.h"  /* DFU_CONFIG_STR_MAX; dfu_config_parse (INFO)   */
 #include "boot/image_validate.h"
 #include "drivers/can_polled.h"
 
@@ -212,6 +213,76 @@ static const can_update_hal_t can_hal = {
 
 static can_update_state_t can_state;
 
+/* Effective per-device CAN update IDs. Default to the compiled constants; a
+ * DFU_CUSTOM_NAME build reads the v2 config block (see can_load_ids) so several
+ * parked boards can share one bus, each addressed on its own ID. The engine
+ * matches RX frames on can_cmd_id (also the driver's RX filter) and every reply
+ * / INFO frame goes out on can_reply_id. */
+static uint32_t can_cmd_id   = CAN_ID_HOST_TO_BOOT;
+static uint32_t can_reply_id = CAN_ID_BOOT_TO_HOST;
+
+/* Load the per-device CAN IDs from the DFU config block at DFU_CONFIG_ADDR.
+ * Data flash is readable here — R_FLASH_LP_Open() enabled DFLCTL.DFLEN before
+ * either CAN service path runs. Absent/invalid/v1 block or an out-of-range ID
+ * field leaves the compiled defaults (dfu_config_can_ids fills them in). A build
+ * without DFU_CUSTOM_NAME has no config parser, so it keeps the defaults. */
+static void can_load_ids(void)
+{
+#ifdef DFU_CUSTOM_NAME
+  uint16_t cmd_id;
+  uint16_t reply_id;
+  dfu_config_can_ids((const uint8_t *) DFU_CONFIG_ADDR, &cmd_id, &reply_id);
+  can_cmd_id   = cmd_id;
+  can_reply_id = reply_id;
+#endif
+}
+
+/* INFO (host CMD 0x07): report the device's USB product name so a host can
+ * identify a board parked in the bootloader. Answered here, not in the update
+ * engine, because the reply is 5 frames (the engine emits one per frame).
+ *
+ * Reply on CAN_ID_BOOT_TO_HOST (frozen contract):
+ *   frame 0  {0x79, 0x07, name_len, protocol_version, 0xFF, 0xFF, 0xFF, 0xFF}
+ *   frames 1..4  the 32-byte product-name field, 8 bytes each in order,
+ *                ASCII, 0x00-padded beyond name_len.
+ *
+ * Name source: dfu_config_parse of the 76-byte block at DFU_CONFIG_ADDR (data
+ * flash, readable here — R_FLASH_LP_Open() enabled DFLCTL.DFLEN before either
+ * CAN service path runs, as the descriptor path also relies on). Absent/invalid
+ * block -> name_len = 0 and all 32 name bytes 0x00. A build without
+ * DFU_CUSTOM_NAME has no config parser, so it reports name_len = 0. */
+static void can_service_info(void)
+{
+  uint8_t name[DFU_CONFIG_STR_MAX];
+  uint8_t name_len = 0;
+
+  memset(name, 0x00, sizeof(name));  /* contract: 0x00 padding beyond name_len */
+
+#ifdef DFU_CUSTOM_NAME
+  const char *mfr;
+  const char *prod;
+  uint8_t mfr_len;
+  uint8_t prod_len;
+  if (dfu_config_parse((const uint8_t *) DFU_CONFIG_ADDR,
+                       &mfr, &mfr_len, &prod, &prod_len) == DFU_CFG_OK) {
+    name_len = prod_len;              /* dfu_config_parse guarantees <= 32 */
+    memcpy(name, prod, prod_len);
+  }
+#endif
+
+  uint8_t frame[8];
+  frame[0] = CAN_UPDATE_REPLY_MARKER;      /* 0x79 */
+  frame[1] = CAN_UPDATE_CMD_INFO;          /* 0x07 */
+  frame[2] = name_len;                     /* 0..32 */
+  frame[3] = CAN_UPDATE_PROTOCOL_VERSION;  /* same version HELLO reports (1) */
+  memset(&frame[4], CAN_UPDATE_FILL_BYTE, 4);
+  (void) can_polled_send(can_reply_id, 8, frame);
+
+  for (uint32_t off = 0; off < DFU_CONFIG_STR_MAX; off += 8u) {
+    (void) can_polled_send(can_reply_id, 8, &name[off]);
+  }
+}
+
 /* Poll one frame through the update engine, transmit its reply, and perform
  * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop. */
 static void can_service_once(void)
@@ -227,8 +298,17 @@ static void can_service_once(void)
   if (can_polled_receive(&id, &dlc, data) != CAN_POLLED_OK) {
     return;  /* empty FIFO, or bus-off (driver re-initialized itself) */
   }
+
+  /* INFO is intercepted before the update engine: its 5-frame reply does not
+   * fit the engine's one-reply-per-frame contract. Answering it does not touch
+   * or advance the update session state. */
+  if (id == can_cmd_id && data[0] == CAN_UPDATE_CMD_INFO) {
+    can_service_info();
+    return;
+  }
+
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {
-    (void) can_polled_send(CAN_ID_BOOT_TO_HOST, 8, reply);  /* host retries on loss */
+    (void) can_polled_send(can_reply_id, 8, reply);  /* host retries on loss */
   }
   if (action == CAN_UPDATE_ACTION_RESET) {
     can_polled_deinit();  /* deinit every peripheral this path touched */
@@ -244,8 +324,9 @@ static void run_can_update_mode(void)
   R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
   R_FLASH_LP_Reset(g_flash.p_ctrl);
 
-  can_update_init(&can_state, &can_hal);
-  if (can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT) != CAN_POLLED_OK) {
+  can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
+  can_update_init(&can_state, &can_hal, can_cmd_id);
+  if (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) != CAN_POLLED_OK) {
     NVIC_SystemReset();  /* CAN unusable: reset into the normal boot path */
   }
   can_initialized = true;
@@ -305,8 +386,9 @@ __WEAK void run_bootloader() {
 #ifdef CAN_LOADER
   /* Recovery/parked mode keeps BOTH transports alive (research §5.2): DFU
    * as stock, plus the CAN update engine polled from the same loop. */
-  can_update_init(&can_state, &can_hal);
-  can_initialized = (can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT) == CAN_POLLED_OK);
+  can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
+  can_update_init(&can_state, &can_hal, can_cmd_id);
+  can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
 #endif
 
   while (1)

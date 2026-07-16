@@ -203,10 +203,12 @@ static bool handle_verify(can_update_state_t *st, const uint8_t data[8], uint8_t
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
-void can_update_init(can_update_state_t *st, const can_update_hal_t *hal)
+void can_update_init(can_update_state_t *st, const can_update_hal_t *hal,
+                     uint32_t cmd_id)
 {
     memset(st, 0, sizeof(*st));
-    st->hal = hal;
+    st->hal    = hal;
+    st->cmd_id = cmd_id;  /* per-device host -> boot ID (see dfu_config.h v2) */
     reset_session(st);
 }
 
@@ -216,7 +218,7 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
 {
     *out_action = CAN_UPDATE_ACTION_NONE;
 
-    if (id != CAN_ID_HOST_TO_BOOT) {
+    if (id != st->cmd_id) {
         return false;  /* not ours — silently ignore */
     }
 

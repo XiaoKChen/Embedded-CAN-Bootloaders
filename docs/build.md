@@ -114,13 +114,19 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15056 / 16384 bytes
+SIZE GATE OK: 15456 / 16384 bytes
 ```
 
-That leaves **1 328 B** of headroom. For reference: the same source built with
-the old gcc 7.2.1 is 15 704 B (648 B larger, only 680 B of headroom), which is
-why gcc 14 is preferred. Arduino's shipped stock hex (gcc unknown) is a
-12 424 B binary; the CAN update path is the difference.
+That leaves **928 B** of headroom (the per-device CAN-ID support added ~120 B
+over the prior 15 336 B). For reference: the same source built with the old
+gcc 7.2.1 is ~656 B larger (`SIZE GATE OK: 16112 / 16384`), which is why gcc 14
+is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
+the CAN update path is the difference.
+
+> **gcc 14 LTO note (Windows / xPack):** a *dirty* `_build/` left from a failed
+> or interrupted link can make the xPack gcc-14 LTO plugin abort with
+> `lto1.exe: internal compiler error: original not compressed with zstd`. Delete
+> `_build/` and rebuild clean; the error does not reproduce from a clean tree.
 
 The `.hex` file on disk is ~2.8× the `.bin` size (Intel HEX is ASCII text);
 only the `.bin` figure is what the chip stores and what the size gate checks.
@@ -200,8 +206,49 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      `src/boot/image_header.h`) is authoritative; metadata absent/corrupt
      falls back to the stock initial-SP check; metadata intact but image
      invalid stays in the bootloader — with **both** DFU and CAN alive.
-- Protocol: `src/boot/can_update.h` (HELLO/SIZE/ERASE/DATA/VERIFY/GO on IDs
-  `0x79E`/`0x79F`; host tool in `tools/can-flash/`).
+- Protocol: `src/boot/can_update.h` (HELLO/SIZE/ERASE/DATA/VERIFY/GO; host tool
+  in `tools/can-flash/`).
+- **Per-device CAN IDs.** The command/reply IDs default to `0x79E`/`0x79F` but
+  are overridable per board so several parked boards can share one bus, each
+  addressed individually. The effective IDs are read at CAN bring-up from the
+  DFU config block (`dfu_config_can_ids`, `DFU_CONFIG_ADDR`): the host→boot ID
+  becomes the driver's RX acceptance filter and the engine's match ID; every
+  reply/INFO frame is transmitted on the boot→host ID.
+  - The config block now has two on-disk versions; the bootloader accepts both:
+    - **v1** (version byte 1, 76 B, crc32 over `0x00..0x47`) — names only, no
+      ID fields → default IDs. Unchanged; existing boards keep working.
+    - **v2** (version byte 2, 80 B, crc32 over `0x00..0x4B`) — same name fields,
+      plus `0x48` u16 `boot_cmd_id` (host→boot) and `0x4A` u16 `boot_reply_id`
+      (boot→host), both 11-bit little-endian; crc32 at `0x4C`.
+  - Fallback to `0x79E`/`0x79F` when the block is absent/invalid, is v1, or an
+    ID field is not a valid 11-bit value (`0x000..0x7FF`; `0xFFFF`/out-of-range
+    = unset), applied per ID field. A `DFU_CUSTOM_NAME=0` build has no config
+    parser and always uses the defaults. The IDs are written by the ESP-Prog-2
+    flasher when it provisions a v2 block.
+- **INFO (CMD `0x07`)** — identify a board parked in the bootloader (no valid
+  app, or explicitly in CAN update mode). Unlike the update commands it is
+  answered by the bootloader integration layer (`main.c` CAN service), not the
+  pure engine, because its reply is **5 frames**. It does not touch the update
+  session state. It is answered on the device's per-device IDs (below), so a
+  host can identify each parked board by name on its own ID.
+  - Host -> boot on the device's cmd ID (default `0x79E`):
+    `[0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]`.
+  - Boot -> host on the device's reply ID (default `0x79F`), exactly 5 frames
+    of DLC 8, in order:
+    - Frame 0 (header):
+      `[0x79, 0x07, name_len, protocol_version, 0xFF, 0xFF, 0xFF, 0xFF]`
+      where `name_len` = product-name length (0..32) and `protocol_version`
+      is the same version HELLO reports (`0x01`).
+    - Frames 1..4: the **32-byte product-name field**, 8 bytes per frame in
+      order (frame 1 = bytes 0..7 ... frame 4 = bytes 24..31), ASCII,
+      **0x00-padded** beyond `name_len`.
+  - Name source: `dfu_config_parse` of the config block (v1 76 B or v2 80 B) at
+    `DFU_CONFIG_ADDR` (`0x40101C00`, data flash — readable because
+    `R_FLASH_LP_Open()` enabled `DFLCTL.DFLEN` before either CAN service path
+    runs). Block absent/invalid, or a build without `DFU_CUSTOM_NAME` ->
+    `name_len = 0` and all 32 name bytes `0x00`.
+  - Host helper: `python can_flash.py --info --interface <if> --channel <ch>`
+    prints the reported product name.
 - After a completed DFU download the bootloader now computes CRC32 over the
   received image and writes a fresh metadata block, so DFU-uploaded sketches
   are CRC-validated on later boots too (research §5.2, risk R7).

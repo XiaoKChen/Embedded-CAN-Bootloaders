@@ -114,11 +114,11 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15456 / 16384 bytes
+SIZE GATE OK: 15488 / 16384 bytes
 ```
 
-That leaves **928 B** of headroom (the per-device CAN-ID support added ~120 B
-over the prior 15 336 B). For reference: the same source built with the old
+That leaves **896 B** of headroom (the per-device CAN-ID support added ~120 B
+over the prior 15 336 B; the data-flash read-readiness guard added another 32 B). For reference: the same source built with the old
 gcc 7.2.1 is ~656 B larger (`SIZE GATE OK: 16112 / 16384`), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
 the CAN update path is the difference.
@@ -225,6 +225,15 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     = unset), applied per ID field. A `DFU_CUSTOM_NAME=0` build has no config
     parser and always uses the defaults. The IDs are written by the ESP-Prog-2
     flasher when it provisions a v2 block.
+  - **Data-flash read readiness (fail-safe).** Entering via the app's
+    `NVIC_SystemReset()` (unlike a pin reset) can leave the data-flash/FACI
+    state such that `R_FLASH_LP_Open` fails or skips the `DFLCTL.DFLEN`
+    enable+settle. The bootloader checks the open/reset results and
+    unconditionally re-asserts `DFLCTL.DFLEN` (+6 µs settle) before any
+    config-block read; if data flash is still unreadable, no read is attempted
+    and the board parks with the default IDs and an empty INFO name instead of
+    faulting. (Previously this path could hard-fault into a CPU lockup —
+    a board silent on every CAN ID after `/enter_bootloader`.)
 - **INFO (CMD `0x07`)** — identify a board parked in the bootloader (no valid
   app, or explicitly in CAN update mode). Unlike the update commands it is
   answered by the bootloader integration layer (`main.c` CAN service), not the

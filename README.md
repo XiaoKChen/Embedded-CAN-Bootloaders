@@ -14,6 +14,9 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
    update ID pair (in that same config block), so multiple boards can sit in
    bootloader mode on one bus simultaneously and be addressed individually.
    Unprovisioned boards default to `0x79E` (host→boot) / `0x79F` (boot→host).
+   Config reads are guarded fail-safe: if data flash isn't readable (e.g.
+   after a software reset leaves the FACI in a bad state), the board still
+   parks and serves CAN on the default IDs rather than faulting.
 
 > Full project map: **[PROJECT.md](PROJECT.md)**. Build & flash guide:
 > **[docs/build.md](docs/build.md)**. Design/decision record:

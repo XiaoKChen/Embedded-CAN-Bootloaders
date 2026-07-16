@@ -161,6 +161,51 @@ static void set_can_update_request(uint32_t data)
   R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_LOCK;
 }
 
+/* ---- Data-flash read gate ----------------------------------------------
+ * Target-specific (RA4M1 flash, FSP r_flash_lp MF3): loads from the data
+ * flash window (0x4010_0000, DFU_CONFIG_ADDR) are legal only when
+ * DFLCTL.DFLEN = 1 and tDSTOP (~6 us; FSP FLASH_LP_WAIT_TDSTOP) has elapsed
+ * after the 0->1 edge, and the FACI is in read mode. Violating that returns
+ * garbage at best and bus-faults at worst — and this image's BusFault/
+ * HardFault handlers are FSP's Default_Handler -> __BKPT(0), which locks the
+ * core up with no debugger attached: a dead board until the next reset pin /
+ * power cycle.
+ *
+ * R_FLASH_LP_Open() normally enables DFLEN and waits tDSTOP, BUT
+ *   (a) it SKIPS the settle when DFLCTL already reads 1 (state that can
+ *       survive the application's NVIC_SystemReset() on the magic-handoff
+ *       entry — unlike the pin reset of the double-tap entry), and
+ *   (b) it can fail before touching DFLEN at all (FCLK gate) or after
+ *       entering data-flash P/E mode (P/E-exit timeout on a FACI left dirty
+ *       by the application), and R_FLASH_LP_Reset() is then a silent no-op
+ *       (FSP param check: not-open).
+ * So the only PROOF of readability is Open and Reset both returning
+ * FSP_SUCCESS, plus an unconditional re-assert + settle that does not depend
+ * on FSP's skip-if-already-1 shortcut. dfu_config_readable latches that
+ * proof; nothing reads DFU_CONFIG_ADDR while it is false — the compiled
+ * default IDs / empty INFO name are used instead (fail-safe: the board
+ * always keeps serving CAN, never a dead board). */
+#define DATA_FLASH_TDSTOP_SETTLE_US  6u
+
+static bool dfu_config_readable = false;
+
+static bool flash_lp_open_df_read_ready(void)
+{
+  if (R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg) != FSP_SUCCESS) {
+    /* Driver down: every flash HAL op fails cleanly (FSP_ERR_NOT_OPEN). */
+    return false;
+  }
+  if (R_FLASH_LP_Reset(g_flash.p_ctrl) != FSP_SUCCESS) {
+    return false;
+  }
+  /* Open guarantees DFLEN = 1 on success; re-assert and settle anyway so the
+   * read gate holds by local proof, not by FSP internals. Safe here: the
+   * successful Reset above left the FACI in read mode. */
+  R_FACI_LP->DFLCTL = 1U;
+  R_BSP_SoftwareDelay(DATA_FLASH_TDSTOP_SETTLE_US, BSP_DELAY_UNITS_MICROSECONDS);
+  return true;
+}
+
 /* ---- can_update engine flash HAL (r_flash_lp) --------------------------
  * Power-loss outcomes of every mutation here are enumerated in
  * src/boot/can_update.h; in short: the metadata block is erased first and
@@ -222,13 +267,17 @@ static uint32_t can_cmd_id   = CAN_ID_HOST_TO_BOOT;
 static uint32_t can_reply_id = CAN_ID_BOOT_TO_HOST;
 
 /* Load the per-device CAN IDs from the DFU config block at DFU_CONFIG_ADDR.
- * Data flash is readable here — R_FLASH_LP_Open() enabled DFLCTL.DFLEN before
- * either CAN service path runs. Absent/invalid/v1 block or an out-of-range ID
- * field leaves the compiled defaults (dfu_config_can_ids fills them in). A build
- * without DFU_CUSTOM_NAME has no config parser, so it keeps the defaults. */
+ * Reads only when dfu_config_readable proved the data-flash window readable
+ * (see flash_lp_open_df_read_ready); an unproven window, an absent/invalid/v1
+ * block or an out-of-range ID field leaves the compiled defaults
+ * (dfu_config_can_ids fills them in). A build without DFU_CUSTOM_NAME has no
+ * config parser, so it keeps the defaults. */
 static void can_load_ids(void)
 {
 #ifdef DFU_CUSTOM_NAME
+  if (!dfu_config_readable) {
+    return;  /* data flash unproven: keep the compiled default IDs */
+  }
   uint16_t cmd_id;
   uint16_t reply_id;
   dfu_config_can_ids((const uint8_t *) DFU_CONFIG_ADDR, &cmd_id, &reply_id);
@@ -247,10 +296,10 @@ static void can_load_ids(void)
  *                ASCII, 0x00-padded beyond name_len.
  *
  * Name source: dfu_config_parse of the 76-byte block at DFU_CONFIG_ADDR (data
- * flash, readable here — R_FLASH_LP_Open() enabled DFLCTL.DFLEN before either
- * CAN service path runs, as the descriptor path also relies on). Absent/invalid
- * block -> name_len = 0 and all 32 name bytes 0x00. A build without
- * DFU_CUSTOM_NAME has no config parser, so it reports name_len = 0. */
+ * flash, read only when dfu_config_readable proved the window readable — see
+ * flash_lp_open_df_read_ready). Unproven window or absent/invalid block ->
+ * name_len = 0 and all 32 name bytes 0x00. A build without DFU_CUSTOM_NAME
+ * has no config parser, so it reports name_len = 0. */
 static void can_service_info(void)
 {
   uint8_t name[DFU_CONFIG_STR_MAX];
@@ -263,7 +312,8 @@ static void can_service_info(void)
   const char *prod;
   uint8_t mfr_len;
   uint8_t prod_len;
-  if (dfu_config_parse((const uint8_t *) DFU_CONFIG_ADDR,
+  if (dfu_config_readable &&
+      dfu_config_parse((const uint8_t *) DFU_CONFIG_ADDR,
                        &mfr, &mfr_len, &prod, &prod_len) == DFU_CFG_OK) {
     name_len = prod_len;              /* dfu_config_parse guarantees <= 32 */
     memcpy(name, prod, prod_len);
@@ -318,11 +368,15 @@ static void can_service_once(void)
 }
 
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; the only
- * exits are the GO reset above or an external reset. */
+ * exits are the GO reset above or an external reset. This entry always
+ * follows the application's NVIC_SystemReset(), so the flash open runs
+ * against whatever FACI/data-flash state survived that software reset — the
+ * gated helper (never a raw DFU_CONFIG_ADDR read) is what keeps a dirty
+ * entry state from bus-faulting into a locked-up board. If the open fails,
+ * the board still parks and serves CAN on the compiled default IDs. */
 static void run_can_update_mode(void)
 {
-  R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
-  R_FLASH_LP_Reset(g_flash.p_ctrl);
+  dfu_config_readable = flash_lp_open_df_read_ready();
 
   can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
   can_update_init(&can_state, &can_hal, can_cmd_id);
@@ -479,8 +533,14 @@ bootloader:
 #endif
 
 #if BSP_FEATURE_FLASH_LP_VERSION
+ #ifdef CAN_LOADER
+  /* Same Open+Reset as stock, through the shared gate so the CAN service in
+   * run_bootloader() only reads DFU_CONFIG_ADDR once provably readable. */
+  dfu_config_readable = flash_lp_open_df_read_ready();
+ #else
   R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
   R_FLASH_LP_Reset(g_flash.p_ctrl);
+ #endif
 #endif
 
   run_bootloader();

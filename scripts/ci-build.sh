@@ -23,12 +23,14 @@ arm-none-eabi-gcc --version | head -1
 cd "$TINYUSB"
 if [ ! -e hw/mcu/renesas/fsp/ra/fsp/src/r_flash_lp/r_flash_lp.c ]; then
   echo "== fetching renesas/fsp @ $FSP_COMMIT =="
+  mkdir -p hw/mcu/renesas/fsp
   git -C hw/mcu/renesas/fsp init
   git -C hw/mcu/renesas/fsp fetch --depth 1 https://github.com/renesas/fsp.git "$FSP_COMMIT"
   git -C hw/mcu/renesas/fsp checkout FETCH_HEAD
 fi
 if [ ! -e lib/CMSIS_5/CMSIS/Core/Include/core_cm4.h ]; then
   echo "== fetching ARM-software/CMSIS_5 @ $CMSIS_COMMIT =="
+  mkdir -p lib/CMSIS_5
   git -C lib/CMSIS_5 init
   git -C lib/CMSIS_5 fetch --depth 1 https://github.com/ARM-software/CMSIS_5.git "$CMSIS_COMMIT"
   git -C lib/CMSIS_5 checkout FETCH_HEAD

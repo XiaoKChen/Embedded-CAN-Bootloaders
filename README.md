@@ -29,8 +29,14 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
 - **MCU / board:** Renesas RA4M1 (R7FA4M1AB) on the Arduino UNO R4 Minima, 5 V logic.
 - **CAN:** the RA4M1's single classic **CAN0** channel — **D4 = P103 = CTX0**,
   **D5 = P102 = CRX0**. The board has **no on-board transceiver**: an external
-  **5 V** CAN transceiver (TJA1050 / MCP2551 / MCP2562) is required, with 120 Ω
-  termination at both bus ends.
+  **5 V** CAN transceiver (TJA1050 / MCP2551 / MCP2562 / TCAN332) is required,
+  with 120 Ω termination at both bus ends.
+- **Transceiver power (custom boards):** CAN update mode switches on the
+  RA4M1's internal **USB regulator (`USBMC.VDCEN`)** at entry, because custom
+  boards may power the transceiver/level-shifter path from the USB `VUSB`
+  rail. Without this, a board entering CAN mode via the app handoff (where
+  USB is never initialized) sits deaf on the bus — operate mode, TEC frozen
+  at 0, no bus-idle ever seen. Harmless on boards that don't use that rail.
 - **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (HOCO-clocked; prefer
   250 k for clock-tolerance margin).
 
@@ -89,6 +95,8 @@ uv run tools/can-flash/can_flash.py --scan
 
 A device enters CAN update mode when the application writes the magic
 `0xB007CAFE` to `VBTBKR[4]` and resets (or when no valid app is present). The
+full no-touch cycle — `--enter-bootloader` → INFO discovery on the per-device
+IDs → flash → GO back into the app — is bench-verified end-to-end. The
 sibling **AIRFORM-PKG `airform-tui-can-flasher`** provides the same flow as a
 pure-bash Debian package for ARM/Linux hosts.
 

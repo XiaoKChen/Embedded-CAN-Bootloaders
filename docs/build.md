@@ -114,11 +114,15 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15488 / 16384 bytes
+SIZE GATE OK: 15576 / 16384 bytes
 ```
 
-That leaves **896 B** of headroom (the per-device CAN-ID support added ~120 B
-over the prior 15 336 B; the data-flash read-readiness guard added another 32 B). For reference: the same source built with the old
+That leaves **808 B** of headroom (per-device CAN-ID support ~120 B, the
+data-flash read-readiness guard 32 B, the CAN-mode USB-regulator power-up
+88 B). A diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
+self-bisecting boot staircase for CAN bring-up debugging) also fits the gate
+but is never shipped; with `CAN_DIAG=0` (default) the diag code is fully
+compiled out. For reference: the same source built with the old
 gcc 7.2.1 is ~656 B larger (`SIZE GATE OK: 16112 / 16384`), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
 the CAN update path is the difference.
@@ -234,6 +238,14 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     and the board parks with the default IDs and an empty INFO name instead of
     faulting. (Previously this path could hard-fault into a CPU lockup —
     a board silent on every CAN ID after `/enter_bootloader`.)
+  - **Transceiver rail power-up (board dependency).** CAN update mode enables
+    the USBFS module, USB clock, and the internal USB regulator
+    (`USBMC.VDCEN`, +5 ms soak) before CAN bring-up. Root cause found via a
+    hardware bisect (`CAN_DIAG` staircase): custom boards can power the CAN
+    transceiver/level-shifter path from the USB rail, and without VDCEN the
+    controller reaches operate mode but never sees bus-idle (TEC stays 0) —
+    a deaf, mute board. The USB-DFU path always initialized USB, which is why
+    double-tap entry always worked. No USB stack is brought up — power only.
 - **INFO (CMD `0x07`)** — identify a board parked in the bootloader (no valid
   app, or explicitly in CAN update mode). Unlike the update commands it is
   answered by the bootloader integration layer (`main.c` CAN service), not the

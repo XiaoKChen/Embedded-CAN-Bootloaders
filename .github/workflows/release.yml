@@ -41,7 +41,7 @@ jobs:
         run: ls -d ~/toolchain/xpack-arm-none-eabi-gcc-*/bin >> "$GITHUB_PATH"
 
       - name: Build bootloader (fetch deps + make + size gate)
-        run: ./scripts/ci-build.sh
+        run: bash scripts/ci-build.sh
 
       - name: Collect & version-name artifacts
         id: collect

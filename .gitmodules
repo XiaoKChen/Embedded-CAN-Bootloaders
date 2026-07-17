@@ -1,4 +1,4 @@
 [submodule ".claude"]
 	path = .claude
-	url = git@github.com:XiaoKChen/.claude.git
-	branch = config/embedded-bootloader
+	url = git@github-XiaoKChen:XiaoKChen/.claude.git
+	branch = config/embassy

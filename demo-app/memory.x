@@ -4,6 +4,10 @@
  * bootloader's `BOOT_SIZE`/`APP_SLOT_SIZE` (crates/boot-logic/src/memory_map.rs,
  * owned by U0.4) — every app for this board links here, not at the stock
  * Arduino IDE offset 0x4000.
+ *
+ * Deliberately NO `.ofs` section and no `_stext` bump: the OFS0/OFS1/
+ * Security-MPU option bytes live at 0x400 inside the *bootloader* image
+ * (bootloader/src/ofs.rs) — the app slot sits entirely past them.
  * ========================================================================== */
 
 MEMORY

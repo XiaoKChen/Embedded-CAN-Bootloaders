@@ -1,12 +1,18 @@
-//! Bootloader entry point — boot decision, board bring-up, task spawning.
+//! Bootloader entry point — the SPEC §2 boot decision, the `boot5` jump
+//! sequence (R12), and per-mode task spawning (U1.3–U1.5).
 //!
-//! U0.2 + U0.3 spike body (S0 + S5 + S2): clock bring-up with defmt-RTT
-//! banner and LED on (S0), a VBTBKR round-trip across `NVIC_SystemReset`
-//! (S5), then the Embassy executor with two toy tasks on the GPT320 time
-//! driver (S2). S5 stays *before* the executor — the boot decision runs
-//! pre-executor by design (docs/plan.md §4) and the S0/S5 bench checklist
-//! must still be demonstrable from this one binary. U1.3 replaces the
-//! decision logic with the real SPEC §2 order.
+//! The boot decision runs as plain blocking code BEFORE the executor exists
+//! (docs/plan.md §4): the app-boot path never pays executor startup and the
+//! jump sequence never has to tear an executor down. The executor comes up
+//! only for the two update modes, and once started it only ever dies by
+//! reset — GO exits via `NVIC_SystemReset` (R13).
+//!
+//! Task spawn wiring (docs/plan.md §4):
+//!
+//! | Mode | Tasks |
+//! |------|-------|
+//! | CAN-only (`VBTBKR[4]` magic) | `can_update` |
+//! | Parked (double-tap magic / no valid app) | `can_update` + `led` fade |
 
 #![no_std]
 #![no_main]
@@ -14,11 +20,16 @@
 use defmt_rtt as _; // defmt transport over RTT
 use panic_probe as _; // panic = defmt log, then reset
 
+use boot_logic::image_meta;
+use boot_logic::memory_map::APP_BASE;
 use cortex_m_rt::entry;
 use embassy_executor::Executor;
-use embassy_time::{Duration, Instant, Ticker};
-use ra4m1_embassy::{pfs, time_driver, vbtbkr};
+use ra4m1_embassy::{clocks, time_driver, vbtbkr};
 use static_cell::StaticCell;
+
+use crate::flash_read::CodeFlashReader;
+use crate::tasks::can_update::{self, EntryMode};
+use crate::tasks::led;
 
 mod board;
 mod drivers;
@@ -26,26 +37,23 @@ mod flash_read;
 mod ofs;
 mod tasks;
 
-/// App-requested CAN-update handoff magic (SPEC §1.4). Interim home for the
-/// spike — the boot-decision constants move to `boot-logic` in U0.4.
+/// Stock double-tap / DFU-detach handoff magic in `VBTBKR[0..4]`
+/// (SPEC §1.4). Both magics live here rather than in `boot-logic` because
+/// they parameterize only this boot decision — nothing pure consumes them.
+const DOUBLE_TAP_MAGIC: u32 = 0x0773_8135;
+/// App-requested CAN-update handoff magic in `VBTBKR[4..8]` (SPEC §1.4).
 const CAN_UPDATE_MAGIC: u32 = 0xB007_CAFE;
 
-/// ~50 ms at ICLK 48 MHz: lets the probe-rs host drain the RTT buffer
-/// before the S5 software reset tears the session down. Busy-wait is the
-/// documented pre-executor exception (docs/plan.md §4) — nothing else runs.
-const RTT_FLUSH_DELAY_CYCLES: u32 = 2_400_000;
+/// SPEC §2 step 3 (R9): the double-tap arming window — 500 ms at ICLK
+/// 48 MHz (`cortex_m::asm::delay` waits at least this many cycles).
+const DOUBLE_TAP_WINDOW_CYCLES: u32 = clocks::ICLK_HZ / 2;
 
-/// S2 toy-task cadences (docs/plan.md §5): a bench-visible blink and a
-/// heartbeat slow enough to eyeball against a wall clock for the ±1–2 %
-/// HOCO-tolerance check.
-const LED_BLINK_PERIOD: Duration = Duration::from_millis(500);
-const HEARTBEAT_PERIOD: Duration = Duration::from_secs(1);
-
-/// UNO R4 Minima built-in LED "L": D13 = P111 — same pin `board::init`
-/// switches on at bring-up (its constants are private to the board seam;
-/// the toy blink task dissolves into tasks/led.rs at U1.5).
-const LED_PORT: u8 = 1;
-const LED_PIN: u8 = 11;
+/// PRCR key + PRC1 (low-power/battery-backup unlock) and the bare re-lock
+/// key, for the jump sequence's module-stop writes (SPEC §2.2, R8).
+/// Duplicates `ra4m1_embassy::clocks`' crate-private constants — R01UM0007,
+/// Register Write Protection chapter.
+const PRCR_UNLOCK_LPM: u16 = 0xA502;
+const PRCR_LOCK: u16 = 0xA500;
 
 /// Thread-mode executor (the only one — nothing here has a hard latency
 /// requirement, docs/plan.md §4). Task memory in embassy-executor 0.10 is a
@@ -56,99 +64,151 @@ static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 #[entry]
 fn main() -> ! {
     let board = board::init();
+    defmt::info!("bootloader: HOCO 48 MHz up (ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24)");
 
-    defmt::info!("bootloader spike S0: HOCO 48 MHz up (ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24)");
-    defmt::info!(
-        "  SCKSCR={=u8:#x} (expect 0x0 = HOCO), SCKDIVCR={=u32:#x} (expect 0x10040100)",
-        board.system.sckscr.read().bits(),
-        board.system.sckdivcr.read().bits(),
-    );
+    // SPEC §2 step 1 (R6): double-tap / DFU magic → clear → parked mode.
+    if vbtbkr::read_word(&board.system, vbtbkr::DOUBLE_TAP_WORD_OFFSET) == DOUBLE_TAP_MAGIC {
+        vbtbkr::clear_word(&board.system, vbtbkr::DOUBLE_TAP_WORD_OFFSET);
+        defmt::info!("boot: double-tap magic — entering parked mode");
+        run_update_mode(board, EntryMode::Parked);
+    }
 
-    // S5: VBTBKR round-trip across a software reset (docs/plan.md §5).
-    let handoff = vbtbkr::read_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET);
-    if handoff == CAN_UPDATE_MAGIC {
-        defmt::info!("S5: CAN-update magic survived the software reset");
+    // SPEC §2 step 2 (R7): app-requested CAN magic → clear → CAN-only mode.
+    if vbtbkr::read_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET) == CAN_UPDATE_MAGIC {
         vbtbkr::clear_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET);
-        let cleared = vbtbkr::read_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET);
-        if cleared == 0 {
-            defmt::info!("S5 PASS: magic seen exactly once, word reads 0 after clear");
-        } else {
-            defmt::error!("S5 FAIL: VBTBKR word reads {=u32:#x} after clear", cleared);
-        }
-        // S0/S5 done — where U0.2 parked, S2 now starts the executor.
-        run_spike_executor();
+        defmt::info!("boot: CAN-update magic — entering CAN-only update mode");
+        run_update_mode(board, EntryMode::CanOnly);
     }
 
-    defmt::info!(
-        "S5: VBTBKR[4..8]={=u32:#x} — writing magic, then NVIC_SystemReset",
-        handoff
-    );
-    vbtbkr::write_word(
-        &board.system,
-        vbtbkr::CAN_UPDATE_WORD_OFFSET,
-        CAN_UPDATE_MAGIC,
-    );
-    let written = vbtbkr::read_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET);
-    if written != CAN_UPDATE_MAGIC {
-        defmt::error!("S5 FAIL: write read back {=u32:#x} — parking", written);
-        loop {
-            cortex_m::asm::wfi();
-        }
+    // SPEC §2 step 3 (R9): a non-power-on reset arms the double-tap window —
+    // magic in, 500 ms wait, magic out. A second reset tap inside the window
+    // leaves the magic set and re-enters step 1 on the next boot. The
+    // busy-wait is the documented pre-executor exception (docs/plan.md §4):
+    // no executor exists yet, so there is nothing to starve.
+    if board.system.rstsr0.read().porf().bit_is_clear() {
+        vbtbkr::write_word(
+            &board.system,
+            vbtbkr::DOUBLE_TAP_WORD_OFFSET,
+            DOUBLE_TAP_MAGIC,
+        );
+        cortex_m::asm::delay(DOUBLE_TAP_WINDOW_CYCLES);
+        vbtbkr::clear_word(&board.system, vbtbkr::DOUBLE_TAP_WORD_OFFSET);
     }
 
-    cortex_m::asm::delay(RTT_FLUSH_DELAY_CYCLES);
-    cortex_m::peripheral::SCB::sys_reset();
+    // SPEC §2 step 4 (R10/R11): full metadata validation with the stock
+    // SP-word fallback for absent/corrupt metadata only. Read failures and
+    // every other validation failure fail CLOSED into the parked bootloader
+    // (LED fading, CAN listening) — never a dead board.
+    match image_meta::app_bootable(&CodeFlashReader) {
+        Ok(true) => jump_to_app(&board.system), // SPEC §2 step 5: valid → jump
+        Ok(false) => defmt::warn!("boot: no valid app — parking (fail closed)"),
+        Err(_) => defmt::warn!("boot: flash read failed during validation — parking (fail closed)"),
+    }
+    run_update_mode(board, EntryMode::Parked)
 }
 
-/// S2: bring the time base up and hand control to the executor forever
-/// (it WFE-sleeps between wakes; once started it only ever dies by reset,
-/// docs/plan.md §4).
-fn run_spike_executor() -> ! {
+/// Bring the time base up and hand control to the executor forever (it
+/// WFE-sleeps between wakes; once started it only ever dies by reset,
+/// docs/plan.md §4). Spawns per the mode table in the module docs.
+fn run_update_mode(board: board::Board, mode: EntryMode) -> ! {
     time_driver::init();
-
-    // SAFETY: re-acquisition of the PAC singletons to hand PFS + PMISC to
-    // the blink task, which owns them from here on. The only earlier PFS
-    // access (`board::init`'s one-shot LED-on write) completed before this
-    // point, and nothing else in the spike touches PFS/PMISC.
-    let p = unsafe { ra4m1::Peripherals::steal() };
-
-    defmt::info!("S2: executor starting — 500 ms blink + 1 s heartbeat (GPT320 @ 3 MHz)");
-
     let executor = EXECUTOR.init(Executor::new());
-    executor.run(|spawner| {
+    executor.run(move |spawner| {
         // Spawn failures are init errors — fail loudly (rules/embassy.md).
         // In embassy-executor 0.10 the task-pool claim is the fallible step.
-        spawner.spawn(led_blink(p.PFS, p.PMISC).expect("led_blink pool empty: spawned twice"));
-        spawner.spawn(heartbeat().expect("heartbeat pool empty: spawned twice"));
+        spawner.spawn(can_update::run(mode).expect("can_update pool empty: spawned twice"));
+        if mode == EntryMode::Parked {
+            // LED fade is parked-mode only (SPEC §2.3 vs §2.5): the C
+            // bootloader's CAN-only path never ran the LED task.
+            spawner.spawn(
+                led::fade(board.gpt163, board.pfs, board.pmisc)
+                    .expect("led pool empty: spawned twice"),
+            );
+        }
     })
 }
 
-/// S2 toy task: 500 ms LED toggle on P111. Bench check: a steady 1 Hz
-/// blink proves `Ticker` scheduling end-to-end (driver → ISR → waker).
-#[embassy_executor::task]
-async fn led_blink(pfs_reg: ra4m1::PFS, pmisc: ra4m1::PMISC) {
-    let mut ticker = Ticker::every(LED_BLINK_PERIOD);
-    let mut led_on = false;
-    loop {
-        ticker.next().await;
-        led_on = !led_on;
-        pfs::set_gpio_output(&pfs_reg, &pmisc, LED_PORT, LED_PIN, led_on);
-    }
-}
+/// SPEC §2.2 app entry (`boot5`, R12), ported for `APP_BASE = 0x8000`
+/// (plan §1.2 supersedes R5/R12's `0x4000`).
+///
+/// Steps the C original performs that need **no code** on this path:
+///
+/// - **CAN deinit:** CAN only ever comes up inside the update modes, which
+///   exit exclusively via `NVIC_SystemReset` after `Can0::deinit`
+///   (R13/R32) — this function is unreachable with CAN initialized.
+/// - **Time-driver stop (the plan §4 R12 extension):** `time_driver::init`
+///   is called only by `run_update_mode`, never on the jump path, so GPT320
+///   is still module-stopped and IEL0 masked here — the "stop the
+///   time-driver counter" requirement holds by construction (see
+///   `time_driver.rs`'s lifecycle contract). No stop API was needed.
+fn jump_to_app(system: &ra4m1::SYSTEM) -> ! {
+    defmt::info!("boot: valid app — jumping to {=u32:#x}", APP_BASE);
 
-/// S2 toy task: 1 s defmt heartbeat stamping `Instant::now()` so the bench
-/// can eyeball tick accuracy against a wall clock (S2 pass: drift within
-/// HOCO tolerance, ±~1–2 %).
-#[embassy_executor::task]
-async fn heartbeat() {
-    let mut ticker = Ticker::every(HEARTBEAT_PERIOD);
-    loop {
-        ticker.next().await;
-        let uptime = Instant::now();
-        defmt::info!(
-            "S2 heartbeat: uptime {=u64} ms ({=u64} ticks)",
-            uptime.as_millis(),
-            uptime.as_ticks()
-        );
+    // SAFETY: transient PAC/core singleton re-acquisition on the one-way
+    // path out of the bootloader; nothing else runs (pre-executor).
+    let p = unsafe { ra4m1::Peripherals::steal() };
+    let cp = unsafe { cortex_m::Peripherals::steal() };
+
+    // Module-stop USBFS under the PRC1 unlock, C parity (SPEC §2.2). The C
+    // also stopped USBHS, which does not exist on the RA4M1 — there is no
+    // register to write for that half. On this path the rail power-up never
+    // ran, so this usually re-asserts the reset state.
+    // SAFETY: documented PRCR key writes (R01UM0007, Register Write
+    // Protection); MSTPCRB RMW cannot race pre-executor.
+    system.prcr.write(|w| unsafe { w.bits(PRCR_UNLOCK_LPM) });
+    p.MSTP.mstpcrb.modify(|_, w| w.mstpb11()._1());
+    let _ = p.MSTP.mstpcrb.read(); // completion read-back
+                                   // SAFETY: PRCR re-lock (key only).
+    system.prcr.write(|w| unsafe { w.bits(PRCR_LOCK) });
+
+    // Disable MSP monitoring (stock behavior kept: `R_MPU_SPMON->SP[0].CTL
+    // = 0`, SPEC §2.2).
+    // SAFETY: whole-register 0 = monitor disabled (R01UM0007, Stack Pointer
+    // Monitor); this project never enables it.
+    p.SPMON.mspmpuctl.write(|w| unsafe { w.bits(0) });
+
+    // IRQs off + barriers while the interrupt fabric is torn down and
+    // retargeted (SPEC §2.2 order).
+    cortex_m::interrupt::disable();
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+
+    // SysTick off (stock behavior kept — this bootloader never starts it;
+    // its time base is GPT320, which never ran on this path).
+    // SAFETY: SYST.CSR = 0 disables the counter and its interrupt.
+    unsafe { (*cortex_m::peripheral::SYST::PTR).csr.write(0) };
+
+    // NVIC teardown: disable + clear-pending every implemented line (the
+    // RA4M1's ICU exposes 32, all in word 0) before handing the vector
+    // table to the app. Nothing is enabled on this path — the executor
+    // never started — so this re-asserts reset state, cheaply.
+    // SAFETY: whole-register writes; W1C semantics for both registers.
+    unsafe {
+        cp.NVIC.icer[0].write(u32::MAX);
+        cp.NVIC.icpr[0].write(u32::MAX);
     }
+
+    // VTOR → the app's vector table: the BOOTLOADER sets it, the app need
+    // not (R5 policy, value per plan §1.2).
+    // SAFETY: APP_BASE is 128-byte aligned (32 KB) as VTOR requires; the
+    // barriers order the retarget before the jump.
+    unsafe { (*cortex_m::peripheral::SCB::PTR).vtor.write(APP_BASE) };
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+
+    // DEVIATION from SPEC §2.2 ("IRQs left disabled for the app"): PRIMASK
+    // is cleared before the jump. FSP-based apps re-enable interrupts in
+    // SystemInit, but cortex-m-rt/Embassy apps (demo-app) do not — jumping
+    // masked would leave the app's time-driver ISR dead and its executor
+    // spinning on WFE. Safe here: every NVIC line is disabled and
+    // pending-cleared and SysTick is off, so nothing can preempt the app's
+    // startup before it configures its own sources.
+    // SAFETY: no enabled interrupt sources exist (torn down above).
+    unsafe { cortex_m::interrupt::enable() };
+
+    // MSP ← [APP_BASE], PC ← [APP_BASE + 4] (Thumb), never returns.
+    // SAFETY: validation proved the SP word points into SRAM and the reset
+    // vector is a Thumb address inside the app slot (SPEC §3.3 steps 4–5;
+    // the stock fallback checks the SP word's SRAM high byte).
+    unsafe { cortex_m::asm::bootload(APP_BASE as *const u32) }
 }

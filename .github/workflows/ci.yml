@@ -3,10 +3,24 @@ name: CI
 on:
   push:
     branches: [main, "version/**"]
+    tags: ["v*"]
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
+  # docs/plan.md §1: bootloader `.bin` hard size gate.
+  SIZE_GATE_BYTES: 32768
+  # docs/plan.md §1.5 / bootloader/src/ofs.rs: OFS0/OFS1/Security-MPU words,
+  # byte-identical to the stock Arduino bootloader dump at flash 0x400..0x43F.
+  EXPECTED_OFS_HEX: >-
+    ffffffffdfceffff
+    fcffff00ffffff00
+    fcffff00ffffff00
+    fcffff00ffffff00
+    fcff0f20ffff0f20
+    fcff7f40ffff7f40
+    fcff0d40ffff0d40
+    ffffffffffffffff
 
 jobs:
   fmt:
@@ -25,15 +39,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
+      - uses: Swatinem/rust-cache@v2
       # boot-logic is host-only logic; everything else targets the chip.
       # Clippy needs both target graphs walked, since cargo won't otherwise
       # build cross-target members it can't run.
       - name: Clippy (firmware members, target triple)
-        run: cargo clippy --workspace --exclude boot-logic --target thumbv7em-none-eabihf -- -D warnings
+        run: cargo clippy --workspace --exclude boot-logic --target thumbv7em-none-eabihf --all-targets -- -D warnings
       - name: Clippy (boot-logic, host)
         run: |
           host="$(rustc -vV | sed -n 's/host: //p')"
-          cargo clippy -p boot-logic --target "$host" -- -D warnings
+          cargo clippy -p boot-logic --target "$host" --all-targets -- -D warnings
 
   host-tests:
     name: cargo test -p boot-logic (host)
@@ -42,6 +57,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain
         run: rustup show
+      - uses: Swatinem/rust-cache@v2
       - name: Host test invocation (see .cargo/config.toml)
         run: |
           host="$(rustc -vV | sed -n 's/host: //p')"
@@ -54,12 +70,82 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
+      - uses: Swatinem/rust-cache@v2
       - name: Build bootloader + demo-app + ra4m1-embassy
         run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
-      - name: cargo size (TODO — U1.7 turns this into the hard 32,768 B gate)
+
+      - name: Locate llvm-objcopy / llvm-size (rust-toolchain.toml's llvm-tools component)
+        id: llvm-tools
         run: |
-          cargo install cargo-binutils --locked
-          rustup component add llvm-tools
-          # Placeholder step: prints size only, does not fail the build yet.
-          # U1.7 replaces this with a hard `.bin` <= 32768 B check (docs/plan.md §2, §6 U1.7).
-          cargo size --release --target thumbv7em-none-eabihf -p bootloader || true
+          host="$(rustc -vV | sed -n 's/host: //p')"
+          bindir="$(rustc --print sysroot)/lib/rustlib/$host/bin"
+          echo "bindir=$bindir" >> "$GITHUB_OUTPUT"
+          "$bindir/llvm-objcopy" --version
+          "$bindir/llvm-size" --version
+
+      - name: llvm-size (bootloader + demo-app)
+        run: |
+          bindir="${{ steps.llvm-tools.outputs.bindir }}"
+          "$bindir/llvm-size" target/thumbv7em-none-eabihf/release/bootloader
+          "$bindir/llvm-size" target/thumbv7em-none-eabihf/release/demo-app
+
+      - name: Emit .bin/.hex (bootloader + demo-app)
+        run: |
+          bindir="${{ steps.llvm-tools.outputs.bindir }}"
+          mkdir -p dist
+          for bin in bootloader demo-app; do
+            elf="target/thumbv7em-none-eabihf/release/$bin"
+            cp "$elf" "dist/$bin.elf"
+            "$bindir/llvm-objcopy" -O binary "$elf" "dist/$bin.bin"
+            "$bindir/llvm-objcopy" -O ihex "$elf" "dist/$bin.hex"
+          done
+          ls -la dist
+
+      - name: Size gate — bootloader.bin <= 32,768 B (docs/plan.md §1)
+        run: |
+          size="$(stat -c%s dist/bootloader.bin)"
+          headroom=$(( SIZE_GATE_BYTES - size ))
+          echo "bootloader.bin: $size B / $SIZE_GATE_BYTES B gate (headroom: $headroom B)"
+          if [ "$size" -gt "$SIZE_GATE_BYTES" ]; then
+            echo "::error::bootloader.bin ($size B) exceeds the $SIZE_GATE_BYTES B size gate by $(( -headroom )) B"
+            exit 1
+          fi
+
+      - name: OFS byte-check — flash 0x400..0x43F (bootloader/src/ofs.rs, brick risk)
+        run: |
+          actual="$(xxd -s 1024 -l 64 -p dist/bootloader.bin | tr -d '\n')"
+          expected="$(echo "$EXPECTED_OFS_HEX" | tr -d ' \n')"
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::OFS bytes at flash 0x400..0x43F do not match the stock dump — this risks bricking the board (SPEC §1.5). See bootloader/src/ofs.rs."
+            exit 1
+          fi
+          echo "OFS bytes 0x400..0x43F match the stock dump."
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: firmware-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

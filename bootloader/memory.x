@@ -46,3 +46,18 @@ flashing an image with it elsewhere risks bricking the board (SPEC §1.5).");
 ASSERT(SIZEOF(.ofs) == 0x40, "
 ERROR(memory.x): .ofs must be exactly 64 bytes (OFS0/OFS1 + Security-MPU
 words, 0x400..0x43F) — check bootloader/src/ofs.rs.");
+
+/* GC root for the flash-LP RAM-resident P/E leaves (U1.1,
+ * src/drivers/flash_lp.rs): rustc links with --gc-sections, and until
+ * U1.3/U1.4 call the driver this KEEP'd 40-byte fn-pointer table is the only
+ * reference chain that keeps the `.data`-resident leaf functions in the
+ * image — which is what makes their RAM residency verifiable with llvm-nm.
+ * (#[used(linker)] would do this from Rust alone, but it is unstable on the
+ * pinned toolchain.) Harmless to keep once the driver has real callers. */
+SECTIONS
+{
+  .flash_lp_anchor : ALIGN(4)
+  {
+    KEEP(*(.flash_lp_anchor));
+  } > FLASH
+} INSERT AFTER .rodata;

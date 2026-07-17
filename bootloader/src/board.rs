@@ -4,14 +4,18 @@
 //! PAC singletons).
 //!
 //! `init()` acquires the PAC peripherals exactly once, brings the clock
-//! tree up, and splits what `main` and tasks need into [`Board`]. Later
-//! units extend `Board` with the peripherals their tasks own (CAN0, GPT,
-//! USBFS, ...).
+//! tree up, and splits what `main` and the tasks need into [`Board`]:
+//! `main` consumes `system` for the boot decision (VBTBKR handoff words,
+//! reset-status read) and hands the GPT/PFS pieces to the parked-mode LED
+//! task at spawn time. Peripherals the drivers bring up themselves (CAN0,
+//! USBFS's rail registers, the flash sequencer) are acquired inside those
+//! drivers under their own documented ownership rules.
 
 use ra4m1_embassy::{clocks, pfs};
 
-/// UNO R4 Minima built-in LED "L": D13 = P111 (SPEC §2.5 drives it with
-/// GPT ch3 PWM in parked mode; the spike just switches it on).
+/// UNO R4 Minima built-in LED "L": D13 = P111. Switched on here as the
+/// bring-up indicator; in parked mode `tasks::led` repurposes the pin for
+/// the GPT ch3 PWM fade (SPEC §2.5).
 const LED_PORT: u8 = 1;
 const LED_PIN: u8 = 11;
 
@@ -19,6 +23,13 @@ const LED_PIN: u8 = 11;
 pub struct Board {
     /// SYSTEM block: VBTBKR handoff words, reset/clock status registers.
     pub system: ra4m1::SYSTEM,
+    /// GPT channel 3 — the parked-mode LED PWM (`tasks::led`).
+    pub gpt163: ra4m1::GPT163,
+    /// Pin-function blocks, owned by the LED task after spawn. CAN0's
+    /// driver uses its own transient, documented PFS access for P102/P103
+    /// only (see `drivers::can0::init_hw`'s SAFETY note).
+    pub pfs: ra4m1::PFS,
+    pub pmisc: ra4m1::PMISC,
 }
 
 /// Bring the board up: clocks to HOCO 48 MHz, LED on as the visible
@@ -33,8 +44,15 @@ pub fn init() -> Board {
 
     clocks::init_hoco_48mhz(&p.SYSTEM);
 
-    // LED on = S0 "board alive" indicator (the parked-mode fade is U1.5).
+    // LED on = "board alive" indicator: stays solid in CAN-only mode,
+    // replaced by the PWM fade once the parked-mode LED task starts, and
+    // visible only for the microseconds before an app jump.
     pfs::set_gpio_output(&p.PFS, &p.PMISC, LED_PORT, LED_PIN, true);
 
-    Board { system: p.SYSTEM }
+    Board {
+        system: p.SYSTEM,
+        gpt163: p.GPT163,
+        pfs: p.PFS,
+        pmisc: p.PMISC,
+    }
 }

@@ -213,6 +213,8 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "embassy-executor",
+ "embassy-time",
  "panic-probe",
  "ra4m1",
  "ra4m1-embassy",

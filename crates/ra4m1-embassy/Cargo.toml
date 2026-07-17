@@ -1,0 +1,44 @@
+# =============================================================================
+# Cargo.toml — ra4m1-embassy
+# =============================================================================
+# Shared chip runtime for both binaries (bootloader, demo-app): clocks, the
+# custom embassy-time driver, VBTBKR, and PFS pin-function writes
+# (docs/plan.md §3). PAC-level and contained — no Embassy HAL exists for RA
+# (ECO §1), so this crate IS the HAL seam for this chip.
+#
+# KNOWN RISK (flag for U0.2/S0, not resolved here): `ra4m1` 0.2.0 pulls
+# `cortex-m-rt ^0.6.13` as a transitive, non-optional dependency, while this
+# workspace pins `cortex-m-rt 0.7` for the binaries' `#[entry]`/vector table.
+# Two cortex-m-rt majors can coexist in the dependency graph (Cargo allows
+# it), but S0 must confirm the PAC's `rt` feature is never enabled alongside
+# our own cortex-m-rt 0.7, or resolve by other means (possibly the
+# `ra4m1-fsp-pac` fallback, which already pins cortex-m-rt ^0.7.5).
+# =============================================================================
+
+[package]
+name = "ra4m1-embassy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ra4m1 = { workspace = true }
+cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
+# `device` (U0.3, spike S2): cortex-m-rt 0.7 stops emitting its own 240-slot
+# default IRQ table and instead links the hand-written `__INTERRUPTS` table in
+# src/time_driver.rs plus this crate's device.x (build.rs puts it on the
+# linker search path). The PAC's `rt` feature stays OFF — it would drag in the
+# conflicting cortex-m-rt 0.6 runtime (see KNOWN RISK above).
+cortex-m-rt = { workspace = true, features = ["device"] }
+critical-section = { workspace = true }
+# tick-hz-3_000_000 records the project-wide embassy-time tick rate
+# (docs/plan.md §2, rules/embassy.md): the time driver runs GPT320 straight
+# off PCLKD 48 MHz / 16 = 3 MHz, so one hardware count == one embassy tick.
+# Chosen because it is the finest PCLKD/2^2n prescale with a matching
+# embassy-time-driver feature that keeps the 32-bit wrap period long
+# (~23.9 min — wrap handling in src/time_driver.rs).
+embassy-time-driver = { workspace = true, features = ["tick-hz-3_000_000"] }
+# Timer-queue backing for the driver. `integrated-timers`' queue nodes live
+# in embassy-executor's task headers — no capacity limit, no extra RAM.
+embassy-time-queue-utils = { version = "0.3", features = ["integrated-timers"] }
+defmt = { workspace = true }

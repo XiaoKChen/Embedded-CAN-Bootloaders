@@ -1,0 +1,37 @@
+# =============================================================================
+# .cargo/config.toml — workspace root
+# =============================================================================
+# Pins the default cross-compilation target to the firmware triple and wires
+# `cargo run`/`cargo build` to probe-rs so build + flash + defmt-RTT logs are
+# one command (docs/plan.md §2). `crates/boot-logic` is the one PURE, host-
+# testable member (rules/testing.md) — its tests must NOT cross-compile.
+#
+# Host-test invocation (the "standard clean solution" for a mixed host/target
+# workspace): a bare `cargo test -p boot-logic` from the repo root would
+# inherit the `[build].target` below and try to cross-compile+run the test
+# harness for thumbv7em-none-eabihf, which cannot execute. An explicit
+# `--target` on the command line always overrides `[build].target`, so run:
+#
+#   cargo test -p boot-logic --target "$(rustc -vV | sed -n 's/host: //p')"
+#
+# CI (.github/workflows/ci.yml) uses exactly this invocation. This keeps the
+# firmware-first default for every other crate without hardcoding a host
+# triple here (Windows/Linux/macOS runners each report their own).
+# =============================================================================
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# `probe-rs chip list` for valid names; R7FA4M1AB per docs/plan.md (ECO §6).
+runner = "probe-rs run --chip R7FA4M1AB"
+rustflags = [
+  "-C", "link-arg=--nmagic",  # no page alignment — saves flash
+  "-C", "link-arg=-Tlink.x",  # cortex-m-rt linker script (pulls in memory.x)
+  "-C", "link-arg=-Tdefmt.x", # defmt symbol table
+]
+
+[build]
+target = "thumbv7em-none-eabihf"
+
+[env]
+# Max level compiled into the binary; filter further at the host with
+# `DEFMT_LOG=debug cargo run` when debugging.
+DEFMT_LOG = "info"

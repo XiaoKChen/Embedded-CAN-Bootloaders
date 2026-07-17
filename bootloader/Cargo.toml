@@ -1,0 +1,46 @@
+# =============================================================================
+# Cargo.toml — bootloader
+# =============================================================================
+# The CAN-update bootloader binary (docs/plan.md §3). U0.2 (board bring-up,
+# OFS, VBTBKR) and U0.3 (executor + time-driver skeleton) both touch this
+# manifest — U0.1 seeds only what U0.2 needs (PAC + runtime + logging); U0.3
+# adds embassy-executor/embassy-time/embassy-sync/embassy-futures plus a
+# deliberately-sized `task-arena-size-*` feature when it wires the real
+# executor (docs/plan.md §6).
+# =============================================================================
+
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+boot-logic = { path = "../crates/boot-logic" }
+ra4m1-embassy = { path = "../crates/ra4m1-embassy" }
+ra4m1 = { workspace = true }
+
+# U0.3 (spike S2): thread-mode executor only — no interrupt executor; nothing
+# in this bootloader has a hard latency requirement (docs/plan.md §4).
+# The time-driver tick rate (3 MHz) is fixed by ra4m1-embassy's
+# `embassy-time-driver/tick-hz-3_000_000` feature — see that crate's manifest
+# and time_driver.rs for the wrap story.
+embassy-executor = { workspace = true, features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt"] }
+
+# Pre-added by the dispatcher for U1.1/U1.2 (both units share this manifest, so
+# neither may edit it): frame types for can0.rs, NorFlash traits for flash_lp.rs.
+embedded-can = { workspace = true }
+embedded-storage = { workspace = true }
+
+cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+static_cell = { workspace = true }
+
+[[bin]]
+name = "bootloader"
+test = false
+bench = false

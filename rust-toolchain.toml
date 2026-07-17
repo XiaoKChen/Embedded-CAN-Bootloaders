@@ -1,0 +1,12 @@
+# =============================================================================
+# rust-toolchain.toml — pins the toolchain so every machine (and CI) builds
+# with the same compiler. Embassy works on stable.
+# =============================================================================
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy", "llvm-tools"]
+# Keep in agreement with [build].target in .cargo/config.toml. boot-logic is
+# host-tested (`cargo test -p boot-logic`) and needs no extra target beyond
+# the host triple, which rustup always provides for the active toolchain.
+targets = ["thumbv7em-none-eabihf"]

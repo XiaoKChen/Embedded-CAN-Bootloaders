@@ -1,0 +1,23 @@
+# =============================================================================
+# Cargo.toml — boot-logic
+# =============================================================================
+# PURE logic crate (docs/plan.md §3): no_std, ZERO PAC/HAL/executor deps, so
+# it host-tests with a plain `cargo test` (see workspace .cargo/config.toml
+# for the exact host-target invocation). Never add embassy-*/ra4m1/cortex-m
+# deps here — that dependency belongs to `ra4m1-embassy` or the binary
+# crates. `defmt` is the one exception: every error enum derives
+# `defmt::Format` per rules/rust.md, and the derive alone (no logger, no
+# macros invoked) compiles identically on every target, including the host.
+# =============================================================================
+
+[package]
+name = "boot-logic"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+defmt = { workspace = true }
+
+[dev-dependencies]
+# Host tests only; nothing here may leak into the library's normal deps.

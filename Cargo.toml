@@ -1,0 +1,65 @@
+# =============================================================================
+# Cargo.toml — workspace root
+# =============================================================================
+# FROZEN after U0.1 (docs/plan.md §6): later units add dependencies to their
+# OWN crate's Cargo.toml only, either by inheriting one of the pins below
+# (`foo = { workspace = true }`) or, for anything not centralized here, a
+# plain version requirement directly in the member manifest. Do not add new
+# `[workspace.dependencies]` entries or members here without re-opening U0.1.
+# =============================================================================
+
+[workspace]
+resolver = "2"
+members = ["crates/boot-logic", "crates/ra4m1-embassy", "bootloader", "demo-app"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# -----------------------------------------------------------------------------
+# Centrally pinned versions (docs/plan.md §2). Versions verified against
+# crates.io at U0.1 time (2026-07-16) — see the U0.1 report for the deltas
+# against the plan's original candidate list (embassy-* majors moved on).
+# Members opt in with `foo = { workspace = true }`, adding member-local
+# `features`/`default-features` as needed.
+# -----------------------------------------------------------------------------
+[workspace.dependencies]
+# --- Chip PAC (docs/plan.md §1.6, §2 locked decision) -----------------------
+ra4m1 = "0.2"
+
+# --- Embassy core ------------------------------------------------------------
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-time-driver = "0.2"
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+
+# --- HAL-agnostic driver traits (drivers depend on these, not the PAC) ------
+embedded-can = "0.4"
+embedded-storage = "0.3"
+
+# --- Runtime & logging --------------------------------------------------------
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+critical-section = "1"
+defmt = "1"
+defmt-rtt = "1"
+panic-probe = "1"
+
+# --- no-heap data structures --------------------------------------------------
+heapless = "0.9"
+static_cell = "2"
+
+# -----------------------------------------------------------------------------
+# Release profile (docs/plan.md §2): opt-level "z" for the 32 KB gate, debug
+# symbols kept (out of flash) for probe-rs/defmt.
+# -----------------------------------------------------------------------------
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+debug = 2
+
+[profile.dev]
+opt-level = 1
+debug = 2

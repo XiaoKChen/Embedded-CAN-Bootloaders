@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "version/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
+        run: rustup show
+      # boot-logic is host-only logic; everything else targets the chip.
+      # Clippy needs both target graphs walked, since cargo won't otherwise
+      # build cross-target members it can't run.
+      - name: Clippy (firmware members, target triple)
+        run: cargo clippy --workspace --exclude boot-logic --target thumbv7em-none-eabihf -- -D warnings
+      - name: Clippy (boot-logic, host)
+        run: |
+          host="$(rustc -vV | sed -n 's/host: //p')"
+          cargo clippy -p boot-logic --target "$host" -- -D warnings
+
+  host-tests:
+    name: cargo test -p boot-logic (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Host test invocation (see .cargo/config.toml)
+        run: |
+          host="$(rustc -vV | sed -n 's/host: //p')"
+          cargo test -p boot-logic --target "$host"
+
+  firmware-build:
+    name: cargo build --release (thumbv7em-none-eabihf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
+        run: rustup show
+      - name: Build bootloader + demo-app + ra4m1-embassy
+        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
+      - name: cargo size (TODO — U1.7 turns this into the hard 32,768 B gate)
+        run: |
+          cargo install cargo-binutils --locked
+          rustup component add llvm-tools
+          # Placeholder step: prints size only, does not fail the build yet.
+          # U1.7 replaces this with a hard `.bin` <= 32768 B check (docs/plan.md §2, §6 U1.7).
+          cargo size --release --target thumbv7em-none-eabihf -p bootloader || true

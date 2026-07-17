@@ -1,0 +1,30 @@
+# =============================================================================
+# Cargo.toml — demo-app
+# =============================================================================
+# Minimal demo app linked at 0x8000 (docs/plan.md §1.2 consequence: stock
+# Arduino IDE sketches relink here too). U0.1 seeds PAC + runtime + logging
+# only; U1.6 adds embassy-executor/embassy-time/embassy-sync/embassy-futures
+# when it writes the real Embassy blinky (docs/plan.md §6).
+# =============================================================================
+
+[package]
+name = "demo-app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ra4m1-embassy = { path = "../crates/ra4m1-embassy" }
+ra4m1 = { workspace = true }
+
+cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+static_cell = { workspace = true }
+
+[[bin]]
+name = "demo-app"
+test = false
+bench = false

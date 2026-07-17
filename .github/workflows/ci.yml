@@ -43,8 +43,10 @@ jobs:
       # boot-logic is host-only logic; everything else targets the chip.
       # Clippy needs both target graphs walked, since cargo won't otherwise
       # build cross-target members it can't run.
+      # No --all-targets on the firmware graph: it would build each crate's
+      # test harness, and libtest does not exist for thumbv7em-none-eabihf.
       - name: Clippy (firmware members, target triple)
-        run: cargo clippy --workspace --exclude boot-logic --target thumbv7em-none-eabihf --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude boot-logic --target thumbv7em-none-eabihf -- -D warnings
       - name: Clippy (boot-logic, host)
         run: |
           host="$(rustc -vV | sed -n 's/host: //p')"

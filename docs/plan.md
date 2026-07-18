@@ -6,6 +6,9 @@
 conflict, the locked decisions in §1 win. Everything else in SPEC's 43-item checklist (SPEC §10)
 is binding.
 
+> **Milestone 3 (application HAL)** is planned separately — see `docs/plan-m3-hal.md` (summarized
+> under §6, "M3").
+
 Target: Arduino UNO R4 Minima, Renesas **R7FA4M1AB** (Cortex-M4F, 48 MHz HOCO, 256 KB code
 flash, 8 KB data flash, 32 KB SRAM). Triple `thumbv7em-none-eabihf`. probe-rs chip `R7FA4M1AB`
 (ECO §6).
@@ -299,6 +302,15 @@ region was sized for a USB stack.
 | **U2.3** | Combined parked mode: `usb_dfu` + `can_update` + `led` coexisting; flash mutex; one erase/program block per IRQ-off window so USB never starves past a block (R39); DFU-download metadata write-back with the zero/oversize guards (R38, SPEC §6.3). **[main.rs]** | `bootloader/src/tasks/usb_dfu.rs`, `bootloader/src/tasks/can_update.rs`, `bootloader/src/main.rs` | embassy-pro |
 
 M2 exit: Arduino-IDE-style DFU detach-upload works; size gate still green; M1 E2E re-run clean.
+
+### M3 — Application HAL (LGPL-free RA4M1 HAL)
+
+A separate track for *applications* on this chip — not the bootloader. The community `ra4-hal`
+and `ra4m1-ctpac` are LGPL-3.0 (§1.6 banned them), so M3 builds an MIT/Apache alternative from
+scratch: a new `crates/ra4m1-hal` layered on the existing `ra4m1-embassy` base
+(clocks/PFS/time-driver reused), with `embedded-hal 1.0`/`-async`/`embedded-io` traits at every
+boundary, phased GPIO → timers/PWM → serial buses → analog. The bootloader never depends on it,
+so the 32 KB gate (§1.2) stays safe. **Full design: `docs/plan-m3-hal.md`.**
 
 ---
 

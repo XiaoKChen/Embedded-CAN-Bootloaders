@@ -17,7 +17,9 @@ built on).
 |---|---|---|
 | **M0** — scaffolding & risk retirement | **Done** | [`6be6739`](../../commit/6be6739) |
 | **M1** — CAN bootloader at parity (minus USB) | **Done** | [`2b0976a`](../../commit/2b0976a) |
-| **M2** — USB DFU | Upcoming | — |
+| **M2** — USB DFU | **Done** | [`f9430fc`](../../commit/f9430fc) |
+| **M2.5** — Renode emulation validation | Planned | — |
+| **M3** — LGPL-free application HAL | Planned | — |
 
 **M0** stood up the Cargo workspace, retired the hardware-bring-up risks as spikes (clocks, OFS
 option bytes, VBTBKR handoff, executor + a custom GPT320 `embassy-time` driver — see
@@ -45,8 +47,39 @@ Remaining M1 exit criteria — full end-to-end `can_flash.py` flashing over CAN,
 re-entry, and a power-loss spot check — need a CAN host adapter on the bench and are tracked in
 [`docs/bench/m0-spikes.md`](docs/bench/m0-spikes.md) / `docs/plan.md` §6.
 
-**M2** (USB DFU device mode, sharing the flash driver behind a mutex with the CAN task in parked
-mode) is planned per `docs/plan.md` §6 but not started.
+**M2** built USB DFU device mode across three units: U2.1 ([`ec6f73c`](../../commit/ec6f73c))
+implements the RA4M1 USBFS `embassy-usb-driver` from scratch (no prior art — even the community
+`ra4-hal` left USB unimplemented); U2.2 ([`1beeaab`](../../commit/1beeaab)) is a hand-rolled DFU
+1.1 class on `embassy-usb` (VID `0x2341`/PID `0x0369`, `@CodeFlash`/`@DataFlash` alt settings,
+strings sourced from the provisioned config block); U2.3 ([`1b87646`](../../commit/1b87646))
+combines `usb_dfu` + `can_update` + the LED-fade task in parked mode, sharing the flash driver
+behind a `Mutex<NoopRawMutex>` (one erase/program block per acquire, never held across an await,
+so USB and CAN both stay live between blocks). `bootloader.bin` is 31,564 B of the 32,768 B size
+gate (1,204 B headroom) with the full USB stack linked; all 88 host tests, fmt, clippy, and the
+OFS byte-check stay green.
+
+M2 passed its first hardware bring-up (2026-07-17, IDU Articulation board via ESP-Prog-2 SWD +
+defmt-RTT): the device enumerates on a real RA4M1 as a DFU device (`2341:0369`, Status OK) with
+the provisioned product string, after six real bugs surfaced and were fixed
+([`f9430fc`](../../commit/f9430fc)) — an `embassy-usb` `enable()`/`PowerDetected` deadlock, the
+USB operational clock defaulting to an unpowered PLL instead of HOCO, the PHY transceiver needing
+re-init once the clock was fixed, an ICU interrupt-clear-at-exit race that wedged delivery under
+the USBFS combined IRQ's SOF rate, and SOF-based suspend/resume ported from TinyUSB. **Enumeration
+and the device-descriptor control-read stage are hardware-confirmed; the full `dfu-util`
+upload/download exchange is not yet bench-verified**, and — like the M1 CAN path — the end-to-end
+`can_flash.py` run also still needs its CAN host adapter on the bench (see the M1 remaining exit
+criteria above).
+
+**M2.5** and **M3** are planning-stage tracks that exist as design docs only — no code has been
+written for either yet:
+
+- [`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md) — bring the release ELFs up in the
+  open-source **Renode** emulator so boot logic, flash P/E, and the CAN update protocol can be
+  exercised deterministically and hardware-free in CI, phased from booting the ELF through a
+  CAN-bridge `can_flash.py` E2E and a CI-integrated Robot suite.
+- [`docs/plan-m3-hal.md`](docs/plan-m3-hal.md) — a from-scratch, MIT/Apache-2.0 RA4M1 HAL for
+  *applications* on this chip (not the bootloader), replacing the LGPL-3.0 community `ra4-hal` /
+  `ra4m1-ctpac`, layered on the existing `ra4m1-embassy` clocks/PFS/time-driver base.
 
 ## Memory map
 
@@ -121,6 +154,10 @@ auto-generated notes.
 
 - [`docs/plan.md`](docs/plan.md) — the implementation plan: locked architectural decisions,
   stack choices, workspace layout, concurrency architecture, and the milestone/unit breakdown.
+- [`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md) — plan for M2.5, hardware-free
+  validation of the release ELFs in the Renode emulator.
+- [`docs/plan-m3-hal.md`](docs/plan-m3-hal.md) — plan for M3, a from-scratch MIT/Apache-2.0
+  RA4M1 HAL for applications (not the bootloader), replacing the LGPL community options.
 - [`docs/research/master-feature-spec.md`](docs/research/master-feature-spec.md) — the
   implementation-independent behavior spec (what the C bootloader does, and every hardware
   constant it relies on).

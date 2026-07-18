@@ -38,6 +38,9 @@ pub const PCLKC_HZ: u32 = 48_000_000;
 pub const PCLKD_HZ: u32 = 48_000_000;
 /// Flash interface clock after [`init_hoco_48mhz`], in Hz.
 pub const FCLK_HZ: u32 = 24_000_000;
+/// USB clock (UCLK) after [`init_usb_clock_48mhz`], in Hz. USBFS full-speed
+/// requires exactly 48 MHz; UCLK is HOCO undivided on this part.
+pub const USBCLK_HZ: u32 = 48_000_000;
 
 /// Bring the chip from its reset clock (MOCO 8 MHz) to HOCO 48 MHz with the
 /// divider tree above. Call exactly once, before anything derives timing
@@ -81,6 +84,48 @@ pub fn init_hoco_48mhz(system: &SYSTEM) {
     // before any caller derives timing from the new tree.
     system.sckscr.write(|w| w.cksel()._000());
     let _ = system.sckscr.read(); // intentional: completion read-back
+
+    // SAFETY: whole-register PRCR write of the documented key (re-lock).
+    system.prcr.write(|w| unsafe { w.bits(PRCR_KEY) });
+}
+
+/// Point the USB clock (UCLK) at HOCO 48 MHz so the USBFS operational clock
+/// domain (PHY, INTSTS0, DCPMAXP, ...) is actually clocked. Call once,
+/// AFTER [`init_hoco_48mhz`] and BEFORE any USBFS operational-register access
+/// (i.e. before the module leaves module-stop / SCKE gates its clock in).
+///
+/// Precondition: [`init_hoco_48mhz`] has run, so HOCO is oscillating and
+/// stable at 48 MHz and the PLL is left disabled (the UNO R4 / RA4M1 clock
+/// plan — `vendor/.../uno_r4/bsp_clock_cfg.h` on `main`:
+/// `BSP_CFG_UCK_SOURCE = HOCO`, `BSP_CFG_PLL_SOURCE = DISABLED`).
+///
+/// WHY: `USBCKCR.USBCLKSEL` resets to 0 = PLL. With the PLL disabled (this
+/// bootloader runs HOCO only), the reset default leaves UCLK unsourced, so
+/// every USBFS operational register faults on access even though `SYSCFG`
+/// (in the always-on clock-control domain) reads/writes fine — exactly the
+/// bench-observed split (imprecise BusFault in `phy_init_fs` / `hw_enable`).
+/// Selecting HOCO gives UCLK a live 48 MHz. USB full-speed needs exactly
+/// 48 MHz and HOCO is 48 MHz, so UCLK = HOCO / 1 — this part has no USB
+/// clock divider register, the source IS the clock.
+///
+/// Registers: R01UM0007 (RA4M1 HW manual), Clock Generation Circuit chapter,
+/// USBCKCR (USB Clock Control Register, @ SYSTEM+0xD0), field USBCLKSEL
+/// (bit 0: 0 = PLL, 1 = HOCO). This part has NO USB-clock switching-request /
+/// switching-ready handshake — that USBCKCR variant (USBCKSREQ/USBCKSRDY at
+/// SYSTEM+0x74) belongs to other RA families and is absent on the R7FA4M1AB
+/// (the `ra4m1` PAC exposes only the single-bit register here), so the source
+/// select takes effect with no poll. Non-blocking; callable pre-executor.
+pub fn init_usb_clock_48mhz(system: &SYSTEM) {
+    // SAFETY: whole-register PRCR write of the documented key + PRC0 value
+    // (R01UM0007, Register Write Protection). USBCKCR is a CGC register under
+    // PRCR.PRC0; unlock, write the source select, re-lock.
+    system
+        .prcr
+        .write(|w| unsafe { w.bits(PRCR_KEY | PRCR_PRC0_CLOCKS) });
+
+    // UCLK source = HOCO (48 MHz). Reset default is PLL, which is disabled.
+    system.usbckcr.write(|w| w.usbclksel()._1());
+    let _ = system.usbckcr.read(); // completion read-back before re-lock
 
     // SAFETY: whole-register PRCR write of the documented key (re-lock).
     system.prcr.write(|w| unsafe { w.bits(PRCR_KEY) });

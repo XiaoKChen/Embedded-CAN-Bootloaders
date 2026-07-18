@@ -88,7 +88,7 @@ use core::cell::Cell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::ptr;
-use core::sync::atomic::{AtomicU16, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use core::task::{Poll, Waker};
 
 use cortex_m::interrupt::Mutex;
@@ -298,6 +298,11 @@ struct State {
     /// Bitmask of interrupt IN pipes (bit n = PIPEn) currently enabled by the
     /// host's SET_CONFIGURATION — read by [`EndpointIn::wait_enabled`].
     ep_enabled: AtomicU8,
+    /// One-shot latch for the initial `Event::PowerDetected`. embassy-usb calls
+    /// `Bus::enable()` only in response to that event and never unconditionally,
+    /// while the VBUS interrupt that would raise it is armed *by* `enable()` —
+    /// so first attach deadlocks unless `poll()` emits it up front (see there).
+    power_reported: AtomicBool,
 }
 
 static STATE: State = State {
@@ -306,6 +311,7 @@ static STATE: State = State {
     ep_in_waker: WakerCell::new(),
     flags: Flags::new(),
     ep_enabled: AtomicU8::new(0),
+    power_reported: AtomicBool::new(false),
 };
 
 /// Borrow the USBFS register block. Access is via the PAC's own shared-`&`
@@ -354,6 +360,22 @@ fn on_interrupt() {
     if is0 & INTSTS0_RESM != 0 {
         flags |= F_RESUME;
         wake_bus = true;
+        // Bus activity is back — disarm the SOF-based suspend-exit probe
+        // (TinyUSB `dcd_int_handler` RESM path, dcd_rusb2.c ~L953-955). This
+        // stack never requests class SOF, so SOFE is only ever the probe armed
+        // in the DVST/SUSPEND arm below; clear it here so we don't take a 1 kHz
+        // SOF interrupt forever.
+        // SAFETY: typed single-bit modify of INTENB0.SOFE (R01UM0007 §28).
+        usb.intenb0.modify(|_, w| w.sofe()._0());
+    }
+    // SOF received while the suspend-exit probe is armed. The RUSB2 leaves the
+    // suspended state on the first SOF ("USBD will exit suspended mode when SOF
+    // event is received", dcd_rusb2.c ~L959-966); one SOF is enough, so disarm
+    // the probe. SOFR is already W0C-acknowledged in the INTSTS0 write above, and
+    // embassy-usb's `Event` set has no SOF, so there is nothing to surface.
+    if is0 & INTSTS0_SOFR != 0 && usb.intenb0.read().sofe().is_1() {
+        // SAFETY: typed single-bit modify of INTENB0.SOFE (R01UM0007 §28).
+        usb.intenb0.modify(|_, w| w.sofe()._0());
     }
     if is0 & INTSTS0_DVST != 0 {
         match is0 & INTSTS0_DVSQ {
@@ -368,6 +390,20 @@ fn on_interrupt() {
             s if s >= DVSQ_SUSP0 => {
                 flags |= F_SUSPEND;
                 wake_bus = true;
+                // Arm the SOF-based suspend-exit probe (TinyUSB
+                // `dcd_int_handler` SUSPEND path, dcd_rusb2.c ~L984-987).
+                // ROOT CAUSE of the "ISR goes silent after the first
+                // suspend/resume" bug (bench 2026-07-17): while the RUSB2 is in
+                // the suspended device state its state-transition detection is
+                // gated, so without a SOF interrupt to bring it back out it
+                // never re-detects the host's bus reset — the reset DVST
+                // (DVSQ=Default) and SETUP CTRT are never generated and the
+                // NVIC line stays quiet. Enabling SOFE lets the first
+                // post-resume SOF (host frame marker, every 1 ms) fire an
+                // interrupt that exits the suspended state; the RESM/SOF arms
+                // above then disarm the probe.
+                // SAFETY: typed single-bit modify of INTENB0.SOFE (R01UM0007 §28).
+                usb.intenb0.modify(|_, w| w.sofe()._1());
             }
             _ => {}
         }
@@ -427,11 +463,21 @@ fn on_interrupt() {
 /// into the link by `time_driver::__INTERRUPTS[1]`, which references `IEL1`.
 #[no_mangle]
 extern "C" fn IEL1() {
+    // Clear the ICU IELSR IR request flag AT ENTRY, before servicing the
+    // peripheral. The USBFS combined event is high-rate/level-like (SOF every
+    // 1 ms, plus DVST/CTRT), so a new event routinely arrives WHILE the handler
+    // runs. Clearing IR at entry means that mid-ISR event re-latches IR after
+    // this clear → the NVIC re-pends → the handler runs again for it. Clearing
+    // IR at *exit* (the earlier attempt) instead wiped the just-latched request
+    // for an event that arrived during servicing, wedging delivery: observed on
+    // silicon as INTSTS0=0x3819 (DVST+CTRT+SETUP pending) with INTENB0=0xdd00
+    // (enabled) yet the ISR never re-firing. This is the RA/FSP ordering
+    // (R_BSP_IrqStatusClear at ISR entry). R01UM0007 ICU chapter.
+    // SAFETY: IELSR slot 1 is this driver's own (configured in hw_enable).
+    let icu = unsafe { &*ra4m1::ICU::PTR };
+    icu.ielsr[USB_IELSR_SLOT].modify(|_, w| w.ir()._0());
+    let _ = icu.ielsr[USB_IELSR_SLOT].read(); // read-back so the clear lands
     on_interrupt();
-    // Flush the IELSR IR clear (done in the async layer / not needed here for
-    // the level-driven USBFS event) is unnecessary: unlike GPT compare, the
-    // USBFS event line de-asserts once INTSTS0/BRDYSTS/BEMPSTS are cleared
-    // above, so there is no phantom re-entry to fence.
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +723,17 @@ impl BusTrait for Bus<'_> {
     async fn poll(&mut self) -> Event {
         poll_fn(|cx| {
             STATE.bus_waker.register(cx.waker());
+            // embassy-usb enables the bus ONLY in response to PowerDetected and
+            // never unconditionally (UsbDevice::run_until_suspend). The VBUS
+            // interrupt that would raise it is armed inside `enable()`, so
+            // gating on the ISR flag alone deadlocks first attach. Emit the
+            // initial PowerDetected exactly once, up front, so `enable()` runs
+            // and asserts the D+ pull-up; real later VBUS transitions still come
+            // through the ISR (F_VBUS_* below). The bootloader is USB-powered on
+            // this path, so VBUS is present whenever this code runs.
+            if !STATE.power_reported.swap(true, Ordering::AcqRel) {
+                return Poll::Ready(Event::PowerDetected);
+            }
             // Priority order: a reset supersedes everything queued before it.
             if STATE.flags.take(F_RESET) {
                 self.hw_bus_reset();
@@ -764,6 +821,13 @@ fn phy_init_fs() {
     /// controlled (not fixed).
     const DPUSR0R_FS_FIXPHY0: u32 = 1 << 4;
 
+    // These originally HardFaulted (imprecise BusFault) — but ONLY because the
+    // USB clock (UCLK) was unconfigured, leaving this register domain unclocked
+    // (fixed 2026-07-17 via clocks::init_usb_clock_48mhz). With UCLK up they are
+    // reachable, and DPUSR0R_FS.FIXPHY0=0 is REQUIRED: it puts the transceiver
+    // output under USB-module control, so DPRPU actually drives D+ onto the bus.
+    // Without it the host never detects the device (it goes powered→suspend,
+    // never reset — observed on silicon). R01UM0007 §28.
     // SAFETY: fixed-address 32-bit MMIO to two documented USBFS-region
     // registers the PAC omits; single owner, no aliasing, no ISR contention.
     unsafe {

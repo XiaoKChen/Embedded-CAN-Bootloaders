@@ -16,7 +16,8 @@
 //! (`main:vendor/arduino-renesas-bootloader/src/main.c`) — only the
 //! power-relevant writes of the proven DFU bring-up, in its order, with no
 //! USB stack. Registers: R01UM0007 (RA4M1 HW manual), USBFS chapter
-//! (SYSCFG, USBMC) and Low Power Modes chapter (MSTPCRB).
+//! (SYSCFG, USBMC), Low Power Modes chapter (MSTPCRB), and the Clock
+//! Generation Circuit chapter (USBCKCR, via `clocks::init_usb_clock_48mhz`).
 use ra4m1_embassy::clocks;
 
 /// SCKE read-back poll bound — C parity (`CAN_USB_RAIL_SCKE_TIMEOUT_LOOPS`).
@@ -46,6 +47,13 @@ pub fn power_up_transceiver_rail() {
     // context and no ISR touches it. Nothing else owns USBFS until M2's
     // usbfs.rs, which depends on this power-up having run anyway.
     let p = unsafe { ra4m1::Peripherals::steal() };
+
+    // 0. Point UCLK at HOCO 48 MHz BEFORE the module comes out of module-stop
+    //    and before SCKE gates the USB clock in — otherwise the USBFS
+    //    operational clock domain (PHY, INTSTS0, ...) has no clock and every
+    //    operational-register access faults. USBCKCR resets to PLL, which is
+    //    disabled on this HOCO-only clock plan (SPEC §5.2 / clocks.rs).
+    clocks::init_usb_clock_48mhz(&p.SYSTEM);
 
     // 1. Release USBFS module-stop (MSTPCRB bit 11, SPEC §5.3 step 1); the
     //    dummy read-back completes the write before the first USBFS access.

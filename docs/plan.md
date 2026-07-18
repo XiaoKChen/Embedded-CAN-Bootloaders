@@ -8,6 +8,10 @@ is binding.
 
 > **Milestone 3 (application HAL)** is planned separately — see `docs/plan-m3-hal.md` (summarized
 > under §6, "M3").
+>
+> **Milestone 2.5 (Renode emulation)** is planned separately — see `docs/plan-m2.5-renode.md`
+> (summarized under §6, "M2.5"): validating the firmware in the open-source Renode emulator to fill
+> the gap between the `boot-logic` host tests and the physical HIL bench.
 
 Target: Arduino UNO R4 Minima, Renesas **R7FA4M1AB** (Cortex-M4F, 48 MHz HOCO, 256 KB code
 flash, 8 KB data flash, 32 KB SRAM). Triple `thumbv7em-none-eabihf`. probe-rs chip `R7FA4M1AB`
@@ -302,6 +306,19 @@ region was sized for a USB stack.
 | **U2.3** | Combined parked mode: `usb_dfu` + `can_update` + `led` coexisting; flash mutex; one erase/program block per IRQ-off window so USB never starves past a block (R39); DFU-download metadata write-back with the zero/oversize guards (R38, SPEC §6.3). **[main.rs]** | `bootloader/src/tasks/usb_dfu.rs`, `bootloader/src/tasks/can_update.rs`, `bootloader/src/main.rs` | embassy-pro |
 
 M2 exit: Arduino-IDE-style DFU detach-upload works; size gate still green; M1 E2E re-run clean.
+
+### M2.5 — Firmware validation in the Renode emulator
+
+A verification track (not a firmware feature) sitting between M2 and M3: bring the release ELFs up in
+the **Renode** open-source emulator (MIT — no licensing concern) so boot logic, flash P/E, and the CAN
+update protocol run **deterministically, hardware-free, in CI**, filling the gap between the
+`boot-logic` host tests (below) and the manual HIL bench (above). A real RA4M1 platform already ships
+in Renode (`platforms/cpus/renesas-r7fa4m1a.repl`: core/NVIC/flash-memory); CAN0, USBFS, and the flash
+controller are unimplemented `Tag` stubs needing custom C# models, and USB-DFU is assessed
+out-of-scope. Phased M2.5.0 (boot the ELF) → M2.5.1 (`.repl` for the modelable peripherals) → M2.5.2
+(FACI flash model) → M2.5.3 (CAN bridge + `can_flash.py` E2E) → M2.5.4 (Robot suite + CI). Renode work
+routes to the new **`renode-engineer`** agent; firmware-side tweaks to embassy-pro/arm-cortex-expert.
+**Full design: `docs/plan-m2.5-renode.md`.**
 
 ### M3 — Application HAL (LGPL-free RA4M1 HAL)
 

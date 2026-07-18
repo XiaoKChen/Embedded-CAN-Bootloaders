@@ -33,6 +33,13 @@ embassy-time = { workspace = true, features = ["defmt"] }
 embedded-can = { workspace = true }
 embedded-storage = { workspace = true }
 
+# Pre-added by the dispatcher for U2.1/U2.2 (same shared-manifest rule; not in
+# the frozen workspace root, so plain version reqs per its header note):
+# embassy-usb-driver traits for drivers/usbfs.rs, embassy-usb device/class
+# plumbing for tasks/usb_dfu.rs. U2.3 owns any later edits (task arena size).
+embassy-usb-driver = { version = "0.2", features = ["defmt"] }
+embassy-usb = { version = "0.6", features = ["defmt"] }
+
 cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = { workspace = true }
 defmt = { workspace = true }

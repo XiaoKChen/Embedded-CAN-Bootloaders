@@ -20,6 +20,9 @@ target/
 *.uf2
 *.map
 
+# Exported artifact bundle produced by scripts/build-out.sh (reproducible).
+out/
+
 
 # -----------------------------------------------------------------------------
 # Secrets — never in the repo

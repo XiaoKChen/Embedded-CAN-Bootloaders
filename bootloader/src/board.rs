@@ -30,6 +30,11 @@ pub struct Board {
     /// only (see `drivers::can0::init_hw`'s SAFETY note).
     pub pfs: ra4m1::PFS,
     pub pmisc: ra4m1::PMISC,
+    /// USBFS controller singleton — handed to `tasks::usb_dfu`'s
+    /// `drivers::usbfs::Driver` in parked mode (U2.3). The rail it needs is
+    /// powered by `usb_rail::power_up_transceiver_rail` before the driver is
+    /// constructed; CAN-only mode drops it unused.
+    pub usbfs: ra4m1::USBFS,
 }
 
 /// Bring the board up: clocks to HOCO 48 MHz, LED on as the visible
@@ -54,5 +59,6 @@ pub fn init() -> Board {
         gpt163: p.GPT163,
         pfs: p.PFS,
         pmisc: p.PMISC,
+        usbfs: p.USBFS,
     }
 }

@@ -73,6 +73,7 @@ dependencies = [
  "defmt",
  "defmt-rtt",
  "embassy-executor",
+ "embassy-sync",
  "embassy-time",
  "embassy-usb",
  "embassy-usb-driver",

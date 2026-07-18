@@ -63,23 +63,26 @@
 //! retry/timeout budget. The only exits are the DETACH reset and an external
 //! reset.
 
-// U2.3 wires this module into main's parked mode; nothing spawns it yet.
-#![allow(dead_code)]
-
 use core::future::{poll_fn, Future};
 use core::pin::{pin, Pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
-use boot_logic::dfu_config;
-use boot_logic::memory_map::{BOOT_SIZE, CODE_FLASH_SIZE, FLASH_BLOCK_SIZE};
+use boot_logic::dfu_config::{self, DfuConfig};
+use boot_logic::image_meta::{ImageRead, MetadataRecord};
+use boot_logic::memory_map::{
+    APP_BASE, BOOT_SIZE, CODE_FLASH_SIZE, FLASH_BLOCK_SIZE, METADATA_ADDR,
+};
 use embassy_time::{Duration, Timer};
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::driver::Driver;
 use embassy_usb::types::{InterfaceNumber, StringIndex};
 use embassy_usb::{Builder, Config, Handler, UsbDevice, UsbVersion};
+use static_cell::StaticCell;
 
-use machine::DfuStorage;
+use crate::drivers::flash_lp::DATA_FLASH_BASE;
+use crate::flash_read::CodeFlashReader;
+use machine::{DfuAlt, DfuStorage, StorageError};
 
 // --- Identity & descriptors (SPEC §6.1, R36) -----------------------------
 
@@ -493,6 +496,159 @@ pub async fn run_device<'d, D: Driver<'d>>(usb: &mut UsbDevice<'d, D>, detach: &
     cortex_m::peripheral::SCB::sys_reset();
 }
 
+// --- U2.3 concrete task + flash storage ------------------------------------
+
+/// Config-descriptor scratch (RAM, not flash — no size-gate cost). The DFU
+/// configuration + one interface + two alt settings + the functional
+/// descriptor total ~40 B; sized with margin.
+const CONFIG_DESC_LEN: usize = 128;
+/// BOS-descriptor scratch: no device capabilities are declared, so minimal.
+const BOS_DESC_LEN: usize = 32;
+
+/// [`DfuStorage`] over the shared [`crate::FlashMutex`] + memory-mapped code
+/// flash — the U2.3 seam the [`machine`] was written against.
+///
+/// Guard-span discipline (docs/plan.md §4): every method acquires with
+/// `try_lock`, does at most **one** block op (R39), and releases — never held
+/// across an await (these are synchronous `fn`s called from the embassy-usb
+/// control hooks). On one cooperative executor `try_lock` is total; a failure
+/// would mean a guard was held across an await, so it is logged and fails
+/// closed (the machine maps it to a DFU status code).
+pub struct FlashDfuStorage {
+    flash: &'static crate::FlashMutex,
+}
+
+impl FlashDfuStorage {
+    /// Storage over the shared flash driver.
+    pub fn new(flash: &'static crate::FlashMutex) -> Self {
+        Self { flash }
+    }
+}
+
+impl DfuStorage for FlashDfuStorage {
+    fn erase_block(&mut self, block: u32) -> Result<(), StorageError> {
+        // `block` < APP_BLOCK_COUNT (the machine guarantees it); offset from
+        // APP_BASE. R39: exactly one 2 KB block erase per call.
+        let addr = APP_BASE + block * FLASH_BLOCK_SIZE;
+        let Ok(mut flash) = self.flash.try_lock() else {
+            defmt::error!("usb_dfu: flash busy on erase (unreachable on one executor)");
+            return Err(StorageError);
+        };
+        flash.erase_block(addr).map_err(|err| {
+            defmt::error!("usb_dfu: erase {=u32:#x} failed ({})", addr, err);
+            StorageError
+        })
+    }
+
+    fn program_block(&mut self, block: u32, data: &[u8]) -> Result<(), StorageError> {
+        // R39: one block program per call. `data` is in RAM (the machine's
+        // window) and a multiple of the 8-byte write unit, satisfying the
+        // flash driver's source-in-RAM + write-unit requirements.
+        let addr = APP_BASE + block * FLASH_BLOCK_SIZE;
+        let Ok(mut flash) = self.flash.try_lock() else {
+            defmt::error!("usb_dfu: flash busy on program (unreachable on one executor)");
+            return Err(StorageError);
+        };
+        flash.program_verified(addr, data).map_err(|err| {
+            defmt::error!("usb_dfu: program block {=u32} failed ({})", block, err);
+            StorageError
+        })
+    }
+
+    fn read(&mut self, alt: DfuAlt, offset: u32, buf: &mut [u8]) -> Result<usize, StorageError> {
+        let n = buf.len();
+        match alt {
+            // Code flash is memory-mapped and always readable — no mutex, no
+            // P/E. `offset` is bytes from APP_BASE (the @CodeFlash region).
+            DfuAlt::CodeFlash => CodeFlashReader
+                .read(APP_BASE + offset, buf)
+                .map(|()| n)
+                .map_err(|_| StorageError),
+            // Data flash needs the driver (the R34 gate). If unproven, the
+            // read is refused → the upload short-frames out (fail-safe).
+            DfuAlt::DataFlash => {
+                let Ok(flash) = self.flash.try_lock() else {
+                    defmt::error!("usb_dfu: flash busy on data-flash read (unreachable)");
+                    return Err(StorageError);
+                };
+                flash
+                    .read_data_flash(DATA_FLASH_BASE + offset, buf)
+                    .map(|()| n)
+                    .map_err(|_| StorageError)
+            }
+        }
+    }
+
+    fn write_metadata(&mut self, image_size: u32, image_crc32: u32) -> Result<(), StorageError> {
+        // R38 commit: erase the metadata block THEN program the fresh record,
+        // so stale metadata describing a previous image never survives a new
+        // download (the trait contract). Two block ops back-to-back, both
+        // synchronous, both released before returning.
+        let record = MetadataRecord::for_image(image_size, image_crc32).to_bytes();
+        let Ok(mut flash) = self.flash.try_lock() else {
+            defmt::error!("usb_dfu: flash busy on metadata write (unreachable)");
+            return Err(StorageError);
+        };
+        flash.erase_block(METADATA_ADDR).map_err(|err| {
+            defmt::error!("usb_dfu: metadata erase failed ({})", err);
+            StorageError
+        })?;
+        flash
+            .program_verified(METADATA_ADDR, &record)
+            .map_err(|err| {
+                defmt::error!("usb_dfu: metadata write failed ({})", err);
+                StorageError
+            })
+    }
+}
+
+/// The parked-mode USB DFU task (U2.3). `#[task]` fns can't be generic, so
+/// this pins U2.1's concrete `Driver` and the [`FlashDfuStorage`] type around
+/// the module's generic pieces (the integration seam in the module docs).
+///
+/// `driver` requires `usb_rail::power_up_transceiver_rail()` to have already
+/// run — `main::run_update_mode` does it pre-executor for both update tasks.
+/// `config` is the shared [`DfuConfig`]; the USB manufacturer/product strings
+/// come from it (R37), never re-read from data flash.
+#[embassy_executor::task]
+pub async fn run(
+    driver: crate::drivers::usbfs::Driver<'static>,
+    flash: &'static crate::FlashMutex,
+    config: &'static DfuConfig,
+) {
+    // Function-local `'static`s: one instance (pool_size 1), so each is
+    // initialized exactly once (rules/embassy.md — StaticCell, never
+    // `static mut`).
+    static DETACH: DetachSignal = DetachSignal::new();
+    static CONFIG_DESC: StaticCell<[u8; CONFIG_DESC_LEN]> = StaticCell::new();
+    static BOS_DESC: StaticCell<[u8; BOS_DESC_LEN]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; CONTROL_BUF_LEN]> = StaticCell::new();
+    static HANDLER: StaticCell<DfuHandler<'static, FlashDfuStorage>> = StaticCell::new();
+
+    let handler = HANDLER.init(DfuHandler::new(FlashDfuStorage::new(flash), &DETACH));
+
+    let mut builder = Builder::new(
+        driver,
+        device_config(
+            config_name(&config.manufacturer, config.manufacturer_len),
+            config_name(&config.product, config.product_len),
+            None, // serial (chip-ID hex) not wired yet — omits the descriptor
+        ),
+        CONFIG_DESC.init([0u8; CONFIG_DESC_LEN]),
+        BOS_DESC.init([0u8; BOS_DESC_LEN]),
+        &mut [], // no MS OS descriptors
+        CONTROL_BUF.init([0u8; CONTROL_BUF_LEN]),
+    );
+    register(&mut builder, handler);
+    let mut usb = builder.build();
+    defmt::info!(
+        "usb_dfu: enumerating (VID {=u16:#x} PID {=u16:#x})",
+        USB_VID,
+        USB_PID
+    );
+    run_device(&mut usb, &DETACH).await
+}
+
 // --- Pure state machine ----------------------------------------------------
 // Keep `machine` + `tests` last and contiguous: they are extracted verbatim
 // into a host crate for verification (see the tests module header).
@@ -675,7 +831,10 @@ pub mod machine {
             }
         }
 
-        /// Current state (GETSTATE, tests).
+        /// Current state as the typed enum. Used by the host tests only —
+        /// the handler answers GETSTATE via [`Self::get_state`] (the `u8`
+        /// wire form) — so it is dead in the thumb build.
+        #[allow(dead_code)]
         pub fn state(&self) -> DfuState {
             self.state
         }

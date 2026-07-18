@@ -31,15 +31,19 @@
 //!
 //! # Project interrupt priority table (docs/plan.md §4)
 //!
-//! This is the project's **only** interrupt; any future addition must be
-//! recorded here (rules/embedded.md: one central priority scheme).
+//! This is the project's single central priority scheme; any future addition
+//! must be recorded here (rules/embedded.md). Two interrupts exist: this
+//! driver's alarm (IEL0) and — added by U2.3 wiring USBFS into parked mode —
+//! the USBFS controller (IEL1, owned by `drivers::usbfs`).
 //!
 //! | NVIC line | ICU slot | Event (R01UM0007 event table) | Priority | Owner |
 //! |-----------|----------|-------------------------------|----------|-------|
 //! | IEL0 (#0) | IELSR0   | GPT0 CCMPA = 0x057 (GTCCRA compare match) | 0xF0 (lowest: level 15 of 15, 4 priority bits) | this driver |
+//! | IEL1 (#1) | IELSR1   | USBFS INT = 0x033 (combined USB interrupt) | 0xC0 (level 12 of 15) | `drivers::usbfs` |
 //!
-//! Lowest priority is deliberate: alarm deadlines are millisecond-class, so
-//! any future latency-critical line slots in above it without inversion.
+//! IEL0's lowest priority is deliberate: alarm deadlines are millisecond-
+//! class, so USBFS (0xC0) preempts timer housekeeping with no inversion, and
+//! any future latency-critical line still slots in above both.
 //!
 //! # Lifecycle contract
 //!

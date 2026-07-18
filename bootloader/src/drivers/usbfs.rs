@@ -84,10 +84,6 @@
 //! section cortex-m provides; consistent with the project's
 //! `critical-section-single-core` impl since both mask via PRIMASK).
 
-// U2.3 wires this driver into main's parked mode; nothing constructs the
-// `Driver` yet. Drop the allow there. (Same convention as U1.1/U1.2/U2.2.)
-#![allow(dead_code)]
-
 use core::cell::Cell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -149,6 +145,7 @@ const DVSQ_ADDR: u16 = 0x0020; // addressed (hardware set the address)
 const DVSQ_SUSP0: u16 = 0x0040; // suspend variants 0..3
 
 // INTSTS0.CTSQ control-transfer stage
+#[allow(dead_code)] // documents the CTSQ field; the ISR keys off CTRT+VALID, not this value
 const CTSQ_SETUP_RDATA: u16 = 0x0001; // read-data stage began (SETUP seen)
 
 // CFIFOCTR / D0FIFOCTR
@@ -174,9 +171,12 @@ const CTR_ACLRM: u16 = 0x0200; // auto-buffer clear
 const CTR_BSTS: u16 = 0x8000; // buffer status (read)
 
 // PIPECFG
+#[allow(dead_code)] // bulk pipes are unimplemented-for-M2; kept for the register map
 const PIPECFG_TYPE_BULK: u16 = 0x4000;
 const PIPECFG_TYPE_INT: u16 = 0x8000;
+#[allow(dead_code)] // double-buffering unused in M2's single-packet DFU path
 const PIPECFG_DBLB: u16 = 0x0200; // double buffer
+#[allow(dead_code)] // short-packet NAK unused (DFU EP0 path handles short frames itself)
 const PIPECFG_SHTNAK: u16 = 0x0080; // NAK after short packet
 const PIPECFG_DIR_IN: u16 = 0x0010; // transfer direction: transmit (IN)
 

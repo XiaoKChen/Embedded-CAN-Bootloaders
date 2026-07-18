@@ -2,15 +2,22 @@
 //! against the flash-LP and CAN0 drivers (U1.4, docs/plan.md §4/§6).
 //!
 //! Entry staging (order is load-bearing, SPEC §2.3):
-//! 1. transceiver rail power-up (R33) — BEFORE any CAN register access;
-//! 2. data-flash read gate (R34) → per-device ID/name config (R17/R40);
-//! 3. CAN0 init at 250 kbit/s, RX-filtered to the effective cmd ID. On
+//! 1. the transceiver rail (R33) and the per-device config (R34/R40) are
+//!    brought up ONCE by `main::run_update_mode` — pre-executor, shared with
+//!    `usb_dfu` (U2.3) — and handed in: this task gets a powered rail and a
+//!    loaded [`DfuConfig`], and never re-reads the data-flash block;
+//! 2. CAN0 init at 250 kbit/s, RX-filtered to the effective cmd ID. On
 //!    failure: CAN-only mode resets back into the boot decision, parked
-//!    mode degrades to LED-only (R35 — no failure path dead-loops);
-//! 4. serve forever. The bootloader is a **server**: it parks awaiting host
+//!    mode degrades to (USB + LED)-only (R35 — no failure path dead-loops);
+//! 3. serve forever. The bootloader is a **server**: it parks awaiting host
 //!    commands by design — session awaits carry NO timeout; the host owns
 //!    every retry/timeout budget (docs/plan.md §4, SPEC §4.8). The only
 //!    exits are the GO reset (R13) and an external reset.
+//!
+//! Flash is the shared [`crate::FlashMutex`] (U2.3): every erase/program
+//! acquires with `try_lock`, does one synchronous block op, and releases —
+//! the guard is never held across an await, so `usb_dfu` and `led` stay live
+//! between blocks (R39) and `try_lock` always succeeds on this one executor.
 //!
 //! Concurrency shape (docs/plan.md §4): RX is ticker-paced polling that
 //! drains the whole 4-deep hardware FIFO each tick — loss-proof at
@@ -29,9 +36,8 @@ use embassy_time::{Duration, Ticker, Timer};
 use embedded_can::StandardId;
 
 use crate::drivers::can0::{Bitrate, Can0, CanError, Frame};
-use crate::drivers::flash_lp::FlashLp;
-use crate::drivers::usb_rail;
 use crate::flash_read::CodeFlashReader;
+use crate::FlashMutex;
 
 /// RX poll cadence. Sized for 250 kbit/s + the 4-deep hardware FIFO: a
 /// DLC-8 frame occupies ≥ ~444 µs of wire time, so draining the whole FIFO
@@ -78,7 +84,9 @@ enum SessionExit {
 /// sits in SRAM — satisfying the flash driver's source-in-RAM requirement.
 struct Session {
     engine: Engine,
-    flash: FlashLp,
+    /// The shared flash driver (U2.3): locked per block op, never across an
+    /// await (see the module docs / `crate::FlashMutex`).
+    flash: &'static FlashMutex,
     /// Effective boot→host reply ID (replies + INFO frames), ≤ 0x7FF (R17).
     reply_id: StandardId,
     /// INFO product name (R25): non-empty only when the data-flash gate
@@ -91,29 +99,13 @@ struct Session {
 }
 
 #[embassy_executor::task]
-pub async fn run(mode: EntryMode) {
+pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static DfuConfig) {
     defmt::info!("can_update: entry ({})", mode);
 
-    // Stage 1 (R33): power the transceiver rail BEFORE any CAN register
-    // access — on custom boards the CAN transceiver hangs off VCC_USB and
-    // an unpowered rail makes the controller deaf and mute (SPEC §9.1.1).
-    // Blocking ~5 ms one-shot bring-up delay (documented exception).
-    usb_rail::power_up_transceiver_rail();
-    defmt::info!("can_update: transceiver rail powered");
+    // Rail (R33) and config (R34) were brought up by `main::run_update_mode`
+    // and handed in (U2.3) — shared with `usb_dfu`, never re-read here.
 
-    let mut flash =
-        FlashLp::take().expect("FlashLp::take: driver already taken — can_update spawned twice?");
-
-    // Stage 2 (R34): data-flash gate, then the per-device config.
-    let config = load_config(&mut flash);
-    defmt::info!(
-        "can_update: config cmd_id={=u16:#x} reply_id={=u16:#x} name_len={=u8}",
-        config.cmd_id,
-        config.reply_id,
-        config.product_len
-    );
-
-    // Stage 3: CAN0 at the protocol bitrate, exact-match RX filter (R16/R29).
+    // CAN0 at the protocol bitrate, exact-match RX filter (R16/R29).
     // dfu_config guarantees IDs ≤ 0x7FF, so `new` cannot fail here.
     let cmd_id = StandardId::new(config.cmd_id).unwrap_or(StandardId::ZERO);
     let reply_id = StandardId::new(config.reply_id).unwrap_or(StandardId::ZERO);
@@ -211,29 +203,6 @@ pub async fn run(mode: EntryMode) {
     cortex_m::peripheral::SCB::sys_reset();
 }
 
-/// Data-flash gate + config-block load (R34/R40): the ONLY proof of
-/// data-flash readability is the gate; unproven/unreadable/invalid all
-/// collapse to the compiled defaults (IDs `0x79E`/`0x79F`, empty name) and
-/// the board keeps serving CAN — never a locked core (SPEC §2.4, §9.1.2).
-fn load_config(flash: &mut FlashLp) -> DfuConfig {
-    if !flash.data_flash_enable() {
-        defmt::warn!("can_update: data flash unproven (R34) — compiled defaults");
-        return DfuConfig::default();
-    }
-    defmt::info!("can_update: data-flash gate passed");
-    let mut block = [0u8; dfu_config::V2_BLOCK_LEN];
-    match flash.read_data_flash(dfu_config::DFU_CONFIG_ADDR, &mut block) {
-        Ok(()) => dfu_config::effective_config(Some(&block)),
-        Err(err) => {
-            defmt::warn!(
-                "can_update: config read failed ({}) — compiled defaults",
-                err
-            );
-            DfuConfig::default()
-        }
-    }
-}
-
 impl Session {
     /// Process one engine [`Output`]: transmit the reply (if any), perform
     /// the effect (if any), and feed completions back until the chain ends.
@@ -292,7 +261,17 @@ impl Session {
         } else {
             APP_BASE + (step - 1) * FLASH_BLOCK_SIZE
         };
-        match self.flash.erase_block(addr) {
+        // Acquire → one block erase → release. `try_lock` is total here:
+        // guards are never held across an await, so no other task holds it.
+        let result = {
+            let Ok(mut flash) = self.flash.try_lock() else {
+                self.erase_next = None;
+                defmt::error!("can_update: flash busy during erase (unreachable on one executor)");
+                return Some(self.engine.handle(Event::EraseDone(false)));
+            };
+            flash.erase_block(addr)
+        };
+        match result {
             Ok(()) => {
                 let next = step + 1;
                 if next == ERASE_TOTAL_BLOCKS {
@@ -318,9 +297,13 @@ impl Session {
     /// mid-program (mid-window frames are unACKed; SPEC §9.1.4).
     fn program_window(&mut self, index: u32) -> bool {
         let addr = APP_BASE + index * FLASH_BLOCK_SIZE;
+        let Ok(mut flash) = self.flash.try_lock() else {
+            defmt::error!("can_update: flash busy during program (unreachable on one executor)");
+            return false;
+        };
         // engine.window() lives in this task's static future = SRAM, per
         // the driver's source-in-RAM requirement.
-        match self.flash.program_verified(addr, self.engine.window()) {
+        match flash.program_verified(addr, self.engine.window()) {
             Ok(()) => true,
             Err(err) => {
                 defmt::error!("can_update: program block {=u32} failed ({})", index, err);
@@ -333,7 +316,11 @@ impl Session {
     /// metadata record at `METADATA_ADDR` (erased earlier by EraseAll).
     fn write_metadata(&mut self, image_size: u32, image_crc: u32) -> bool {
         let record = MetadataRecord::for_image(image_size, image_crc).to_bytes();
-        match self.flash.program_verified(METADATA_ADDR, &record) {
+        let Ok(mut flash) = self.flash.try_lock() else {
+            defmt::error!("can_update: flash busy during metadata write (unreachable)");
+            return false;
+        };
+        match flash.program_verified(METADATA_ADDR, &record) {
             Ok(()) => true,
             Err(err) => {
                 defmt::error!("can_update: metadata write failed ({})", err);

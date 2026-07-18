@@ -40,6 +40,13 @@ embedded-storage = { workspace = true }
 embassy-usb-driver = { version = "0.2", features = ["defmt"] }
 embassy-usb = { version = "0.6", features = ["defmt"] }
 
+# U2.3: the one shared flash mutex (docs/plan.md §4). embassy-sync 0.8 is
+# already pinned in the frozen workspace root, so inherit that pin rather than
+# duplicate a version here (the manifest's own rule: `workspace = true` for
+# anything centralized). `NoopRawMutex` only — a single thread-mode executor,
+# no ISR touches the flash driver.
+embassy-sync = { workspace = true }
+
 cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = { workspace = true }
 defmt = { workspace = true }

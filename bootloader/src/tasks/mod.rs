@@ -1,7 +1,8 @@
 //! Embassy tasks — one module per independent activity (rules/embassy.md).
 //!
-//! `usb_dfu.rs` is Milestone 2 (USB DFU) and is added by U2.2 — not
-//! declared here yet (docs/plan.md §6).
+//! `usb_dfu` is the U2.2 DFU class + task seam; U2.3 (combined parked mode)
+//! spawns it alongside `can_update` and `led` (docs/plan.md §6).
 
 pub mod can_update;
 pub mod led;
+pub mod usb_dfu;

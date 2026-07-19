@@ -10,7 +10,20 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/boot-logic", "crates/ra4m1-embassy", "bootloader", "demo-app"]
+# `crates/ra4m1-hal` added at M3.0: a deliberate new-milestone member add. The
+# "FROZEN after U0.1" note above governs the shared *dependency pins* (so the
+# bootloader's graph stays stable) — it does not forbid adding a workspace
+# member for a new milestone. The HAL's own trait deps (embedded-hal etc.) are
+# declared as member-local plain version requirements in its Cargo.toml, per
+# the freeze policy's own escape hatch, so no `[workspace.dependencies]` entry
+# is added here and the bootloader/demo-app graphs are untouched.
+members = [
+    "crates/boot-logic",
+    "crates/ra4m1-embassy",
+    "crates/ra4m1-hal",
+    "bootloader",
+    "demo-app",
+]
 
 [workspace.package]
 edition = "2021"

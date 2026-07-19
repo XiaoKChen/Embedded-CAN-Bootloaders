@@ -1,0 +1,63 @@
+# =============================================================================
+# Cargo.toml — ra4m1-hal
+# =============================================================================
+# The LGPL-free application HAL for the R7FA4M1AB (docs/plan-m3-hal.md §1.1,
+# §4.1). Layered on `ra4m1-embassy` (the shared chip base: clocks, PFS, the
+# GPT320 embassy-time driver, VBTBKR, the device.x interrupt-vector mechanism).
+#
+# The **bootloader never depends on this crate** (plan §1.2): its 32 KB size
+# gate stays safe by construction — HAL bulk cannot enter the bootloader graph.
+# Exercised by `examples/` (per-peripheral smoke tests), not the shipped
+# demo-app.
+#
+# Dependency policy: workspace-pinned crates are inherited (`{ workspace = true }`)
+# so the graph stays consistent with the rest of the repo. The `embedded-*`
+# trait crates are new to the workspace and, per the root manifest's own freeze
+# policy ("a plain version requirement directly in the member manifest" for
+# anything not centralized), are declared here as member-local pins — no
+# `[workspace.dependencies]` edit, so the bootloader/demo-app graphs are
+# untouched. Versions verified against crates.io at M3.0 (2026-07-19):
+#   embedded-hal 1.0.0, embedded-hal-async 1.0.0, embedded-io 0.7.1,
+#   embedded-io-async 0.7.0, embedded-hal-bus 0.3.0.
+# NOTE (delta vs plan §2/Q9): the plan pinned embedded-io/-async 0.6; crates.io
+# has moved to 0.7 (semver-incompatible). Pinned 0.7 here as the current major
+# for a fresh crate with no back-compat constraint (the U0.1 "use verified
+# current versions" discipline). Only consumed by the M3.3 SCI stub today, so a
+# revert to 0.6 is a one-line change if review prefers the plan's pin.
+# =============================================================================
+
+[package]
+name = "ra4m1-hal"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "LGPL-free application HAL for the Renesas R7FA4M1AB (Arduino UNO R4 Minima), layered on ra4m1-embassy"
+
+[dependencies]
+# --- Chip base + PAC ---------------------------------------------------------
+ra4m1-embassy = { path = "../ra4m1-embassy" }
+ra4m1 = { workspace = true }
+# NVIC access for the interrupt-binding surface (set_priority / mask / unmask).
+# No extra features: the single `critical-section-single-core` impl is provided
+# by the base crate / the app binary; feature unification keeps exactly one.
+cortex-m = { workspace = true }
+defmt = { workspace = true }
+
+# --- HAL-agnostic driver traits (member-local; see policy note above) --------
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+embedded-io = "0.7"
+embedded-io-async = "0.7"
+embedded-hal-bus = "0.3"
+
+# --- Example-only (per-peripheral smoke tests under examples/) ----------------
+# `ra4m1` and `embedded-hal` are available to examples via [dependencies] above;
+# these add only what the example *binaries* need (entry point, executor, RTT).
+[dev-dependencies]
+cortex-m-rt = { workspace = true }
+embassy-executor = { workspace = true, features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt"] }
+embassy-sync = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+static_cell = { workspace = true }

@@ -18,7 +18,7 @@ built on).
 | **M0** — scaffolding & risk retirement | **Done** | [`6be6739`](../../commit/6be6739) |
 | **M1** — CAN bootloader at parity (minus USB) | **Done** | [`2b0976a`](../../commit/2b0976a) |
 | **M2** — USB DFU | **Done** | [`f9430fc`](../../commit/f9430fc) |
-| **M2.5** — Renode emulation validation | **Done** — 12 cases, 4 suites green | pending commit |
+| **M2.5** — Renode emulation validation | **Done** — 12 cases, 4 suites green | [`b994c7e`](../../commit/b994c7e) |
 | **M3** — LGPL-free application HAL | **Done** | [`57fdd8a`](../../commit/57fdd8a) |
 
 **M0** stood up the Cargo workspace, retired the hardware-bring-up risks as spikes (clocks, OFS

@@ -1,0 +1,103 @@
+# Renode emulation smoke (M2.5 minimal)
+
+Boots the **real** `ra4m1-hal` example ELFs in the [Renode](https://github.com/renode/renode)
+emulator (MIT-licensed, a test-time tool only — never linked into firmware) and proves the async
+executor is genuinely running off `embassy-time`, headless and deterministically, without hardware.
+
+This is the **minimal smoke** rung of `docs/plan-m2.5-renode.md`: GPT time base + GPIO + output
+observation, enough that `blinky_gpio` and `irq_smoke` pass. SPI/ADC/DAC/SCI/IIC/CAN/FACI are **not**
+modelled here (later, incremental — see "Next increment").
+
+## Files
+
+| File | Role |
+|------|------|
+| `Ra4m1Gpt320.cs` | Custom GPT320 channel-0 model — the one missing piece. Closes three gaps in Renode's stock `RenesasRA_GPT` so the HAL's GPT compare-match time driver ticks. Compiled at runtime via `include` (no Renode rebuild). |
+| `ra4m1-uno-r4.repl` | Platform: `using` the stock `renesas-r7fa4m1a.repl`, cancels the stock `gpt`, binds `Ra4m1Gpt320` at `0x40078000` (CCMPA → ICU event `0x57`), adds the D13/P111 LED. |
+| `smoke.robot` | The pass/fail suite (run via `renode-test`). Two cases, each mirroring a bench behaviour. |
+| `smoke.resc` | Generic loader for manual/interactive runs. |
+
+## Why the custom GPT model exists
+
+Renode v1.16.1's stock `Timers.RenesasRA_GPT` cannot drive this firmware's time base. Three gaps
+(verified against the stock model source and `crates/ra4m1-embassy/src/time_driver.rs`):
+
+1. **`GTCR.CST` is inert** — the stock model only starts a channel on a `GTSTR` write; the HAL starts
+   the counter with `GTCR.CST` (`time_driver.rs` `init`).
+2. **`TPCS` is ignored** — cosmetic under virtual time.
+3. **No `GTCCRA` compare-match** — the HAL alarm *is* the GTCCRA compare (`GTCCRA == GTCNT` →
+   GPT0 CCMPA event `0x57` → ICU `IELSR0` → NVIC `IEL0`). The stock model never raises it, so the
+   alarm never fires and the executor idles forever after the first `Timer`.
+
+`Ra4m1Gpt320.cs` models GPT320 channel 0 as a **free-running 32-bit up-counter** (wraps
+`0 → 0xFFFFFFFF → 0` without reset — the HAL's software 64-bit wrap-extension needs GTCNT to keep
+running past every compare) plus a `GTCCRA` compare that **pulses** the CCMPA output (the ICU treats a
+peripheral event as level-sensitive, so a rising edge latches/pends and the falling edge lets the
+driver's `IELSR.IR` write-zero-to-clear stick). Built on Renode's `ComparingTimer`.
+
+## Run it (CI-style, automated pass/fail)
+
+```sh
+# From the repo root, in a checkout whose path has NO spaces or parentheses
+# (Renode's monitor cannot tokenize those). CI checkout paths are clean.
+cargo build --release -p ra4m1-hal --example blinky_gpio --example irq_smoke
+<renode-install>/renode-test renode/smoke.robot
+```
+
+Expected:
+
+```
++++++ Finished test 'smoke.Blinky Blinks The LED At 1 Hz'   ... status OK
++++++ Finished test 'smoke.Irq Smoke Heartbeat Advances'    ... status OK
+Tests finished successfully :)
+```
+
+Both cases **fail** on the stock GPT model (negative control confirmed: LED stuck HIGH; RTT WrOff
+frozen at `7 → 7`) and **pass** with `Ra4m1Gpt320`, so the assertions are meaningful.
+
+## Run it (manual / interactive)
+
+```sh
+cd <repo-root>
+<renode-install>/renode --console --disable-xwt --plain \
+  -e '$elf=@target/thumbv7em-none-eabihf/release/examples/blinky_gpio' \
+  -e 'include @renode/smoke.resc' \
+  -e 'start'
+# blinky:   sysbus.port1.led_d13 State        (toggles ~1 Hz virtual)
+# irq_smoke: sysbus ReadDoubleWord 0x2000002C (defmt-rtt WrOff, grows each heartbeat)
+```
+
+## What each test proves (and mirrors)
+
+- **Blinky Blinks The LED At 1 Hz** — clocks → GPT time base → executor → task → GPIO. The D13/P111
+  LED toggles at 1 Hz virtual (`Assert Led Is Blinking`). Mirrors bench **S2 "1 Hz blink"**.
+- **Irq Smoke Heartbeat Advances** — a software-pended `IEL2` wakes a task, then the 1 s
+  `embassy-time` heartbeat keeps logging: `defmt-rtt` WrOff strictly grows. Mirrors bench **S2
+  "uptime heartbeat"** / spike **S-A** "time still ticking".
+
+## Honesty boundaries — what this does NOT catch (stays the HIL bench's job)
+
+- **Timing is virtual, not wall-clock.** The 3 MHz count frequency matches the HAL tick rate so blink
+  is 1 Hz *in virtual seconds*, but Renode is functional, not cycle-accurate. No HOCO/clock tolerance,
+  no `TPCS` divider, no timing margins.
+- **No flash program/erase timing or the P/E fetch-stall hazard** (the reason `flash_lp.rs` is
+  RAM-resident). A RAM-residency regression that would brick silicon passes silently in emulation.
+- **No USB PHY/DFU, no CAN bit-timing, no analog.**
+- **Chip-fact BENCH-VERIFY items** (option bytes/OFS, oscillator behaviour) are not exercised here.
+
+A green run here complements — never replaces — the bench exit criteria.
+
+## Next increment (highest value if scope expands)
+
+The **FACI-LP flash program/erase model** (`docs/plan-m2.5-renode.md` U2.5.2, row 8): it unlocks the
+S3 erase→program→read-back loop and the boot-decision/`boot5` integration paths that host tests
+structurally cannot see — the biggest coverage gain per unit of C#. CAN0 (E2E `can_flash.py`) is the
+rung after that; USB DFU stays out of scope (Renode USB is export-only, no RA USBFS device model).
+
+## CI runnability
+
+This is CI-ready today: `smoke.robot` uses `${CURDIR}`-relative absolute paths (clean in a CI
+checkout), the GPT model compiles at runtime (no Renode rebuild), and the run is headless, bounded,
+and deterministic (virtual time via `RunFor` / `Assert Led Is Blinking`). Wire it as a job gated
+behind `firmware-build` using `antmicro/renode-test-action` or the pinned `antmicro/renode:1.16.1`
+image (`docs/plan-m2.5-renode.md` §4). Renode version pinned: **v1.16.1**.

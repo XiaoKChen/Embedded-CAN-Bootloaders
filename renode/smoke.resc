@@ -1,0 +1,33 @@
+:name: RA4M1 HAL minimal smoke (GPT time base + GPIO)
+:description: Boots a real ra4m1-hal example ELF on the UNO R4 Minima platform
+:             with the custom GPT320 compare-match model, so embassy-time ticks.
+:
+: Run headless from the REPO ROOT (paths are repo-relative; Renode's monitor
+: cannot tokenize the spaces/parens some checkout paths contain, so keep the
+: working directory at the repo root and use relative @paths):
+:
+:   cd <repo-root>
+:   <renode-install>/renode --console --disable-xwt --plain \
+:     -e '$elf=@target/thumbv7em-none-eabihf/release/examples/blinky_gpio' \
+:     -e 'include @renode/smoke.resc' \
+:     -e 'start'
+:
+: Swap $elf to .../examples/irq_smoke for the interrupt+heartbeat example.
+: The automated pass/fail lives in renode/smoke.robot (run via renode-test).
+
+$elf ?= @target/thumbv7em-none-eabihf/release/examples/blinky_gpio
+
+# Compile the custom GPT320 model (adds Timers.Ra4m1Gpt320) BEFORE the platform
+# description references it.
+include @renode/Ra4m1Gpt320.cs
+
+mach create "uno-r4"
+machine LoadPlatformDescription @renode/ra4m1-uno-r4.repl
+sysbus LoadELF $elf
+
+# Observation, per example (see renode/README.md and smoke.robot):
+#   blinky_gpio: LED on P111 toggles at 1 Hz virtual -> `sysbus.port1.led_d13 State`
+#   irq_smoke:   defmt-rtt heartbeat -> WrOff grows: `sysbus ReadDoubleWord 0x2000002C`
+#
+# This script only builds the machine; issue `start` (or `emulation RunFor`) after
+# including it so the caller controls a deterministic, bounded run.

@@ -1,0 +1,43 @@
+// ra4m1-uno-r4.repl — UNO R4 Minima (Renesas R7FA4M1AB) for HAL validation.
+//
+// Extends Renode v1.16.1's stock `platforms/cpus/renesas-r7fa4m1a.repl`, which
+// already models everything the HAL smoke examples need EXCEPT a working GPT
+// time base: CortexM4F + NVIC, the ICU (0x40006000, GPT0 CCMPA -> event 0x57),
+// the PORT0..9 GPIO blocks with their PFS windows, SCI, IIC, code/data flash
+// and SRAM, and a PythonPeripheral at 0x4001E03C that returns OSCSF=0xFF so the
+// clock-ready spin (clock.rs) falls through, plus MSTP as an absorbing Tag.
+//
+// This file changes two things on top of the stock platform:
+//   1. Replaces the stock `gpt` (Timers.RenesasRA_GPT) with `Ra4m1Gpt320` — a
+//      minimal GPT320 channel-0 model that honors GTCR.CST and implements the
+//      GTCCRA compare-match the HAL embassy-time driver arms its alarm on.  See
+//      Ra4m1Gpt320.cs for the three stock-model gaps this closes.  The custom
+//      type is compiled at runtime with `include @renode/Ra4m1Gpt320.cs` BEFORE
+//      this description is loaded (see the .resc / .robot).
+//   2. Adds an LED on P111 (D13, the UNO R4 "L" led) so blinky's toggles are
+//      observable via the LED tester.
+//
+// Timing is virtual, not wall-clock (Renode is functional, not cycle-accurate):
+// the 3 MHz count frequency matches the HAL tick rate so blink is 1 Hz in
+// virtual seconds, but no clock tolerance / P&E stall / timing margin is
+// modelled (docs/plan-m2.5-renode.md §2).
+
+using "platforms/cpus/renesas-r7fa4m1a.repl"
+
+// Replace the stock GPT with the compare-match-capable model.  Renode's repl
+// format forbids changing a peripheral's type in-place, so cancel the stock
+// `gpt` registration (@none frees 0x40078000 and drops its ICU wiring) and
+// bind the custom model under a new name.  Connection 0 (CCMPA) is re-linked
+// to the GPT0 CCMPA event (0x57) exactly as the stock platform intended.
+gpt: @none
+
+gpt0: Timers.Ra4m1Gpt320 @ sysbus 0x40078000
+    countFrequency: 3000000
+    0 -> icu@0x57
+
+// D13 / "L" led = P111 (port 1, pin 11).  RenesasRA4_GPIO drives its pin
+// connections, so a PODR write to P111 (via the PFS window) toggles this LED.
+led_d13: Miscellaneous.LED @ port1 11
+
+port1:
+    11 -> led_d13@0

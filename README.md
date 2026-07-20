@@ -18,8 +18,8 @@ built on).
 | **M0** — scaffolding & risk retirement | **Done** | [`6be6739`](../../commit/6be6739) |
 | **M1** — CAN bootloader at parity (minus USB) | **Done** | [`2b0976a`](../../commit/2b0976a) |
 | **M2** — USB DFU | **Done** | [`f9430fc`](../../commit/f9430fc) |
-| **M2.5** — Renode emulation validation | Planned | — |
-| **M3** — LGPL-free application HAL | Planned | — |
+| **M2.5** — Renode emulation validation | **Minimal smoke (green)** | [`b4be320`](../../commit/b4be320) |
+| **M3** — LGPL-free application HAL | **Done** | [`57fdd8a`](../../commit/57fdd8a) |
 
 **M0** stood up the Cargo workspace, retired the hardware-bring-up risks as spikes (clocks, OFS
 option bytes, VBTBKR handoff, executor + a custom GPT320 `embassy-time` driver — see
@@ -70,16 +70,29 @@ upload/download exchange is not yet bench-verified**, and — like the M1 CAN pa
 `can_flash.py` run also still needs its CAN host adapter on the bench (see the M1 remaining exit
 criteria above).
 
-**M2.5** and **M3** are planning-stage tracks that exist as design docs only — no code has been
-written for either yet:
+**M3** delivered the from-scratch, MIT/Apache-2.0 RA4M1 application HAL (`crates/ra4m1-hal`,
+[`docs/plan-m3-hal.md`](docs/plan-m3-hal.md)) — for *applications* on this chip, not the
+bootloader, replacing the LGPL-3.0 community `ra4-hal`/`ra4m1-ctpac`. It layers on the existing
+`ra4m1-embassy` clocks/PFS/time-driver base, and the bootloader **never** depends on it (verified —
+its 32 KB gate is untouched). A spike ([`docs/research/ra4m1-pac-coverage.md`](docs/research/ra4m1-pac-coverage.md))
+confirmed every peripheral is fully typed in the `ra4m1` PAC, so all drivers are PAC-based (no raw
+MMIO). Implemented: GPIO, a clock-query API for every domain, GPT timers/PWM (ch1–7; ch0 stays the
+time driver), UART/SCI, SPI, I2C (RIIC), ADC14, and DAC12 — each exposing `embedded-hal` 1.0
+blocking **and** `embedded-hal-async`/`embedded-io-async` traits, with a runnable example under
+`crates/ra4m1-hal/examples/`. Async drivers wake via `embassy-sync` `AtomicWaker`. Chip-fact
+BENCH-VERIFY items in the drivers (ICU event numbers, pin/PSEL mappings) are FSP/datasheet-derived
+and still need silicon confirmation.
 
-- [`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md) — bring the release ELFs up in the
-  open-source **Renode** emulator so boot logic, flash P/E, and the CAN update protocol can be
-  exercised deterministically and hardware-free in CI, phased from booting the ELF through a
-  CAN-bridge `can_flash.py` E2E and a CI-integrated Robot suite.
-- [`docs/plan-m3-hal.md`](docs/plan-m3-hal.md) — a from-scratch, MIT/Apache-2.0 RA4M1 HAL for
-  *applications* on this chip (not the bootloader), replacing the LGPL-3.0 community `ra4-hal` /
-  `ra4m1-ctpac`, layered on the existing `ra4m1-embassy` clocks/PFS/time-driver base.
+**M2.5** brought up the [Renode](https://github.com/renode/renode) emulator as a hardware-free test
+harness ([`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md), [`renode/`](renode/)). The
+"minimal smoke" rung is done and green: a custom GPT compare-match model (the one piece Renode's
+stock RA4M1 platform lacks) lets the Embassy executor run off `embassy-time`, and a Robot Framework
+suite proves it — `blinky_gpio`'s LED blinks at 1 Hz and `irq_smoke`'s heartbeat advances, with a
+negative control confirming both **fail** on the stock model. It's headless/deterministic and
+CI-runnable. Per-peripheral models (SCI/SPI/I2C/ADC/DAC, and the FACI-flash model that would let
+Renode regression-test the bootloader) are tracked in [`renode/TODO.md`](renode/TODO.md). Renode
+validates driver *logic* only — virtual time, no flash P/E fetch-stall, no USB/CAN/analog — so it
+complements, never replaces, the HIL bench.
 
 ## Memory map
 
@@ -106,13 +119,22 @@ crates/
                      DFU config parsing
   ra4m1-embassy/     shared chip runtime: clock bring-up, custom embassy-time driver
                      (GPT320), VBTBKR backup-register access, PFS pin-function writes
+  ra4m1-hal/         from-scratch MIT/Apache application HAL (M3): GPIO, clocks,
+                     GPT/PWM, UART, SPI, I2C, ADC, DAC — embedded-hal 1.0 + async;
+                     examples/ per peripheral; bootloader never depends on it
 bootloader/          the bootloader binary crate: boot decision, drivers (flash-LP,
-                     CAN0, USB rail), tasks (can_update, led)
+                     CAN0, USB rail, USBFS), tasks (can_update, usb_dfu, led)
 demo-app/            Embassy blinky linked at 0x8000, used to exercise the update path
+renode/              Renode emulation harness (M2.5): custom GPT model, Robot smoke
+                     test, TODO.md for per-peripheral coverage
+scripts/             build-out.sh / build-out.ps1 — export .elf/.bin/.hex into out/
 docs/
-  plan.md            implementation plan — locked decisions, workspace layout, milestones
-  research/          behavior spec (master-feature-spec.md) + ecosystem findings
+  plan.md                        implementation plan — locked decisions, milestones
+  plan-m2.5-renode.md            M2.5 Renode emulation plan
+  plan-m3-hal.md                 M3 application-HAL plan
+  research/          behavior spec, ecosystem findings, PAC-coverage audit
   bench/             on-hardware bench checklists (m0-spikes.md)
+  README.md          docs index
 ```
 
 ## Build & flash
@@ -134,6 +156,43 @@ cargo run --release -p bootloader
 
 Any CMSIS-DAP/SWD probe works with the `probe-rs` runner above. The M1 hardware smoke test used
 an ESP-Prog-2 running custom `esp-usb-bridge` firmware (CMSIS-DAP over SWD) as a low-cost probe.
+
+## Emulation (Renode) — run the smoke test manually
+
+The M2.5 harness in [`renode/`](renode/) boots the real `ra4m1-hal` example ELFs in the
+[Renode](https://github.com/renode/renode) emulator — **no hardware needed** — and proves the
+Embassy executor runs off `embassy-time`. It's a test-time tool only; Renode is never linked into
+firmware. Full details in [`renode/README.md`](renode/README.md).
+
+**Prerequisites:** Renode **v1.16.1** (pinned). On Windows there's no native build — install the
+`linux-portable-dotnet` tarball in WSL (self-contained, no mono/apt). `renode-test` needs
+`robotframework` + `psutil` on its Python.
+
+```sh
+# 1. Build the example ELFs the tests boot
+cargo build --release -p ra4m1-hal --example blinky_gpio --example irq_smoke
+
+# 2. Automated pass/fail (Robot suite)
+<renode-install>/renode-test renode/smoke.robot
+#   → 'Blinky Blinks The LED At 1 Hz' ... OK
+#   → 'Irq Smoke Heartbeat Advances'  ... OK
+
+# 3. Or run one interactively and watch the LED / RTT
+<renode-install>/renode --console --disable-xwt --plain \
+  -e '$elf=@target/thumbv7em-none-eabihf/release/examples/blinky_gpio' \
+  -e 'include @renode/smoke.resc' -e 'start'
+#   sysbus.port1.led_d13 State        # toggles ~1 Hz (virtual time)
+#   sysbus ReadDoubleWord 0x2000002C  # defmt-rtt WrOff — grows each heartbeat
+```
+
+> **Path caveat:** Renode's monitor can't tokenize paths with spaces/parentheses, so `renode-test`
+> won't run from a checkout under a path like `…/Work ( Normal Corporation )/…`. Run it from a
+> space-free path (e.g. copy the repo into `~/arduino-bootloader` in WSL) or in CI (clean checkout).
+> The suite itself is path-clean.
+
+The suite asserts behaviours that **fail** on Renode's stock GPT model and **pass** with the custom
+`Ra4m1Gpt320` model (a negative control), so a green run is meaningful. It validates driver *logic*
+only — see the honesty boundaries in `renode/README.md`.
 
 ## CI
 
@@ -158,6 +217,10 @@ auto-generated notes.
   validation of the release ELFs in the Renode emulator.
 - [`docs/plan-m3-hal.md`](docs/plan-m3-hal.md) — plan for M3, a from-scratch MIT/Apache-2.0
   RA4M1 HAL for applications (not the bootloader), replacing the LGPL community options.
+- [`docs/research/ra4m1-pac-coverage.md`](docs/research/ra4m1-pac-coverage.md) — the PAC-coverage
+  audit (spike S-B): which RA4M1 peripheral blocks the `ra4m1` PAC exposes (all typed).
+- [`renode/README.md`](renode/README.md) — the Renode emulation harness: the custom GPT model, the
+  smoke test, and how to run it.
 - [`docs/research/master-feature-spec.md`](docs/research/master-feature-spec.md) — the
   implementation-independent behavior spec (what the C bootloader does, and every hardware
   constant it relies on).

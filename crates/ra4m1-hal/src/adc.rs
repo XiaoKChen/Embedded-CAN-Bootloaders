@@ -47,23 +47,20 @@
 //! `ra4m1/bsp_elc.h` and the base crate's confirmed anchors USBFS=0x033,
 //! GPT0=0x057) to a claimed IELSR slot at a chosen NVIC priority.
 //!
-//! # Waker storage (dependency note)
+//! # Waker storage
 //!
-//! The async path needs a `'static`, `Sync` waker cell. `embassy-sync`'s
-//! `Signal` (used by `examples/irq_smoke.rs`) is the project-idiomatic choice,
-//! but it is **not** a `[dependencies]` entry of this crate (only a dev-dep) and
-//! adding it is a manifest change flagged, not made (see the report). The waker
-//! is therefore held in a `cortex_m::interrupt::Mutex<Cell<Option<Waker>>>` —
-//! `cortex-m` is already a dependency, so this needs no new crate. If
-//! `embassy-sync` is later added to `[dependencies]`, migrate this to a
-//! `Signal` for full parity with the rest of the HAL.
+//! The async path needs a `'static`, `Sync` waker. It uses
+//! [`embassy_sync::waitqueue::AtomicWaker`] — the standard lock-free ISR→async
+//! driver waker, shared by every async driver in this HAL
+//! ([`crate::sci`]/[`crate::spi`]/[`crate::i2c`]). A separate [`AtomicBool`]
+//! ([`SCAN_DONE`]) latches scan completion, since the S12AD exposes no
+//! re-readable status once `ADCSR.ADST` self-clears at scan end.
 
-use core::cell::Cell;
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::task::{Poll, Waker};
+use core::task::Poll;
 
-use cortex_m::interrupt::Mutex;
+use embassy_sync::waitqueue::AtomicWaker;
 use ra4m1::ADC140;
 
 use crate::interrupt::{self, InterruptHandler};
@@ -94,11 +91,13 @@ pub enum AdcError {
 }
 
 /// Set by the bound ISR when a scan completes; cleared by [`Adc::read_async`]
-/// before it starts a scan.
+/// before it starts a scan. This flag is the scan's arrival latch (the ADC has
+/// no re-readable status once `ADST` self-clears), so it stays alongside the
+/// waker.
 static SCAN_DONE: AtomicBool = AtomicBool::new(false);
-/// Waker for the task awaiting the scan-complete interrupt (see the module-doc
-/// dependency note on why this is a `cortex-m` Mutex rather than a `Signal`).
-static SCAN_WAKER: Mutex<Cell<Option<Waker>>> = Mutex::new(Cell::new(None));
+/// Waker for the task awaiting the scan-complete interrupt: [`AtomicWaker`], the
+/// standard lock-free ISR→async driver waker (shared with [`crate::sci`] etc.).
+static SCAN_WAKER: AtomicWaker = AtomicWaker::new();
 
 /// The RA4M1 module-stop register block, via the PAC singleton pointer.
 ///
@@ -133,11 +132,7 @@ unsafe impl<const SLOT: usize> InterruptHandler for AdcScanInterruptHandler<SLOT
     const SLOT: usize = SLOT;
     fn on_interrupt() {
         SCAN_DONE.store(true, Ordering::Release);
-        cortex_m::interrupt::free(|cs| {
-            if let Some(w) = SCAN_WAKER.borrow(cs).take() {
-                w.wake();
-            }
-        });
+        SCAN_WAKER.wake();
     }
 }
 
@@ -146,10 +141,10 @@ unsafe impl<const SLOT: usize> InterruptHandler for AdcScanInterruptHandler<SLOT
 ///
 /// Constructed once from the [`ADC140`] PAC singleton (proving exclusive
 /// ownership). The analog input pin for a channel must be configured by the
-/// caller as a floating input (e.g. via [`ra4m1_embassy::pfs::reset_to_gpio_input`]);
-/// leaving `PmnPFS.ASEL` unset still reads correctly (the analog mux connects at
-/// the pad), the ASEL bit only improves isolation/accuracy — see `dac.rs` for
-/// the same base-crate flag.
+/// caller for analog use via [`ra4m1_embassy::pfs::set_analog`] (PmnPFS.ASEL = 1
+/// with the GPIO input path disconnected); leaving ASEL unset still reads
+/// (the analog mux connects at the pad) but ASEL improves isolation/accuracy —
+/// `dac.rs` sets it on its output pin the same way.
 pub struct Adc {
     adc: ADC140,
 }
@@ -251,9 +246,7 @@ impl Adc {
         poll_fn(|cx| {
             // Register the waker before checking the flag, so a completion that
             // races the poll is never missed.
-            cortex_m::interrupt::free(|cs| {
-                SCAN_WAKER.borrow(cs).set(Some(cx.waker().clone()));
-            });
+            SCAN_WAKER.register(cx.waker());
             if SCAN_DONE.load(Ordering::Acquire) {
                 Poll::Ready(())
             } else {

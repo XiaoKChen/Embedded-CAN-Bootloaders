@@ -6,10 +6,10 @@
 //! **S-C** async-transfer pattern established by [`crate::sci`] — see that
 //! module's header for the full rationale. This module reuses it verbatim:
 //!
-//! 1. One dependency-free [`WakerCell`] per direction (TX/RX), guarded by
-//!    [`cortex_m::interrupt::free`] — **not** `embassy-sync` (the HAL has no
-//!    such dependency; the whole HAL uses this `cortex-m`-only waker cell so it
-//!    stays consistent), stored in a per-instance `'static` [`SpiState`].
+//! 1. One [`AtomicWaker`](embassy_sync::waitqueue::AtomicWaker) per direction
+//!    (TX/RX) — the standard lock-free ISR→async driver waker, shared by every
+//!    async driver in this HAL — stored in a per-instance `'static`
+//!    [`SpiState`].
 //! 2. The bound ISR is minimal (rules/embassy.md): it **masks its own
 //!    interrupt-enable bit** (`SPCR.SPTIE`/`SPCR.SPRIE`) so the level request
 //!    cannot storm the NVIC before the task runs, **wakes** that direction's
@@ -63,11 +63,11 @@
 //! [`Instance::BASE`]), exactly as [`crate::sci`] views its channels through
 //! `sci0`.
 
-use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::task::{Poll, Waker};
+use core::task::Poll;
 
+use embassy_sync::waitqueue::AtomicWaker;
 use embedded_hal::spi::{ErrorKind, ErrorType, Mode, Phase, Polarity, MODE_0};
 use ra4m1_embassy::pfs;
 
@@ -260,65 +260,26 @@ const fn spcmd0_bits(cfg: &Config, brdv: u8) -> u16 {
 }
 
 // =============================================================================
-// Per-instance async state (waker cells) — mirrors crate::sci::WakerCell
+// Per-instance async state (wakers) — mirrors crate::sci::SciState
 // =============================================================================
 
-/// A single-slot waker cell: registered by a transfer's future, fired from the
-/// bound ISR. A dependency-free stand-in for `embassy_sync::AtomicWaker` (the
-/// HAL does not depend on `embassy-sync`), made sound on this single-core part
-/// by taking a PRIMASK critical section around every access via
-/// [`cortex_m::interrupt::free`] — the ISR cannot preempt a section that has
-/// interrupts disabled.
-struct WakerCell {
-    waker: UnsafeCell<Option<Waker>>,
-}
-
-// SAFETY: every read/write of `waker` happens inside `cortex_m::interrupt::free`
-// (interrupts globally masked). On a single core that makes access to the
-// `UnsafeCell` mutually exclusive between thread mode and any ISR.
-unsafe impl Sync for WakerCell {}
-
-impl WakerCell {
-    const fn new() -> Self {
-        Self {
-            waker: UnsafeCell::new(None),
-        }
-    }
-
-    /// Store `w` to be woken later (called from a future's poll).
-    fn register(&self, w: &Waker) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            *slot = Some(w.clone());
-        });
-    }
-
-    /// Wake and clear the stored waker (called from the ISR).
-    fn wake(&self) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            if let Some(w) = slot.take() {
-                w.wake();
-            }
-        });
-    }
-}
-
-/// Per-SPI-instance async state: one waker per direction. Bus errors ride the
-/// RX waker (surfaced in-band, see the module header). Lives in a `'static` per
-/// instance (see the `impl_instance!` expansions).
+/// Per-SPI-instance async state: one [`AtomicWaker`] per direction. Bus errors
+/// ride the RX waker (surfaced in-band, see the module header). Lives in a
+/// `'static` per instance (see the `impl_instance!` expansions).
+///
+/// [`AtomicWaker`] is the standard lock-free ISR→async driver waker (see
+/// [`crate::sci`]): `register` from the transfer's poll, `wake` from the bound
+/// ISR.
 pub struct SpiState {
-    rx: WakerCell,
-    tx: WakerCell,
+    rx: AtomicWaker,
+    tx: AtomicWaker,
 }
 
 impl SpiState {
     const fn new() -> Self {
         Self {
-            rx: WakerCell::new(),
-            tx: WakerCell::new(),
+            rx: AtomicWaker::new(),
+            tx: AtomicWaker::new(),
         }
     }
 }

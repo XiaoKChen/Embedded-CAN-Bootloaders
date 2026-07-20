@@ -13,12 +13,11 @@
 //! established (see the `sci` module header): **per-transfer, interrupt-driven,
 //! ISR masks-its-own-enable-bit / future acts**. The DTC is not used.
 //!
-//! 1. One [`WakerCell`] per RIIC instance (a dependency-free
-//!    `cortex_m::interrupt::free`-guarded `Option<Waker>` — the HAL has no
-//!    `embassy-sync` dependency, so it uses the same primitive as
-//!    [`crate::sci`]/[`crate::adc`], not a `Signal`). I2C transactions are
-//!    strictly sequential/half-duplex, so a single shared waker serves every
-//!    event (unlike the SCI's rx/tx split).
+//! 1. One [`AtomicWaker`](embassy_sync::waitqueue::AtomicWaker) per RIIC
+//!    instance — the same lock-free ISR→async waker used by
+//!    [`crate::sci`]/[`crate::adc`]. I2C transactions are strictly
+//!    sequential/half-duplex, so a single shared waker serves every event
+//!    (unlike the SCI's rx/tx split).
 //! 2. Four minimal ISRs ([`RxInterruptHandler`], [`TxInterruptHandler`],
 //!    [`TeiInterruptHandler`], [`EeiInterruptHandler`]) each **mask their own
 //!    ICIER enable bit(s)** (so the level request cannot storm the NVIC before
@@ -72,10 +71,8 @@
 //! # Open-drain SCL/SDA
 //!
 //! I2C requires open-drain pins. [`crate::pfs::set_peripheral_function`] routes
-//! the IIC function (PSEL) but does not expose PmnPFS.NCODR, so [`I2c::new`]
-//! additionally sets NCODR through a small contained MMIO helper
-//! ([`set_open_drain`]) using the same documented PmnPFS map as `pfs.rs`. Folding
-//! an open-drain variant into `pfs.rs` (base crate) is the tidier follow-up.
+//! the IIC function (PSEL); [`I2c::new`] then sets PmnPFS.NCODR via the base
+//! crate's [`ra4m1_embassy::pfs::set_open_drain`] helper.
 //!
 //! # PAC coverage (spike S-B)
 //!
@@ -85,12 +82,12 @@
 //! [`Instance::BASE`]), exactly as [`crate::sci`] views its channels through
 //! `sci0`.
 
-use core::cell::UnsafeCell;
 use core::future::{poll_fn, Future};
 use core::marker::PhantomData;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+use embassy_sync::waitqueue::AtomicWaker;
 use embedded_hal::i2c::{
     self, ErrorKind, ErrorType, NoAcknowledgeSource, Operation, SevenBitAddress,
 };
@@ -108,14 +105,6 @@ type Icsr2 = ra4m1::iic0::icsr2::R;
 pub const STANDARD_MODE_HZ: u32 = 100_000;
 /// Fast-mode I2C bit rate (400 kHz).
 pub const FAST_MODE_HZ: u32 = 400_000;
-
-/// PmnPFS.NCODR — N-channel open-drain control (R01UM0007, I/O Ports, PmnPFS):
-/// 1 = open-drain output, required for I2C SCL/SDA.
-const PFS_NCODR: u32 = 1 << 6;
-/// PmnPFS register stride (R01UM0007, I/O Ports register map) — mirrors
-/// `pfs.rs`: PFS base + 0x40 * port + 4 * pin.
-const PFS_PORT_STRIDE: usize = 0x40;
-const PFS_PIN_STRIDE: usize = 0x04;
 
 /// Bounded busy-poll ceiling for the bus-free (BBSY) check. The bus is free at
 /// the start of a well-behaved transaction; a stuck bus surfaces as
@@ -277,60 +266,22 @@ const _: () = {
 };
 
 // =============================================================================
-// Per-instance async state (waker cell) — the S-C primitive
+// Per-instance async state (waker) — the S-C primitive
 // =============================================================================
 
-/// A single-slot waker cell: registered by a transfer's future, fired from a
-/// bound ISR. A dependency-free stand-in for `embassy_sync::AtomicWaker`, made
-/// sound on this single-core part by taking a PRIMASK critical section around
-/// every access via [`cortex_m::interrupt::free`] — the ISR cannot preempt a
-/// section that has interrupts disabled. Identical to [`crate::sci`]'s cell.
-struct WakerCell {
-    waker: UnsafeCell<Option<Waker>>,
-}
-
-// SAFETY: every read/write of `waker` happens inside `cortex_m::interrupt::free`
-// (interrupts globally masked). On a single core that makes access to the
-// `UnsafeCell` mutually exclusive between thread mode and any ISR.
-unsafe impl Sync for WakerCell {}
-
-impl WakerCell {
-    const fn new() -> Self {
-        Self {
-            waker: UnsafeCell::new(None),
-        }
-    }
-
-    /// Store `w` to be woken later (called from a transfer's poll).
-    fn register(&self, w: &Waker) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            *slot = Some(w.clone());
-        });
-    }
-
-    /// Wake and clear the stored waker (called from an ISR).
-    fn wake(&self) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            if let Some(w) = slot.take() {
-                w.wake();
-            }
-        });
-    }
-}
-
-/// Per-RIIC-instance async state: one shared waker (transfers are sequential).
+/// Per-RIIC-instance async state: one shared [`AtomicWaker`] (transfers are
+/// sequential/half-duplex, so a single waker serves every event, unlike the
+/// SCI/SPI rx/tx split). [`AtomicWaker`] is the standard lock-free ISR→async
+/// driver waker (see [`crate::sci`]): `register` from a transfer's poll, `wake`
+/// from a bound ISR.
 pub struct I2cState {
-    waker: WakerCell,
+    waker: AtomicWaker,
 }
 
 impl I2cState {
     const fn new() -> Self {
         Self {
-            waker: WakerCell::new(),
+            waker: AtomicWaker::new(),
         }
     }
 }
@@ -519,34 +470,6 @@ pub struct Pin {
     pub psel: u8,
 }
 
-/// Set PmnPFS.NCODR (open-drain) on an already-routed IIC pin, preserving PSEL
-/// and PMR. Contained MMIO exception (rules/embedded.md) because
-/// [`crate::pfs`] does not expose NCODR — same PWPR unlock + PmnPFS address map
-/// as `pfs.rs` (R01UM0007, I/O Ports).
-fn set_open_drain(_pfs: &ra4m1::PFS, pmisc: &ra4m1::PMISC, port: u8, pin: u8) {
-    // PWPR unlock (clear B0WI, set PFSWE), mirroring `pfs::with_pfs_unlocked`.
-    pmisc.pwpr.write(|w| w.b0wi()._0().pfswe()._0());
-    pmisc.pwpr.write(|w| w.b0wi()._0().pfswe()._1());
-    let byte_offset = usize::from(port) * PFS_PORT_STRIDE + usize::from(pin) * PFS_PIN_STRIDE;
-    // SAFETY: address derived from the PAC's PFS base via the documented PmnPFS
-    // map (R01UM0007, I/O Ports); the offset stays inside the PFS block for the
-    // caller's port/pin. Read-modify-write of one PmnPFS word (4-byte aligned)
-    // under the PWPR unlock; `_pfs` proves ownership of the PFS singleton so no
-    // concurrent typed access aliases it.
-    unsafe {
-        let reg = ra4m1::PFS::PTR
-            .cast::<u8>()
-            .add(byte_offset)
-            .cast::<u32>()
-            .cast_mut();
-        let cur = reg.read_volatile();
-        reg.write_volatile(cur | PFS_NCODR);
-    }
-    // Re-lock (clear PFSWE, set B0WI).
-    pmisc.pwpr.write(|w| w.b0wi()._0().pfswe()._0());
-    pmisc.pwpr.write(|w| w.b0wi()._1().pfswe()._0());
-}
-
 // =============================================================================
 // I2c driver
 // =============================================================================
@@ -618,8 +541,8 @@ impl<T: Instance> I2c<T> {
         // Route the pins to the IIC function, then make them open-drain.
         pfs::set_peripheral_function(pfs_reg, pmisc, scl.port, scl.pin, scl.psel);
         pfs::set_peripheral_function(pfs_reg, pmisc, sda.port, sda.pin, sda.psel);
-        set_open_drain(pfs_reg, pmisc, scl.port, scl.pin);
-        set_open_drain(pfs_reg, pmisc, sda.port, sda.pin);
+        pfs::set_open_drain(pfs_reg, pmisc, scl.port, scl.pin);
+        pfs::set_open_drain(pfs_reg, pmisc, sda.port, sda.pin);
 
         defmt::debug!(
             "I2C up: target {} Hz, CKS {}, BRL {}, BRH {}, err {} ppm",

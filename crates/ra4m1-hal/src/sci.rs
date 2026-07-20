@@ -39,8 +39,9 @@
 //!
 //! ## The pattern SPI/I2C must follow
 //!
-//! 1. One `AtomicWaker`-equivalent ([`WakerCell`]) per direction, stored in a
-//!    per-instance `'static` [`SciState`] reached through [`Instance::state`].
+//! 1. One [`AtomicWaker`](embassy_sync::waitqueue::AtomicWaker) per direction,
+//!    stored in a per-instance `'static` [`SciState`] reached through
+//!    [`Instance::state`].
 //! 2. The bound ISR is minimal (rules/embassy.md): it **masks its own
 //!    interrupt-enable bit** (so the level-sensitive request cannot storm the
 //!    NVIC before the task runs), **wakes** the direction's waker, and returns.
@@ -62,11 +63,11 @@
 //! never accessed here). The driver therefore views every instance through the
 //! superset [`ra4m1::sci0::RegisterBlock`] type (see [`Instance::BASE`]).
 
-use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::task::{Poll, Waker};
+use core::task::Poll;
 
+use embassy_sync::waitqueue::AtomicWaker;
 use ra4m1_embassy::pfs;
 
 use crate::clock::Clock;
@@ -306,65 +307,27 @@ const fn semr_byte(div: &BaudDiv) -> u8 {
 }
 
 // =============================================================================
-// Per-instance async state (waker cells)
+// Per-instance async state (wakers)
 // =============================================================================
 
-/// A single-slot waker cell: registered by a task's future, fired from the
-/// bound ISR. A dependency-free stand-in for `embassy_sync::AtomicWaker` (the
-/// HAL does not depend on `embassy-sync`), made sound on this single-core part
-/// by taking a PRIMASK critical section around every access via
-/// [`cortex_m::interrupt::free`] — the ISR cannot preempt a section that has
-/// interrupts disabled.
-struct WakerCell {
-    waker: UnsafeCell<Option<Waker>>,
-}
-
-// SAFETY: every read/write of `waker` happens inside `cortex_m::interrupt::free`
-// (interrupts globally masked). On a single core that makes access to the
-// `UnsafeCell` mutually exclusive between thread mode and any ISR.
-unsafe impl Sync for WakerCell {}
-
-impl WakerCell {
-    const fn new() -> Self {
-        Self {
-            waker: UnsafeCell::new(None),
-        }
-    }
-
-    /// Store `w` to be woken later (called from a future's poll).
-    fn register(&self, w: &Waker) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            *slot = Some(w.clone());
-        });
-    }
-
-    /// Wake and clear the stored waker (called from the ISR).
-    fn wake(&self) {
-        cortex_m::interrupt::free(|_| {
-            // SAFETY: interrupts masked → exclusive access (see type SAFETY).
-            let slot = unsafe { &mut *self.waker.get() };
-            if let Some(w) = slot.take() {
-                w.wake();
-            }
-        });
-    }
-}
-
-/// Per-SCI-instance async state: one waker per direction. RX errors ride the RX
-/// waker (surfaced in-band, see the module S-C notes). Lives in a `'static`
-/// per instance (see the `impl_instance!` expansions).
+/// Per-SCI-instance async state: one [`AtomicWaker`] per direction. RX errors
+/// ride the RX waker (surfaced in-band, see the module S-C notes). Lives in a
+/// `'static` per instance (see the `impl_instance!` expansions).
+///
+/// [`AtomicWaker`] is the standard lock-free ISR→async driver waker (the same
+/// primitive embassy-stm32/-rp use for this seam): `register` from the future's
+/// poll, `wake` from the bound ISR. Being `Sync`, it needs no `UnsafeCell` /
+/// `unsafe impl Sync` scaffolding of its own.
 pub struct SciState {
-    rx: WakerCell,
-    tx: WakerCell,
+    rx: AtomicWaker,
+    tx: AtomicWaker,
 }
 
 impl SciState {
     const fn new() -> Self {
         Self {
-            rx: WakerCell::new(),
-            tx: WakerCell::new(),
+            rx: AtomicWaker::new(),
+            tx: AtomicWaker::new(),
         }
     }
 }

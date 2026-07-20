@@ -23,15 +23,13 @@
 //! | Data | `DAC12.DADR0.DADR` | 0..=4095 | conversion value |
 //! | Output enable | `DAC12.DACR.DAOE0` | 1 | drive DA0 (P014) |
 //!
-//! # Pin configuration (ASEL caveat)
+//! # Pin configuration (ASEL)
 //!
-//! DA0 = P014 is put into a safe high-impedance analog state via the base
-//! crate's [`ra4m1_embassy::pfs::reset_to_gpio_input`] (PmnPFS = 0: input, no
-//! pull, no peripheral mux) — the DAC's analog output buffer then drives the
-//! pad. The base `pfs` module does **not** expose the `PmnPFS.ASEL` analog-mode
-//! bit that FSP sets for analog pins; setting it improves isolation/accuracy but
-//! is not required for the DAC to drive the pad. Adding a `pfs::set_analog`
-//! helper is a base-crate change (flagged, not made here — see the report).
+//! DA0 = P014 is put into its analog state via the base crate's
+//! [`ra4m1_embassy::pfs::set_analog`] (PmnPFS.ASEL = 1, GPIO input path
+//! disconnected, no peripheral mux) — the DAC's analog output buffer then drives
+//! the pad. ASEL is the analog-mode bit FSP sets for analog pins; it improves
+//! isolation/accuracy (the pad would still be driven without it).
 //!
 //! # Settling time (tDACR)
 //!
@@ -75,8 +73,8 @@ pub struct Dac {
 
 impl Dac {
     /// Bring up DAC12 channel 0: release module-stop, select the AVCC0/AVSS0
-    /// reference and right-justified format, put DA0 (P014) into analog
-    /// high-impedance, and enable the output driving 0.
+    /// reference and right-justified format, put DA0 (P014) into analog mode
+    /// (PmnPFS.ASEL), and enable the output driving 0.
     ///
     /// `pfs_reg`/`pmisc` are the pin-mux singletons (the same ownership proof
     /// [`ra4m1_embassy::pfs`] requires); consumed by reference.
@@ -87,8 +85,8 @@ impl Dac {
         mstp().mstpcrd.modify(|_, w| w.mstpd20()._0());
         let _ = mstp().mstpcrd.read();
 
-        // DA0 = P014 to analog high-impedance (input, no pull, no peripheral).
-        pfs::reset_to_gpio_input(pfs_reg, pmisc, DA0_PORT, DA0_PIN);
+        // DA0 = P014 to analog mode (PmnPFS.ASEL; input path off, no peripheral).
+        pfs::set_analog(pfs_reg, pmisc, DA0_PORT, DA0_PIN);
 
         // Independent DAC (no A/D synchronous conversion).
         dac.daadscr.modify(|_, w| w.daadst()._0());

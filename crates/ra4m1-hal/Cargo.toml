@@ -42,6 +42,10 @@ ra4m1 = { workspace = true }
 # by the base crate / the app binary; feature unification keeps exactly one.
 cortex-m = { workspace = true }
 defmt = { workspace = true }
+# Lock-free ISR->async driver waker (`waitqueue::AtomicWaker`) — the standard
+# Embassy primitive for this seam (embassy-stm32/-rp use it identically). Its
+# `CriticalSectionRawMutex` reuses the one `critical-section-single-core` impl.
+embassy-sync = { workspace = true }
 
 # --- HAL-agnostic driver traits (member-local; see policy note above) --------
 embedded-hal = "1.0"

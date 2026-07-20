@@ -1,0 +1,46 @@
+:name: RA4M1 HAL analog smoke (ADC14 + DAC12)
+:description: Boots the real ra4m1-hal `analog` example ELF on the UNO R4 Minima
+:             platform with the GPT320 time base plus the custom ADC14/DAC12
+:             models, so the async ADC scan-complete -> DAC-mirror chain runs.
+:
+: Run headless from the REPO ROOT (paths are repo-relative; Renode's monitor
+: cannot tokenize the spaces/parens some checkout paths contain, so keep the
+: working directory at the repo root and use relative @paths):
+:
+:   cd <repo-root>
+:   cargo build --release -p ra4m1-hal --example analog \
+:     --target thumbv7em-none-eabihf
+:   <renode-install>/renode --console --disable-xwt --plain \
+:     -e 'include @renode/analog.resc' \
+:     -e 'start'
+:
+: Observe (see renode/analog.robot for the automated pass/fail):
+:   DAC DADR (mirror of A0 >> 2): sysbus ReadDoubleWord 0x4005E000
+:   DAC DAOE0 (output enabled)  : sysbus ReadDoubleWord 0x4005E004  (bit 6)
+:   ADC ADDR0 (raw A0 sample)   : sysbus ReadWord 0x4005C020
+
+$elf ?= @target/thumbv7em-none-eabihf/release/examples/analog
+
+# Compile the custom models BEFORE any platform description references them.
+# Ra4m1Gpt320 is required by the base platform (the time base); the ADC/DAC
+# models are bound by the fragment below.
+include @renode/Ra4m1Gpt320.cs
+include @renode/Ra4m1Dac.cs
+include @renode/Ra4m1Adc.cs
+
+mach create "uno-r4-analog"
+machine LoadPlatformDescription @renode/ra4m1-uno-r4.repl
+
+# Attach the ADC14 + DAC12 models on top of the base platform, where the stock
+# repl has only absorbing Tags.  ADC scan-complete (S12ADI0) -> ICU event 0x29
+# via the inline connection block, mirroring the driver's SCAN_END_EVENT
+# (adc.rs) and the base platform's gpt0 -> icu@0x57 idiom.  Registering a real
+# peripheral over the stock Tag range is fine — the peripheral takes precedence;
+# the Tag only names otherwise-unhandled accesses.
+machine LoadPlatformDescriptionFromString "adc: Analog.Ra4m1Adc @ sysbus 0x4005c000 { 0 -> icu@0x29 }"
+machine LoadPlatformDescriptionFromString "dac: Analog.Ra4m1Dac @ sysbus 0x4005e000"
+
+sysbus LoadELF $elf
+
+# This script only builds the machine; issue `start` (or `emulation RunFor`)
+# after including it so the caller controls a deterministic, bounded run.

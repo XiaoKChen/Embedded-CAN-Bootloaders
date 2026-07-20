@@ -1,0 +1,61 @@
+:name: RA4M1 HAL serial-bus smoke (SCI UART / RIIC I2C / RSPI SPI)
+:description: Boots a real ra4m1-hal serial-bus example ELF on the UNO R4 Minima
+:             platform, adding the stock SCI/IIC wiring the drivers need plus a
+:             custom SPI model and a mock I2C slave.
+:
+: Run headless from the REPO ROOT (paths are repo-relative; Renode's monitor
+: cannot tokenize the spaces/parens some checkout paths contain, so keep the
+: working directory at the repo root and use relative @paths):
+:
+:   cd <repo-root>
+:   <renode-install>/renode --console --disable-xwt --plain \
+:     -e '$elf=@target/thumbv7em-none-eabihf/release/examples/spi' \
+:     -e 'include @renode/serial.resc' \
+:     -e 'start'
+:
+: Swap $elf to .../examples/uart or .../examples/i2c for the other buses.
+: The automated pass/fail lives in renode/serial.robot (run via renode-test).
+
+$elf ?= @target/thumbv7em-none-eabihf/release/examples/spi
+
+# Compile the custom models (adds Timers.Ra4m1Gpt320, SPI.Ra4m1Spi,
+# I2C.MockI2CSlave) BEFORE the platform description references them.
+include @renode/Ra4m1Gpt320.cs
+include @renode/Ra4m1Spi.cs
+include @renode/MockI2CSlave.cs
+
+mach create "uno-r4-serial"
+machine LoadPlatformDescription @renode/ra4m1-uno-r4.repl
+
+# Serial-bus fragment layered on the base platform (see renode/serial.robot for
+# the divergence notes this encodes):
+#   - sci2: re-point the SCI2 RXI/TXI/TEI to the ICU events the HAL driver
+#     programs (sci.rs Sci2: 0x97/0x98/0x99).  The stock repl wires SCI2 to
+#     0xA3/0xA4/0xA5 instead; the register LAYOUT matches, only the event
+#     numbers diverge (both are FSP assumptions — BENCH-VERIFY).  Without this
+#     the async echo's RXI never reaches IEL2 and the echo stalls.
+#   - spi0: bind the custom RSPI model over the stock SPI0 Tag @ 0x40072000,
+#     wiring SPRI/SPTI to the driver-assumed events (spi.rs Spi0: 0xA1/0xA2).
+#   - mockSlave: a register-file I2C slave at address 0x50 on iic0.  (iic0's
+#     stock IRQ wiring 0x035..0x038 already MATCHES i2c.rs — no rewire needed.)
+machine LoadPlatformDescriptionFromString
+"""
+sci2:
+    ReceiveIRQ -> icu@0x97
+    TransmitIRQ -> icu@0x98
+    TransmitEndIRQ -> icu@0x99
+
+spi0: SPI.Ra4m1Spi @ sysbus 0x40072000
+    ReceiveIRQ -> icu@0xA1
+    TransmitIRQ -> icu@0xA2
+
+mockSlave: I2C.MockI2CSlave @ iic0 0x50
+"""
+
+sysbus LoadELF $elf
+
+# This script only builds the machine; issue `start` (or `emulation RunFor`)
+# after including it so the caller controls a deterministic, bounded run.
+#   uart: Create Terminal Tester sysbus.sci2; Write/Wait For Line (echo)
+#   spi:  sysbus.spi0 TransferCount / FirstByte / LastRxByte
+#   i2c:  sysbus.iic0.mockSlave TransactionCount

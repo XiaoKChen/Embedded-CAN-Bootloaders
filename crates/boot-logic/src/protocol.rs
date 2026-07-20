@@ -76,14 +76,12 @@ pub const DATA_BYTES_PER_FRAME: usize = 6;
 /// Frames in the INFO reply: 1 header + 4 name frames (SPEC §4.7).
 pub const INFO_REPLY_FRAMES: usize = 5;
 
-// TODO(U1.x): unify with `memory_map` once U0.4 lands — duplicated here so
-// the concurrently-dispatched units never touch each other's files.
 /// App-slot capacity in bytes: 111 × 2 KB (docs/plan.md §1.2, supersedes R20).
-pub(crate) const APP_SLOT_SIZE: u32 = 0x0003_7800;
+pub(crate) use crate::memory_map::APP_SLOT_SIZE;
 /// Flash erase-block size = one protocol window (SPEC §4.4).
-pub(crate) const BLOCK_SIZE: u32 = 2048;
+pub(crate) use crate::memory_map::FLASH_BLOCK_SIZE as BLOCK_SIZE;
 /// Code-flash write unit; the final short block pads to a multiple of this.
-pub(crate) const WRITE_UNIT: usize = 8;
+pub(crate) const WRITE_UNIT: usize = crate::memory_map::FLASH_WRITE_UNIT as usize;
 
 /// Session phase as visible on the wire (SPEC §4.2 `can_update_phase_t`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

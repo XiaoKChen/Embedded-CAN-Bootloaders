@@ -1,5 +1,18 @@
 # Implementation Plan — M2.5: Firmware validation in the Renode emulator
 
+> **Status — 2026-07-19: M2.5 delivered.** This document is retained as the design-of-record; the
+> work shipped. The harness lives in **[`../renode/`](../renode/)** (not the planned `tools/renode/`),
+> as **4 Robot suites** — `smoke`, `analog`, `serial`, `bootloader` (not the planned
+> `boot`/`flash`/`can_update` names) — with **12 cases, all green on Renode v1.16.1**. Custom C#
+> models delivered: `Ra4m1Gpt320`, `Ra4m1Dac`, `Ra4m1Adc`, `Ra4m1Spi`, `Ra4m1FlashLp`, `Ra4m1Can0`,
+> and `MockI2CSlave` (UART/SCI uses Renode's stock model). Open-question resolutions (§8): the full
+> ladder **through CAN0** was built (Q1); USB DFU stayed **out of scope** (Q3); models are kept
+> **in-repo** (Q7); Renode is pinned to **v1.16.1** (Q8). CI runs the suites in the pinned
+> `antmicro/renode:1.16.1` container. The honesty boundary (§2) holds: emulation validates
+> register/protocol logic, not silicon — flash P/E timing and the RAM-residency fetch-stall hazard,
+> CAN bit-timing, USB/DFU, real UART baud/framing, and clock tolerance stay bench-only; ICU event
+> numbers and SCI2 line settings remain BENCH-VERIFY. Per-unit status is marked inline in §5.
+
 **Contract for implementation dispatches.** This is the design plan for **Milestone 2.5**: bringing
 up the RA4M1 bootloader + demo app inside the **Renode** open-source emulator
 (https://github.com/renode/renode, MIT-licensed) so that boot logic, flash, and the CAN update
@@ -272,32 +285,37 @@ their own claimed files. CI wiring (`ci.yml`) is touched once, in M2.5.4.
 feature flag, an ELF-layout question) → **embassy-pro** (executor/time/driver seams) or
 **arm-cortex-expert** (register/vector-table/boot-flow). USB is not dispatched (Q3).
 
-### M2.5.0 — Minimal machine boots the ELF
+### M2.5.0 — Minimal machine boots the ELF ✅ Delivered
 
 | Unit | Description | Files | Routing |
 |---|---|---|---|
 | **U2.5.0** | `tools/renode/` scaffold; `ra4m1-uno-r4.repl` = `using` the stock `renesas-r7fa4m1a.repl` + FLASH/RAM from `memory.x`; `bootloader.resc` loads `dist/bootloader.elf` and starts; add the **CGC-ready** model (row 3) so the `OSCSF.HOCOSF` poll returns. Acceptance = **spike S-R1** (boots to the first RTT/defmt or UART line). | `tools/renode/**` (scaffold), `platforms/ra4m1-uno-r4.repl`, `scripts/bootloader.resc`, `models/Ra4m1Cgc.cs` | renode-engineer |
 
-### M2.5.1 — `.repl` for the modelable RA4M1 peripherals
+### M2.5.1 — `.repl` for the modelable RA4M1 peripherals ✅ Delivered
 
 | Unit | Description | Files | Routing |
 |---|---|---|---|
 | **U2.5.1a** | **GPT320 time-base model** (row 4) + ICU/IELSR→NVIC IEL0 wiring so `embassy-time` advances; **PORT/GPIO + LED** (row 5). Acceptance = **spike S-R3** (executor ticks; blink + `uptime` heartbeat lines appear, mirroring S2). | `models/Ra4m1Gpt320.cs`, `models/Ra4m1Port.cs`, `platforms/ra4m1-uno-r4.repl` | renode-engineer |
 | **U2.5.1b** | **VBTBKR model** with soft-reset persistence (row 6); `combined.resc` loads bootloader + demo-app; assert **boot decision** (magic → mode) and the **`boot5` jump** (park → GO → demo-app blinks). Acceptance = **spike S-R4** + the jump path. | `models/Ra4m1Vbtbkr.cs`, `scripts/combined.resc` | renode-engineer |
 
-### M2.5.2 — FACI flash model: erase/program works
+### M2.5.2 — FACI flash model: erase/program works ✅ Delivered
 
 | Unit | Description | Files | Routing |
 |---|---|---|---|
 | **U2.5.2** | **FACI-LP model** (row 8): the P/E command sequence writes into the backing code/data-flash `MappedMemory`, read-back verifies. Mirrors S3 (erase → program → read-back a scratch block). **Documents that RAM-residency is NOT tested here** (§2 limit). | `models/Ra4m1FaciLp.cs`, `tests/flash.robot` | renode-engineer |
 
-### M2.5.3 — CAN bridge: `can_flash.py` E2E in emulation
+### M2.5.3 — CAN bridge: `can_flash.py` E2E in emulation ✅ Delivered (partial)
+
+> **Delivered as frame-level.** `Ra4m1Can0.cs` bridges to the stock `CANHub` and `bootloader.robot`
+> asserts a HELLO → reply exchange via the native `CANTester`. The full `can_flash.py` end-to-end
+> loop still needs `CreateSocketCANBridge` (Linux-only) and is **not** wired into CI — see
+> [`../renode/TODO.md`](../renode/TODO.md).
 
 | Unit | Description | Files | Routing |
 |---|---|---|---|
 | **U2.5.3** | **CAN0 model** (row 7, FIFO-mailbox mode) → CANHub → `CreateSocketCANBridge` to host `vcan0`; drive the emulated device with the **`main:tools/can-flash/can_flash.py`** update flow (HELLO/`--info`, ERASE, windowed program, GO). Assess whether `can_flash.py` speaks a SocketCAN backend unmodified (Q4). Acceptance = **spike S-R5** then a full demo-app flash. | `models/Ra4m1Can0.cs`, `scripts/can-e2e.resc`, `tests/can_update.robot` | renode-engineer (+ embassy-pro if a firmware/`can_flash.py` seam needs review) |
 
-### M2.5.4 — Robot suite + CI
+### M2.5.4 — Robot suite + CI ✅ Delivered
 
 | Unit | Description | Files | Routing |
 |---|---|---|---|

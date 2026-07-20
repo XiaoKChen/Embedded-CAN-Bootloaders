@@ -262,7 +262,11 @@ impl Adc {
     /// write of the mask; the PAC types these as per-bit fields but a mask write
     /// is channel-generic (same discipline as `interrupt.rs`'s IELSR writes).
     fn select_channels(&mut self, mask: u16) {
+        // SAFETY: whole-register mask write of a u16 to the full-width ADANSA0
+        // (channels 0..=15); every bit pattern is a valid channel selection.
         self.adc.adansa0.write(|w| unsafe { w.bits(mask) });
+        // SAFETY: whole-register write of 0 to the full-width ADANSA1, clearing
+        // any high-channel selection.
         self.adc.adansa1.write(|w| unsafe { w.bits(0) });
     }
 

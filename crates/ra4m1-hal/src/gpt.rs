@@ -460,9 +460,10 @@ impl<C: GptChannel> SetDutyCycle for Pwm<C> {
 /// ch2..7 — FSP `BSP_FEATURE_BSP_MSTP_GPT_MSTPD5_MAX_CH = 1`, as in `led.rs`).
 fn release_mstp<C: GptChannel>() {
     // SAFETY: shared-reference MMIO to the MSTP block — the PAC's own model. The
-    // read-modify-write cannot race: HAL driver `init`s run before the executor
-    // starts, single-threaded, and no ISR touches MSTPCRD. MSTPD5 may already be
-    // clear (the time driver released it for ch0); re-clearing is idempotent.
+    // read-modify-write cannot race: it contains no `.await`, so it is atomic
+    // under the cooperative single executor even if called from a task, and no
+    // ISR touches MSTPCRD. MSTPD5 may already be clear (the time driver released
+    // it for ch0); re-clearing is idempotent.
     let mstp = unsafe { &*ra4m1::MSTP::PTR };
     if C::CHANNEL <= 1 {
         mstp.mstpcrd.modify(|_, w| w.mstpd5()._0());

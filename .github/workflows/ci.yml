@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main, "version/**"]
     tags: ["v*"]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -131,6 +130,54 @@ jobs:
           name: firmware-${{ github.sha }}
           path: dist/*
           if-no-files-found: error
+
+  renode:
+    name: Renode emulation (robot suites)
+    # Gate behind firmware-build so a broken build / size / OFS gate fails fast
+    # before we spend a Renode run. renode/TODO.md "Infra"; docs/plan-m2.5-renode.md §4.
+    needs: firmware-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # The robot suites LoadELF from target/.../release/ (repo-root-relative),
+      # not from firmware-build's dist/*.elf artifacts — and they load the
+      # ra4m1-hal *examples*, which firmware-build neither builds nor uploads.
+      # So rebuild here (rust-cache keeps it cheap). See renode/smoke.robot.
+      - name: Build firmware ELFs (bootloader + demo-app)
+        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
+      - name: Build ra4m1-hal example ELFs (loaded by the robot suites)
+        run: cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
+
+      # Discover and run ALL renode/*.robot suites (smoke today; analog/serial/
+      # bootloader added in parallel). The host shell expands the glob to files
+      # that exist, so absent suites are simply skipped. Run from the repo root
+      # (paths in the suites are repo-root-relative). Pin Renode to v1.16.1 —
+      # the harness is written against it. --user root avoids a bind-mount write
+      # mismatch on the runner-owned workspace; the runner is ephemeral.
+      - name: Run Renode robot suites (pinned antmicro/renode:1.16.1)
+        timeout-minutes: 15
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -w /workspace \
+            antmicro/renode:1.16.1 \
+            renode-test --results-dir renode-results renode/*.robot
+
+      - name: Upload Renode test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renode-results-${{ github.sha }}
+          path: |
+            renode-results/robot_output.xml
+            renode-results/log.html
+            renode-results/report.html
+            renode-results/**/*.txt
+          if-no-files-found: warn
 
   release:
     name: Create GitHub release

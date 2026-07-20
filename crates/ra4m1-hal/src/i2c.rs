@@ -828,8 +828,9 @@ fn clear_flags<T: Instance>() {
 /// shared MSTPCRB, done at init before any concurrency (mirrors [`crate::sci`]).
 fn enable_clock<T: Instance>() {
     // SAFETY: shared-reference MMIO to the MSTP block (PAC access model);
-    // whole-register RMW clearing only this channel's bit; init runs
-    // single-threaded before the executor starts.
+    // whole-register RMW clearing only this channel's bit; the RMW contains no
+    // `.await`, so it is atomic under the cooperative single executor even if
+    // called from a task, and no ISR touches MSTPCRB.
     let mstp = unsafe { &*ra4m1::MSTP::PTR };
     let cur = mstp.mstpcrb.read().bits();
     mstp.mstpcrb

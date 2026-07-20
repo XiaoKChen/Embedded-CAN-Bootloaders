@@ -1,0 +1,74 @@
+:name: RA4M1 bootloader integration (FACI-LP flash + CAN0 + VBTBKR)
+:description: Boots the REAL bootloader release ELF on the UNO R4 Minima platform
+:             with the custom GPT320 time base plus the FACI-LP flash sequencer
+:             and CAN0 FIFO-mailbox models, so the M0-M2 boot/flash/CAN paths run
+:             hardware-free.  The automated pass/fail lives in renode/bootloader.robot.
+:
+: Build the ELF first (from the repo root, in a checkout whose path has NO spaces
+: or parentheses — Renode's monitor cannot tokenize those; CI checkout paths are
+: clean):
+:
+:   cargo build --release -p bootloader
+:   #  -> target/thumbv7em-none-eabihf/release/bootloader
+:
+: Run headless from the repo root:
+:
+:   <renode-install>/renode --console --disable-xwt --plain \
+:     -e '$bin=@target/thumbv7em-none-eabihf/release/bootloader' \
+:     -e 'include @renode/bootloader.resc' \
+:     -e 'start'
+:
+: To exercise the CAN update path, set the CAN-entry magic in the backup
+: register BEFORE start, so the boot decision enters CAN-only update mode:
+:
+:   sysbus WriteDoubleWord 0x4001E504 0xB007CAFE   # VBTBKR[4] = CAN_UPDATE_MAGIC
+:
+: HOST CAN BRIDGE (E2E with the real can_flash.py) is Linux-only: after `start`,
+:   emulation CreateSocketCANBridge "br" "vcan0"
+:   connector Connect sysbus.can0 br
+: then run `main:tools/can-flash/can_flash.py` against vcan0.  The in-emulation
+: robot suite instead injects frames via `sysbus.can0 InjectStandardFrame` and
+: observes replies with a CANTester, so it runs cross-platform without SocketCAN.
+
+$bin ?= @target/thumbv7em-none-eabihf/release/bootloader
+
+# Compile the custom models (no Renode rebuild) BEFORE the platform references
+# them.  Ra4m1Gpt320 is the shared time base the base platform binds; FACI-LP and
+# CAN0 are added by the fragment below.
+include @renode/Ra4m1Gpt320.cs
+include @renode/Ra4m1FlashLp.cs
+include @renode/Ra4m1Can0.cs
+
+mach create "uno-r4-boot"
+
+# Base: stock RA4M1 CPU/NVIC/flash/SRAM + OSCSF-ready shim + the GPT320 time base
+# and D13 LED (renode/ra4m1-uno-r4.repl, unchanged).
+machine LoadPlatformDescription @renode/ra4m1-uno-r4.repl
+
+# Fragment: bind the bootloader-only peripherals the base leaves as sysbus tags
+# (CAN0 @0x40050000, FACI-LP @0x407EC000 — the custom models shadow those tags),
+# plus a backup-register memory for the VBTBKR boot-mode handoff words.  A plain
+# ArrayMemory is retained across `sysbus.cpu Reset` (only a full machine reset
+# clears it), which is exactly the survive-a-soft-reset semantic the boot
+# decision depends on (SPEC 1.4/2).  ArrayMemory (not MappedMemory) is required
+# because the VBTBKR base 0x4001E500 is not aligned to the 0x400 guest page size
+# MappedMemory demands.  0x4001E500 clears the stock Python
+# peripherals at 0x4001E03C / 0x4001E4B1, so there is no overlap.
+machine LoadPlatformDescriptionFromString
+"""
+faci: MTD.Ra4m1FlashLp @ sysbus 0x407EC000
+
+can0: CAN.Ra4m1Can0 @ sysbus 0x40050000
+
+vbtbkr_backup: Memory.ArrayMemory @ sysbus 0x4001E500
+    size: 0x200
+"""
+
+sysbus LoadELF $bin
+
+# CAN hub so a renode-test CANTester can observe the bootloader's reply frames.
+emulation CreateCANHub "canHub"
+connector Connect sysbus.can0 canHub
+
+# This script only builds the machine; issue `start` (or `emulation RunFor`)
+# after including it so the caller controls a deterministic, bounded run.

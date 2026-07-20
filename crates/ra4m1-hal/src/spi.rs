@@ -480,6 +480,8 @@ impl<T: Instance> Spi<T> {
         spi_regs.spnd.write(|w| unsafe { w.bits(0) });
         spi_regs.spcr2.write(|w| unsafe { w.bits(0) });
 
+        // SAFETY: whole-register write of the in-range bit-rate divisor while
+        // the bus is still disabled (SPE = 0), as above.
         spi_regs.spbr.write(|w| unsafe { w.bits(div.spbr) });
         // SPLW = 1: access frames through the word-wide `SPDR` register (8-bit
         // frames land right-justified in SPDR[7:0]). SPRDTD = 0 (read on RX).
@@ -487,6 +489,8 @@ impl<T: Instance> Spi<T> {
             .spdcr
             .write(|w| w.splw().set_bit().sprdtd().clear_bit());
         // SPCMD0: mode, bit order, BRDV, 8-bit frames (see spcmd0_bits).
+        // SAFETY: whole-register write of a documented field composition
+        // (`spcmd0_bits`) while the bus is still disabled (SPE = 0), as above.
         spi_regs
             .spcmd0
             .write(|w| unsafe { w.bits(spcmd0_bits(&config, div.brdv)) });
@@ -529,7 +533,8 @@ fn enable_clock<T: Instance>() {
     // SAFETY: shared-reference MMIO to the MSTP block (PAC access model);
     // MSTPCRB is not PRCR-protected on this part (verified by the base time
     // driver's MSTPCRD start). Whole-register RMW clearing only this channel's
-    // bit; init runs single-threaded.
+    // bit; the RMW contains no `.await`, so it is atomic under the cooperative
+    // single executor even if called from a task, and no ISR touches MSTPCRB.
     let mstp = unsafe { &*ra4m1::MSTP::PTR };
     let cur = mstp.mstpcrb.read().bits();
     mstp.mstpcrb
@@ -733,8 +738,9 @@ impl<T: Instance> embedded_hal_async::spi::SpiBus<u8> for Spi<T> {
 
     async fn flush(&mut self) -> Result<(), Error> {
         // Each frame's phase-2 `SPRF` wait already drained the shift register,
-        // so the bus is idle here — no interrupt to await. Verify `IDLNF` is
-        // clear without busy-waiting (rules/embassy.md: no spin in a task).
+        // so the bus is idle here — no interrupt to await and nothing left to
+        // flush. No `IDLNF` poll: that would be a busy-wait in a task
+        // (rules/embassy.md: no spin), and it would always read idle anyway.
         Ok(())
     }
 }

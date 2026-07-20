@@ -45,10 +45,10 @@
 //!
 //! # Module tree (declared complete at M3.0, plan §3/§6 shared-file rule)
 //!
-//! Later phase units fill in each stub module's body but never touch this
-//! file. Implemented at M3.0: [`clock`], [`interrupt`], [`gpio`]. Stubs
-//! awaiting their phase: [`gpt`] (M3.2), [`sci`]/[`spi`]/[`i2c`] (M3.3),
-//! [`adc`]/[`dac`] (M3.4).
+//! Every module is fully implemented as of M3 completion: [`clock`],
+//! [`interrupt`], [`gpio`] (M3.0), [`gpt`] (M3.2), [`sci`]/[`spi`]/[`i2c`]
+//! (M3.3), and [`adc`]/[`dac`] (M3.4). Later phase units filled in each
+//! module's body without ever touching this file.
 
 #![no_std]
 

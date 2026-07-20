@@ -108,6 +108,8 @@ impl ErrorType for Output {
 impl OutputPin for Output {
     fn set_high(&mut self) -> Result<(), Infallible> {
         // POSR: write 1 to set the pin high; 0 bits have no effect.
+        // SAFETY: mask = 1<<pin with pin <= 15 by construction; POSR is
+        // set-only (write-1-to-set), so there is no cross-pin RMW race.
         port_regs(self.port)
             .posr()
             .write(|w| unsafe { w.bits(self.mask) });
@@ -116,6 +118,8 @@ impl OutputPin for Output {
 
     fn set_low(&mut self) -> Result<(), Infallible> {
         // PORR: write 1 to drive the pin low; 0 bits have no effect.
+        // SAFETY: mask = 1<<pin with pin <= 15 by construction; PORR is
+        // reset-only (write-1-to-reset), so there is no cross-pin RMW race.
         port_regs(self.port)
             .porr()
             .write(|w| unsafe { w.bits(self.mask) });

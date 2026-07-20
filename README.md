@@ -18,7 +18,7 @@ built on).
 | **M0** — scaffolding & risk retirement | **Done** | [`6be6739`](../../commit/6be6739) |
 | **M1** — CAN bootloader at parity (minus USB) | **Done** | [`2b0976a`](../../commit/2b0976a) |
 | **M2** — USB DFU | **Done** | [`f9430fc`](../../commit/f9430fc) |
-| **M2.5** — Renode emulation validation | **Minimal smoke (green)** | [`b4be320`](../../commit/b4be320) |
+| **M2.5** — Renode emulation validation | **Done** — 12 cases, 4 suites green | pending commit |
 | **M3** — LGPL-free application HAL | **Done** | [`57fdd8a`](../../commit/57fdd8a) |
 
 **M0** stood up the Cargo workspace, retired the hardware-bring-up risks as spikes (clocks, OFS
@@ -84,15 +84,18 @@ BENCH-VERIFY items in the drivers (ICU event numbers, pin/PSEL mappings) are FSP
 and still need silicon confirmation.
 
 **M2.5** brought up the [Renode](https://github.com/renode/renode) emulator as a hardware-free test
-harness ([`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md), [`renode/`](renode/)). The
-"minimal smoke" rung is done and green: a custom GPT compare-match model (the one piece Renode's
-stock RA4M1 platform lacks) lets the Embassy executor run off `embassy-time`, and a Robot Framework
-suite proves it — `blinky_gpio`'s LED blinks at 1 Hz and `irq_smoke`'s heartbeat advances, with a
-negative control confirming both **fail** on the stock model. It's headless/deterministic and
-CI-runnable. Per-peripheral models (SCI/SPI/I2C/ADC/DAC, and the FACI-flash model that would let
-Renode regression-test the bootloader) are tracked in [`renode/TODO.md`](renode/TODO.md). Renode
-validates driver *logic* only — virtual time, no flash P/E fetch-stall, no USB/CAN/analog — so it
-complements, never replaces, the HIL bench.
+harness ([`docs/plan-m2.5-renode.md`](docs/plan-m2.5-renode.md), [`renode/`](renode/)) and grew it
+to **full per-peripheral coverage** — **12 cases across 4 Robot suites, all green on Renode
+v1.16.1**. A custom GPT compare-match model (the one piece Renode's stock RA4M1 platform lacks) lets
+the Embassy executor run off `embassy-time`; custom C# models then cover DAC12, ADC14, SPI, I2C/RIIC
+(with a mock slave), FACI-LP flash program/erase, and CAN0 (frame-level via `CANHub`), while UART/SCI
+rides Renode's stock model and VBTBKR is proven to survive a CPU reset. The suites are
+`smoke`/`analog`/`serial`/`bootloader`; a negative control confirms the smoke cases **fail** on the
+stock GPT model, so a green run is meaningful. It's headless, deterministic, and CI-runnable. Renode
+validates register/protocol *logic* only — flash P/E timing and the RAM-residency fetch-stall hazard,
+CAN bit-timing, USB/DFU, real UART baud/framing, and clock tolerance stay HIL-bench-only, and the
+drivers' ICU event numbers and SCI2 line settings remain BENCH-VERIFY items. Emulation complements,
+never replaces, the bench.
 
 ## Memory map
 
@@ -125,8 +128,9 @@ crates/
 bootloader/          the bootloader binary crate: boot decision, drivers (flash-LP,
                      CAN0, USB rail, USBFS), tasks (can_update, usb_dfu, led)
 demo-app/            Embassy blinky linked at 0x8000, used to exercise the update path
-renode/              Renode emulation harness (M2.5): custom GPT model, Robot smoke
-                     test, TODO.md for per-peripheral coverage
+renode/              Renode emulation harness (M2.5, done): custom C# peripheral
+                     models + 4 Robot suites (smoke/analog/serial/bootloader),
+                     12 cases green on Renode v1.16.1
 scripts/             build-out.sh / build-out.ps1 — export .elf/.bin/.hex into out/
 docs/
   plan.md                        implementation plan — locked decisions, milestones
@@ -157,46 +161,41 @@ cargo run --release -p bootloader
 Any CMSIS-DAP/SWD probe works with the `probe-rs` runner above. The M1 hardware smoke test used
 an ESP-Prog-2 running custom `esp-usb-bridge` firmware (CMSIS-DAP over SWD) as a low-cost probe.
 
-## Emulation (Renode) — run the smoke test manually
+## Emulation (Renode) — run the suites
 
-The M2.5 harness in [`renode/`](renode/) boots the real `ra4m1-hal` example ELFs in the
-[Renode](https://github.com/renode/renode) emulator — **no hardware needed** — and proves the
-Embassy executor runs off `embassy-time`. It's a test-time tool only; Renode is never linked into
-firmware. Full details in [`renode/README.md`](renode/README.md).
+The M2.5 harness in [`renode/`](renode/) boots the real `ra4m1-hal` example ELFs and the bootloader
+ELF in the [Renode](https://github.com/renode/renode) emulator — **no hardware needed** — and proves
+the drivers, the boot flow, and the CAN/flash protocols work against register-level models. It's a
+test-time tool only; Renode is never linked into firmware. **12 cases across 4 suites**
+(`smoke`/`analog`/`serial`/`bootloader`) pass on the pinned Renode **v1.16.1**. Full details, and the
+Windows/WSL local-run recipe, are in [`renode/README.md`](renode/README.md).
 
-**Prerequisites:** Renode **v1.16.1** (pinned). On Windows there's no native build — install the
-`linux-portable-dotnet` tarball in WSL (self-contained, no mono/apt). `renode-test` needs
-`robotframework` + `psutil` on its Python.
+**Prerequisites:** Renode **v1.16.1** (pinned). `renode-test` needs `robotframework` + `psutil` on
+its Python. The custom C# models compile at runtime — no Renode rebuild.
 
 ```sh
-# 1. Build the example ELFs the tests boot
-cargo build --release -p ra4m1-hal --example blinky_gpio --example irq_smoke
+# 1. Build the ELFs the suites boot
+cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
+cargo build --release --target thumbv7em-none-eabihf -p bootloader
 
-# 2. Automated pass/fail (Robot suite)
-<renode-install>/renode-test renode/smoke.robot
-#   → 'Blinky Blinks The LED At 1 Hz' ... OK
-#   → 'Irq Smoke Heartbeat Advances'  ... OK
-
-# 3. Or run one interactively and watch the LED / RTT
-<renode-install>/renode --console --disable-xwt --plain \
-  -e '$elf=@target/thumbv7em-none-eabihf/release/examples/blinky_gpio' \
-  -e 'include @renode/smoke.resc' -e 'start'
-#   sysbus.port1.led_d13 State        # toggles ~1 Hz (virtual time)
-#   sysbus ReadDoubleWord 0x2000002C  # defmt-rtt WrOff — grows each heartbeat
+# 2. Automated pass/fail (all four Robot suites)
+<renode-install>/renode-test renode/smoke.robot renode/analog.robot renode/serial.robot renode/bootloader.robot
+#   → all 12 cases ... status OK
 ```
 
 > **Path caveat:** Renode's monitor can't tokenize paths with spaces/parentheses, so `renode-test`
 > won't run from a checkout under a path like `…/Work ( Normal Corporation )/…`. Run it from a
-> space-free path (e.g. copy the repo into `~/arduino-bootloader` in WSL) or in CI (clean checkout).
-> The suite itself is path-clean.
+> space-free path (or in CI, which uses a clean checkout). The suites themselves are path-clean —
+> see [`renode/README.md`](renode/README.md) for the exact copy-out steps.
 
-The suite asserts behaviours that **fail** on Renode's stock GPT model and **pass** with the custom
-`Ra4m1Gpt320` model (a negative control), so a green run is meaningful. It validates driver *logic*
-only — see the honesty boundaries in `renode/README.md`.
+The smoke suite asserts behaviours that **fail** on Renode's stock GPT model and **pass** with the
+custom `Ra4m1Gpt320` model (a negative control), so a green run is meaningful. Renode validates
+driver *logic* only — see the honesty boundaries in [`renode/README.md`](renode/README.md).
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main`/`version/**` and every PR:
+`.github/workflows/ci.yml` runs on **`v*` tag pushes (releases)** and manual `workflow_dispatch`
+only — no longer on every branch push or PR:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy -- -D warnings` (firmware members on the target triple, `boot-logic` on the host)
@@ -204,7 +203,10 @@ only — see the honesty boundaries in `renode/README.md`.
 - `cargo build --release` for `thumbv7em-none-eabihf`, then a hard **32,768 B** size gate on
   `bootloader.bin` and a byte-check of the OFS0/OFS1/Security-MPU option bytes against the stock
   dump (brick-risk region — any mismatch fails the build)
-- Build artifacts (`.bin`/`.elf`/`.hex`) are uploaded on every run
+- a **`renode` job** (`needs: firmware-build`) that runs the four Robot suites in the pinned
+  `antmicro/renode:1.16.1` container — the hardware-free integration gate (see
+  [`renode/README.md`](renode/README.md))
+- Build artifacts (`.bin`/`.elf`/`.hex`) are uploaded
 
 Pushing a `v*` tag additionally publishes a GitHub Release with those artifacts and
 auto-generated notes.

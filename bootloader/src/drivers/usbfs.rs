@@ -65,8 +65,8 @@
 //! `PROVIDE(IEL1 = DefaultHandler)` for that vector slot without editing
 //! `crates/ra4m1-embassy`.
 //!
-//! **U2.3 must add this row to the central table in
-//! `crates/ra4m1-embassy/src/time_driver.rs`:**
+//! This slot is recorded in the central IEL table in
+//! `crates/ra4m1-embassy/src/time_driver.rs`:
 //!
 //! ```text
 //! | IEL1 (#1) | IELSR1 | USBFS INT = 0x033 (combined USB interrupt) | 0xC0 (level 12 of 15) | drivers::usbfs |

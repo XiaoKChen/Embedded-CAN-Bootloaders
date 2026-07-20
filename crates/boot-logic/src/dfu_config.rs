@@ -123,7 +123,7 @@ pub fn parse(block: &[u8]) -> Result<DfuConfig, ParseError> {
     }
     let covered = block.get(..crc_offset).ok_or(ParseError::Truncated)?;
     let stored_crc = le_u16_pair_u32(block, crc_offset).ok_or(ParseError::Truncated)?;
-    if crc32(covered) != stored_crc {
+    if crate::crc32::crc32(covered) != stored_crc {
         return Err(ParseError::Crc);
     }
 
@@ -187,22 +187,6 @@ fn le_u16_pair_u32(block: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-// TODO(U1.x): unify with `crate::crc32` once U0.4 lands — duplicated here so
-// the concurrently-dispatched units never touch each other's files. Same
-// algorithm as SPEC §3.2: reflected 0xEDB88320, init/xorout 0xFFFFFFFF.
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFF_u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            // Branchless LSB-first step: mask = 0xFFFFFFFF when bit0 set.
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +208,7 @@ mod tests {
             block[V2_CMD_ID_OFFSET..V2_CMD_ID_OFFSET + 2].copy_from_slice(&cmd.to_le_bytes());
             block[V2_REPLY_ID_OFFSET..V2_REPLY_ID_OFFSET + 2].copy_from_slice(&reply.to_le_bytes());
         }
-        let crc = crc32(&block[..crc_offset]);
+        let crc = crate::crc32::crc32(&block[..crc_offset]);
         block[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
         block
     }
@@ -233,12 +217,6 @@ mod tests {
         let mut out = [0x00; NAME_LEN];
         out[..name.len()].copy_from_slice(name);
         out
-    }
-
-    #[test]
-    fn crc32_golden_vector() {
-        // Anchors the module-local CRC duplicate to SPEC §3.2 / R14.
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
     }
 
     #[test]

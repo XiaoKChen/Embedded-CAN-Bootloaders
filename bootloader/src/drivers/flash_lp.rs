@@ -31,9 +31,10 @@
 //!   RAM leaves; leaf-to-leaf calls are RAM-to-RAM;
 //! - delays are a local `asm!` SUBS/BNE loop, not `cortex_m::asm::delay`.
 //!
-//! A `#[used]` anchor table ([`RAM_FN_ANCHOR`]) keeps every leaf alive until
-//! U1.3/U1.4 wire the driver in, so RAM residency stays provable with
-//! `llvm-nm` (leaf symbols must resolve to `0x2000_xxxx`).
+//! A `#[used]` anchor table ([`RAM_FN_ANCHOR`]) is retained defensively to
+//! keep every leaf alive even under aggressive inlining/`--gc-sections`, so
+//! RAM residency stays provable with `llvm-nm` (leaf symbols must resolve to
+//! `0x2000_xxxx`) independent of how the tasks happen to call the driver.
 //!
 //! # Preconditions (owned by `ra4m1_embassy::clocks::init_hoco_48mhz`)
 //!
@@ -789,10 +790,11 @@ pub(crate) unsafe fn ram_df_reset() -> u32 {
 
 /// Link-time anchor: keeps every RAM leaf alive through LTO (`#[used]`) and
 /// the linker's `--gc-sections` (the `.flash_lp_anchor` section is `KEEP`ed
-/// in `memory.x`) while `main.rs` does not yet reference the driver (U1.1
-/// ships before U1.3/U1.4), so `llvm-nm` can prove the leaf symbols land in
-/// SRAM. 40 bytes of flash; never read at runtime. (`#[used(linker)]` would
-/// replace the memory.x KEEP, but it is unstable on the pinned toolchain.)
+/// in `memory.x`). Retained defensively even though the tasks now call the
+/// driver: it guarantees `llvm-nm` can prove the leaf symbols land in SRAM
+/// regardless of the call graph. 40 bytes of flash; never read at runtime.
+/// (`#[used(linker)]` would replace the memory.x KEEP, but it is unstable on
+/// the pinned toolchain.)
 struct RamFnAnchor(#[allow(dead_code)] [*const (); 10]); // linker-read only, never at runtime
                                                          // SAFETY: the array is never dereferenced or shared at runtime — it exists
                                                          // only so the linker sees a use of each leaf; fn addresses are plain values.
@@ -1008,20 +1010,6 @@ impl FlashLp {
             chunk_addr += units * FLASH_WRITE_UNIT;
         }
         Ok(())
-    }
-
-    /// Program one full 2 KB block (the CAN protocol's window unit) — a
-    /// fixed-size convenience over [`FlashLp::program`].
-    #[allow(dead_code)] // the CAN task programs the engine's tail-padded window via program_verified
-    pub fn program_block(
-        &mut self,
-        block_addr: u32,
-        block: &[u8; FLASH_BLOCK_SIZE as usize],
-    ) -> Result<(), FlashError> {
-        if !block_addr.is_multiple_of(FLASH_BLOCK_SIZE) {
-            return Err(FlashError::NotAligned);
-        }
-        self.program(block_addr, block)
     }
 
     /// Read-back verify: compare code flash at `addr` against `expected`

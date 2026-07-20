@@ -619,7 +619,8 @@ fn enable_clock<T: Instance>() {
     // SAFETY: shared-reference MMIO to the MSTP block (PAC access model);
     // MSTPCRB is not PRCR-protected on this part (verified by the base time
     // driver's MSTPCRD start). Whole-register RMW clearing only this channel's
-    // bit; init runs single-threaded.
+    // bit; the RMW contains no `.await`, so it is atomic under the cooperative
+    // single executor even if called from a task, and no ISR touches MSTPCRB.
     let mstp = unsafe { &*ra4m1::MSTP::PTR };
     let cur = mstp.mstpcrb.read().bits();
     mstp.mstpcrb

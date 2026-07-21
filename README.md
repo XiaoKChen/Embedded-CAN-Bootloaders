@@ -64,11 +64,12 @@ the provisioned product string, after six real bugs surfaced and were fixed
 ([`f9430fc`](../../commit/f9430fc)) — an `embassy-usb` `enable()`/`PowerDetected` deadlock, the
 USB operational clock defaulting to an unpowered PLL instead of HOCO, the PHY transceiver needing
 re-init once the clock was fixed, an ICU interrupt-clear-at-exit race that wedged delivery under
-the USBFS combined IRQ's SOF rate, and SOF-based suspend/resume ported from TinyUSB. **Enumeration
-and the device-descriptor control-read stage are hardware-confirmed; the full `dfu-util`
-upload/download exchange is not yet bench-verified**, and — like the M1 CAN path — the end-to-end
-`can_flash.py` run also still needs its CAN host adapter on the bench (see the M1 remaining exit
-criteria above).
+the USBFS combined IRQ's SOF rate, and SOF-based suspend/resume ported from TinyUSB. **Enumeration is hardware-confirmed, and
+(2026-07-20) so is the full `dfu-util` flashing path end-to-end**: `dfu-util -D` programs the app
+slot and commits the CRC/metadata record, and `dfu-util -e` (DFU_DETACH) drives the bootloader's
+`sys_reset` → validate → boot handoff — a DFU-uploaded app boots and runs. (The end-to-end CAN
+`can_flash.py` run still needs its CAN host adapter on the bench — see the M1 remaining exit
+criteria above.)
 
 **M3** delivered the from-scratch, MIT/Apache-2.0 RA4M1 application HAL (`crates/ra4m1-hal`,
 [`docs/plan-m3-hal.md`](docs/plan-m3-hal.md)) — for *applications* on this chip, not the
@@ -97,6 +98,16 @@ CAN bit-timing, USB/DFU, real UART baud/framing, and clock tolerance stay HIL-be
 drivers' ICU event numbers and SCI2 line settings remain BENCH-VERIFY items. Emulation complements,
 never replaces, the bench.
 
+**USB-CDC serial (2026-07-20).** The RA4M1 USBFS driver — originally the DFU-only one inside the
+bootloader — was extended with **bulk endpoints** and promoted into `ra4m1-embassy` as a shared,
+feature-gated `usb` module (an `embassy-usb-driver` implementation; the consuming binary binds the
+`IEL1` vector to `usb::on_interrupt`). The `demo-app` drives it with `embassy-usb`'s CDC-ACM class to
+enumerate a **USB virtual COM port** and stream a counter line every second. Hardware-confirmed: a
+DFU-uploaded demo app enumerates as `2341:0370` "USB Serial Device (COMx)" and prints over the port.
+The demo app carries **no boot-to-bootloader trigger pin** — manual DFU entry is the stock UNO R4
+Minima **double-tap reset** (bootloader-side, SPEC §2). The bootloader's own DFU `usbfs.rs` is
+untouched and can rebase onto the shared module later.
+
 ## Memory map
 
 Locked in `docs/plan.md` §1 (supersedes the C-era 16 KB/238 KB split) and enforced by
@@ -121,13 +132,15 @@ crates/
                      memory map, CRC32, image metadata, CAN Update Protocol v1 engine,
                      DFU config parsing
   ra4m1-embassy/     shared chip runtime: clock bring-up, custom embassy-time driver
-                     (GPT320), VBTBKR backup-register access, PFS pin-function writes
+                     (GPT320), VBTBKR backup-register access, PFS pin-function writes,
+                     and the RA4M1 USBFS embassy-usb-driver (`usb` feature)
   ra4m1-hal/         from-scratch MIT/Apache application HAL (M3): GPIO, clocks,
                      GPT/PWM, UART, SPI, I2C, ADC, DAC — embedded-hal 1.0 + async;
                      examples/ per peripheral; bootloader never depends on it
 bootloader/          the bootloader binary crate: boot decision, drivers (flash-LP,
                      CAN0, USB rail, USBFS), tasks (can_update, usb_dfu, led)
-demo-app/            Embassy blinky linked at 0x8000, used to exercise the update path
+demo-app/            Embassy app linked at 0x8000: USB-CDC serial (virtual COM port) +
+                     RTT heartbeat, used to exercise the DFU/CAN update path
 renode/              Renode emulation harness (M2.5, done): custom C# peripheral
                      models + 4 Robot suites (smoke/analog/serial/bootloader),
                      12 cases green on Renode v1.16.1

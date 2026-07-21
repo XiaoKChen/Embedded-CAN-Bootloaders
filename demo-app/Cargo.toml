@@ -2,8 +2,9 @@
 # Cargo.toml — demo-app
 # =============================================================================
 # Demo app linked at 0x8000 (docs/plan.md §1.2 consequence: stock Arduino
-# IDE sketches relink here too): Embassy double-blink + defmt version banner
-# + VBTBKR CAN-entry trigger on D12/P110 (U1.6, docs/plan.md §6).
+# IDE sketches relink here too): USB-CDC serial (virtual COM port) + defmt
+# version-banner heartbeat + LED double-blink. No boot-to-bootloader trigger
+# pin — re-entry is the bootloader-side double-tap reset (U1.6, docs/plan.md §6).
 # =============================================================================
 
 [package]
@@ -13,7 +14,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ra4m1-embassy = { path = "../crates/ra4m1-embassy" }
+ra4m1-embassy = { path = "../crates/ra4m1-embassy", features = ["usb"] }
 ra4m1 = { workspace = true }
 
 # U1.6: thread-mode executor + embassy-time, mirroring bootloader/Cargo.toml
@@ -21,6 +22,12 @@ ra4m1 = { workspace = true }
 # ra4m1-embassy's `embassy-time-driver/tick-hz-3_000_000` feature.
 embassy-executor = { workspace = true, features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { workspace = true, features = ["defmt"] }
+embassy-futures = { workspace = true }
+
+# USB-CDC serial demo. The RA4M1 USBFS driver lives in ra4m1-embassy (`usb`
+# feature); here we only need the embassy-usb device stack + CDC-ACM class.
+embassy-usb = { version = "0.6", features = ["defmt"] }
+heapless = { workspace = true }
 
 cortex-m = { workspace = true, features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = { workspace = true }

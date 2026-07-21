@@ -19,3 +19,8 @@ pub mod clocks;
 pub mod pfs;
 pub mod time_driver;
 pub mod vbtbkr;
+
+/// RA4M1 USBFS device driver (`embassy-usb-driver`), behind the `usb` feature.
+/// The consuming binary binds the `IEL1` vector to [`usb::on_interrupt`].
+#[cfg(feature = "usb")]
+pub mod usb;

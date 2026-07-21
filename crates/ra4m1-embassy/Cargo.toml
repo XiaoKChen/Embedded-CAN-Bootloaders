@@ -41,4 +41,12 @@ embassy-time-driver = { workspace = true, features = ["tick-hz-3_000_000"] }
 # Timer-queue backing for the driver. `integrated-timers`' queue nodes live
 # in embassy-executor's task headers — no capacity limit, no extra RAM.
 embassy-time-queue-utils = { version = "0.3", features = ["integrated-timers"] }
+# USB device driver (`usb` feature): the `embassy-usb-driver` trait impl for the
+# RA4M1 USBFS. Optional so non-USB consumers (e.g. ra4m1-hal) don't pull it.
+embassy-usb-driver = { version = "0.2", features = ["defmt"], optional = true }
 defmt = { workspace = true }
+
+[features]
+# Compile the `usb` module (RA4M1 USBFS `embassy-usb-driver` impl). The binary
+# that enables it binds the IEL1 vector to `usb::on_interrupt`.
+usb = ["dep:embassy-usb-driver"]

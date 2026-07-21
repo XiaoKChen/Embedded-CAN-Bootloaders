@@ -241,7 +241,10 @@ dependencies = [
  "defmt",
  "defmt-rtt",
  "embassy-executor",
+ "embassy-futures",
  "embassy-time",
+ "embassy-usb",
+ "heapless 0.9.3",
  "panic-probe",
  "ra4m1",
  "ra4m1-embassy",
@@ -714,6 +717,7 @@ dependencies = [
  "defmt",
  "embassy-time-driver",
  "embassy-time-queue-utils",
+ "embassy-usb-driver",
  "ra4m1",
 ]
 

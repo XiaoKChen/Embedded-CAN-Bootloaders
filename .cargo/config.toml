@@ -21,7 +21,7 @@
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # `probe-rs chip list` for valid names; R7FA4M1AB per docs/plan.md (ECO §6).
-runner = "probe-rs run --chip R7FA4M1AB"
+runner = "probe-rs run --chip-description-path targets/ra4m1.yaml --chip R7FA4M1AB"  # official Renesas FLM (RA_DFP) -- built-in target corrupts OFS on reflash
 rustflags = [
   "-C", "link-arg=--nmagic",  # no page alignment — saves flash
   "-C", "link-arg=-Tlink.x",  # cortex-m-rt linker script (pulls in memory.x)

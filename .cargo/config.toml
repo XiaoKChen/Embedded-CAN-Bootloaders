@@ -25,7 +25,9 @@ runner = "probe-rs run --chip-description-path targets/ra4m1.yaml --chip R7FA4M1
 rustflags = [
   "-C", "link-arg=--nmagic",  # no page alignment — saves flash
   "-C", "link-arg=-Tlink.x",  # cortex-m-rt linker script (pulls in memory.x)
-  "-C", "link-arg=-Tdefmt.x", # defmt symbol table
+  # `-Tdefmt.x` is NOT here: `defmt.x` only exists when the `defmt` crate is in
+  # the graph, so the lean (default) build would fail to link. bootloader's
+  # build.rs adds it, gated on the `defmt` feature (see that file).
 ]
 
 [build]

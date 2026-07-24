@@ -81,7 +81,8 @@ const TX_TIMEOUT_POLLS: u32 = 2_000_000;
 
 /// Accepted bus bitrates (SPEC §5.2: only these two; the C driver rejected
 /// anything else at run time — the enum makes it unrepresentable).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Bitrate {
     /// 250 kbit/s — Protocol v1 default (R25).
     Kbit250,
@@ -105,7 +106,8 @@ impl Bitrate {
 /// "no data" is `Ok(None)` from [`Can0::try_receive`], and the C driver's
 /// bad-argument errors are unrepresentable here ([`Bitrate`]/[`StandardId`]/
 /// [`Frame`] enforce them by type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CanError {
     /// STR never mirrored the requested CTLR.CANM mode within the poll
     /// bound (init/reinit failure).
@@ -195,6 +197,7 @@ impl embedded_can::Frame for Frame {
     }
 }
 
+#[cfg(feature = "defmt")]
 impl defmt::Format for Frame {
     fn format(&self, f: defmt::Formatter) {
         defmt::write!(

@@ -59,7 +59,8 @@ const RTT_FLUSH_DELAY: Duration = Duration::from_millis(50);
 
 /// How the bootloader entered update mode (SPEC §2.1) — decided by the boot
 /// decision in `main.rs` and fixed for the life of the task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EntryMode {
     /// `VBTBKR[4]` CAN magic: CAN is the only transport; a board that
     /// cannot bring CAN up is useless here → reset on init failure (R35).
@@ -100,7 +101,7 @@ struct Session {
 
 #[embassy_executor::task]
 pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static DfuConfig) {
-    defmt::info!("can_update: entry ({})", mode);
+    info!("can_update: entry ({})", mode);
 
     // Rail (R33) and config (R34) were brought up by `main::run_update_mode`
     // and handed in (U2.3) — shared with `usb_dfu`, never re-read here.
@@ -114,7 +115,7 @@ pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static D
         Err(err) => match mode {
             EntryMode::CanOnly => {
                 // R35: reset back into the normal boot decision.
-                defmt::error!(
+                error!(
                     "can_update: CAN init failed ({}) in CAN-only mode — resetting",
                     err
                 );
@@ -122,7 +123,7 @@ pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static D
                 cortex_m::peripheral::SCB::sys_reset();
             }
             EntryMode::Parked => {
-                defmt::error!(
+                error!(
                     "can_update: CAN init failed ({}) — parked without CAN (R35)",
                     err
                 );
@@ -143,7 +144,7 @@ pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static D
         erase_next: None,
     };
 
-    defmt::info!("can_update: serving at 250 kbit/s (RX poll 500 us)");
+    info!("can_update: serving at 250 kbit/s (RX poll 500 us)");
 
     // No timeout on any await below BY DESIGN: the device is the server and
     // parks forever awaiting commands; the host owns retries (plan §4).
@@ -182,11 +183,11 @@ pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static D
                     // R31: the driver already re-initialized itself; keep
                     // serving — never proceed with a half-programmed slot,
                     // never reset out of update mode on bus errors.
-                    defmt::warn!("can_update: bus-off — re-initialized, still serving");
+                    warn!("can_update: bus-off — re-initialized, still serving");
                     break;
                 }
                 Err(err) => {
-                    defmt::warn!("can_update: rx error ({}) — still serving", err);
+                    warn!("can_update: rx error ({}) — still serving", err);
                     break;
                 }
             }
@@ -197,7 +198,7 @@ pub async fn run(mode: EntryMode, flash: &'static FlashMutex, config: &'static D
     // Deinit CAN (R32: module-stop + pins to reset state), then a clean
     // system reset re-enters the boot decision, which validates and boots
     // the new image (R13 — never a direct jump from update mode).
-    defmt::info!("can_update: GO — deinit CAN and reset");
+    info!("can_update: GO — deinit CAN and reset");
     can.deinit();
     Timer::after(RTT_FLUSH_DELAY).await;
     cortex_m::peripheral::SCB::sys_reset();
@@ -220,7 +221,7 @@ impl Session {
                 Effect::EraseAll => {
                     // Deferred: erase_step() runs one block per task-loop
                     // iteration (R21) and feeds EraseDone when finished.
-                    defmt::info!(
+                    info!(
                         "can_update: ERASE start ({=u32} blocks, metadata first)",
                         ERASE_TOTAL_BLOCKS
                     );
@@ -266,7 +267,7 @@ impl Session {
         let result = {
             let Ok(mut flash) = self.flash.try_lock() else {
                 self.erase_next = None;
-                defmt::error!("can_update: flash busy during erase (unreachable on one executor)");
+                error!("can_update: flash busy during erase (unreachable on one executor)");
                 return Some(self.engine.handle(Event::EraseDone(false)));
             };
             flash.erase_block(addr)
@@ -276,7 +277,7 @@ impl Session {
                 let next = step + 1;
                 if next == ERASE_TOTAL_BLOCKS {
                     self.erase_next = None;
-                    defmt::info!("can_update: ERASE complete");
+                    info!("can_update: ERASE complete");
                     Some(self.engine.handle(Event::EraseDone(true)))
                 } else {
                     self.erase_next = Some(next);
@@ -285,7 +286,7 @@ impl Session {
             }
             Err(err) => {
                 self.erase_next = None;
-                defmt::error!("can_update: erase at {=u32:#x} failed ({})", addr, err);
+                error!("can_update: erase at {=u32:#x} failed ({})", addr, err);
                 Some(self.engine.handle(Event::EraseDone(false)))
             }
         }
@@ -298,7 +299,7 @@ impl Session {
     fn program_window(&mut self, index: u32) -> bool {
         let addr = APP_BASE + index * FLASH_BLOCK_SIZE;
         let Ok(mut flash) = self.flash.try_lock() else {
-            defmt::error!("can_update: flash busy during program (unreachable on one executor)");
+            error!("can_update: flash busy during program (unreachable on one executor)");
             return false;
         };
         // engine.window() lives in this task's static future = SRAM, per
@@ -306,7 +307,7 @@ impl Session {
         match flash.program_verified(addr, self.engine.window()) {
             Ok(()) => true,
             Err(err) => {
-                defmt::error!("can_update: program block {=u32} failed ({})", index, err);
+                error!("can_update: program block {=u32} failed ({})", index, err);
                 false
             }
         }
@@ -317,13 +318,13 @@ impl Session {
     fn write_metadata(&mut self, image_size: u32, image_crc: u32) -> bool {
         let record = MetadataRecord::for_image(image_size, image_crc).to_bytes();
         let Ok(mut flash) = self.flash.try_lock() else {
-            defmt::error!("can_update: flash busy during metadata write (unreachable)");
+            error!("can_update: flash busy during metadata write (unreachable)");
             return false;
         };
         match flash.program_verified(METADATA_ADDR, &record) {
             Ok(()) => true,
             Err(err) => {
-                defmt::error!("can_update: metadata write failed ({})", err);
+                error!("can_update: metadata write failed ({})", err);
                 false
             }
         }
@@ -338,7 +339,7 @@ impl Session {
             return;
         };
         if let Err(err) = can.send(&frame) {
-            defmt::warn!("can_update: reply tx failed ({}) — host retries", err);
+            warn!("can_update: reply tx failed ({}) — host retries", err);
         }
     }
 
@@ -351,7 +352,7 @@ impl Session {
                 return;
             };
             if let Err(err) = can.send(&frame) {
-                defmt::warn!("can_update: INFO tx failed ({}) — host retries", err);
+                warn!("can_update: INFO tx failed ({}) — host retries", err);
                 return;
             }
         }
@@ -374,7 +375,7 @@ async fn compute_app_crc(len: u32) -> u32 {
             // Unreachable: the engine bounds len ≤ APP_SLOT_SIZE, keeping
             // the range inside code flash. Fail closed anyway: the partial
             // CRC cannot match, so VERIFY NAKs ERR_CRC (metadata untouched).
-            defmt::error!("can_update: flash read failed during VERIFY CRC");
+            error!("can_update: flash read failed during VERIFY CRC");
             break;
         }
         crc.update(chunk);

@@ -134,7 +134,7 @@ fn init_pwm(gpt: &ra4m1::GPT163, pfs_reg: &ra4m1::PFS, pmisc: &ra4m1::PMISC) {
     pfs::set_peripheral_function(pfs_reg, pmisc, LED_PORT, LED_PIN, PSEL_GPT1);
     gpt.gtcr.modify(|_, w| w.cst()._1());
 
-    defmt::info!(
+    info!(
         "led: GPT ch3 PWM fade on P111 ({=u32} counts @ 12 MHz, 100 ms step)",
         FADE_PERIOD_COUNTS
     );

@@ -175,7 +175,8 @@ const STATUS_EXIT_TIMEOUT: u32 = 1 << 9;
 /// timeout, bit 9 a P/E-exit timeout. After any `Erase`/`Program`/`Init`
 /// error the leaf has already software-reset the FACI (`FRESETR`) and
 /// returned it to read mode, so the driver remains usable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum FlashError {
     /// R3 guard (tightened, plan §8): erase/program below `APP_BASE`

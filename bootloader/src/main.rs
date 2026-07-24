@@ -21,8 +21,25 @@
 #![no_std]
 #![no_main]
 
+// Debug flavor (`--features defmt`): RTT transport + panic-probe (log + reset).
+#[cfg(feature = "defmt")]
 use defmt_rtt as _; // defmt transport over RTT
+#[cfg(feature = "defmt")]
 use panic_probe as _; // panic = defmt log, then reset
+
+// Lean flavor (default, no defmt): no logger exists, so panic-probe can't be
+// used (it needs a defmt sink). Reset on panic instead — release firmware never
+// loops silently (rules/embassy.md). Kept minimal: no formatting, just a reset.
+#[cfg(not(feature = "defmt"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+// Logging shim: `info!`/`warn!`/`debug!`/`error!`/`trace!` forward to defmt in
+// the debug flavor and no-op (consuming args) in the lean flavor.
+#[macro_use]
+mod fmt;
 
 use boot_logic::dfu_config::{self, DfuConfig};
 use boot_logic::image_meta;
@@ -95,19 +112,19 @@ static CONFIG: StaticCell<DfuConfig> = StaticCell::new();
 #[entry]
 fn main() -> ! {
     let board = board::init();
-    defmt::info!("bootloader: HOCO 48 MHz up (ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24)");
+    info!("bootloader: HOCO 48 MHz up (ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24)");
 
     // SPEC §2 step 1 (R6): double-tap / DFU magic → clear → parked mode.
     if vbtbkr::read_word(&board.system, vbtbkr::DOUBLE_TAP_WORD_OFFSET) == DOUBLE_TAP_MAGIC {
         vbtbkr::clear_word(&board.system, vbtbkr::DOUBLE_TAP_WORD_OFFSET);
-        defmt::info!("boot: double-tap magic — entering parked mode");
+        info!("boot: double-tap magic — entering parked mode");
         run_update_mode(board, EntryMode::Parked);
     }
 
     // SPEC §2 step 2 (R7): app-requested CAN magic → clear → CAN-only mode.
     if vbtbkr::read_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET) == CAN_UPDATE_MAGIC {
         vbtbkr::clear_word(&board.system, vbtbkr::CAN_UPDATE_WORD_OFFSET);
-        defmt::info!("boot: CAN-update magic — entering CAN-only update mode");
+        info!("boot: CAN-update magic — entering CAN-only update mode");
         run_update_mode(board, EntryMode::CanOnly);
     }
 
@@ -132,8 +149,8 @@ fn main() -> ! {
     // (LED fading, CAN listening) — never a dead board.
     match image_meta::app_bootable(&CodeFlashReader) {
         Ok(true) => jump_to_app(&board.system), // SPEC §2 step 5: valid → jump
-        Ok(false) => defmt::warn!("boot: no valid app — parking (fail closed)"),
-        Err(_) => defmt::warn!("boot: flash read failed during validation — parking (fail closed)"),
+        Ok(false) => warn!("boot: no valid app — parking (fail closed)"),
+        Err(_) => warn!("boot: flash read failed during validation — parking (fail closed)"),
     }
     run_update_mode(board, EntryMode::Parked)
 }
@@ -159,18 +176,16 @@ fn run_update_mode(board: board::Board, mode: EntryMode) -> ! {
     // register access — an unpowered rail makes the CAN controller deaf/mute
     // (SPEC §9.1.1). One-shot ~5 ms blocking bring-up (documented exception).
     usb_rail::power_up_transceiver_rail();
-    defmt::info!("boot: transceiver/USB rail powered");
+    info!("boot: transceiver/USB rail powered");
 
     // Stage 2 (R34): the one flash driver, and the per-device config loaded
     // once behind the data-flash gate (shared by both tasks — never re-read).
     let mut flash =
         FlashLp::take().expect("FlashLp::take: driver already taken — run_update_mode re-entered");
     let config: &'static DfuConfig = CONFIG.init(load_config(&mut flash));
-    defmt::info!(
+    info!(
         "boot: config cmd_id={=u16:#x} reply_id={=u16:#x} name_len={=u8}",
-        config.cmd_id,
-        config.reply_id,
-        config.product_len
+        config.cmd_id, config.reply_id, config.product_len
     );
     let flash: &'static FlashMutex = FLASH.init(Mutex::new(flash));
 
@@ -205,15 +220,15 @@ fn run_update_mode(board: board::Board, mode: EntryMode) -> ! {
 /// and the board keeps serving — never a locked core (SPEC §2.4, §9.1.2).
 fn load_config(flash: &mut FlashLp) -> DfuConfig {
     if !flash.data_flash_enable() {
-        defmt::warn!("boot: data flash unproven (R34) — compiled config defaults");
+        warn!("boot: data flash unproven (R34) — compiled config defaults");
         return DfuConfig::default();
     }
-    defmt::info!("boot: data-flash gate passed");
+    info!("boot: data-flash gate passed");
     let mut block = [0u8; dfu_config::V2_BLOCK_LEN];
     match flash.read_data_flash(dfu_config::DFU_CONFIG_ADDR, &mut block) {
         Ok(()) => dfu_config::effective_config(Some(&block)),
         Err(err) => {
-            defmt::warn!("boot: config read failed ({}) — compiled defaults", err);
+            warn!("boot: config read failed ({}) — compiled defaults", err);
             DfuConfig::default()
         }
     }
@@ -233,7 +248,7 @@ fn load_config(flash: &mut FlashLp) -> DfuConfig {
 ///   time-driver counter" requirement holds by construction (see
 ///   `time_driver.rs`'s lifecycle contract). No stop API was needed.
 fn jump_to_app(system: &ra4m1::SYSTEM) -> ! {
-    defmt::info!("boot: valid app — jumping to {=u32:#x}", APP_BASE);
+    info!("boot: valid app — jumping to {=u32:#x}", APP_BASE);
 
     // SAFETY: transient PAC/core singleton re-acquisition on the one-way
     // path out of the bootloader; nothing else runs (pre-executor).

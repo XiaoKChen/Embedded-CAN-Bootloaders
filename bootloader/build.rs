@@ -15,6 +15,17 @@ fn main() {
         .expect("write OUT_DIR/memory.x");
 
     println!("cargo:rustc-link-search={}", out.display());
+
+    // `-Tdefmt.x` (the defmt symbol table) is emitted here, gated on the
+    // `defmt` feature, rather than unconditionally in `.cargo/config.toml`:
+    // `defmt.x` is produced by the `defmt` crate's build script, so the lean
+    // build (defmt absent from the graph) would fail to link with a
+    // "cannot find defmt.x" error if the arg were always present. A cargo
+    // config can't be feature-gated; a build script can (`CARGO_FEATURE_DEFMT`).
+    if env::var_os("CARGO_FEATURE_DEFMT").is_some() {
+        println!("cargo:rustc-link-arg=-Tdefmt.x");
+    }
+
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=build.rs");
 }

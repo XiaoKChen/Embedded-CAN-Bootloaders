@@ -168,11 +168,34 @@ cargo build --release
 cargo test -p boot-logic --target "$(rustc -vV | sed -n 's/host: //p')"
 
 # Build, flash, and stream defmt-RTT logs in one command (probe-rs runner, chip R7FA4M1AB)
-cargo run --release -p bootloader
+cargo run --release -p bootloader --features defmt
 ```
 
 Any CMSIS-DAP/SWD probe works with the `probe-rs` runner above. The M1 hardware smoke test used
 an ESP-Prog-2 running custom `esp-usb-bridge` firmware (CMSIS-DAP over SWD) as a low-cost probe.
+The runner flashes through the custom target [`targets/ra4m1.yaml`](targets/ra4m1.yaml), which
+carries the official Renesas flash algorithm; probe-rs's built-in RA4M1 target corrupts the OFS
+option bytes.
+
+### Build flavors: lean (default) vs debug (`defmt`)
+
+`defmt` is an optional bootloader feature, **off by default**. Both flavors have the same
+functionality (CAN flashing, USB-DFU, CRC/metadata validation, the full boot decision). Only the
+diagnostic logging differs:
+
+| Flavor | Command | `bootloader.bin` | Logging | Panic |
+|--------|---------|------------------|---------|-------|
+| **Lean** (shipped) | `cargo build --release -p bootloader` | **21,344 B** | none: defmt is absent from the graph | reset (`SCB::sys_reset`) |
+| **Debug** | `cargo build --release -p bootloader --features defmt` | ≈ 31,604 B | `defmt` over RTT | `panic-probe` (log, then reset) |
+
+The lean build leaves about 11 KiB of headroom under the 32 KiB (`0x8000`) size gate. The
+`-Tdefmt.x` link argument is emitted from each binary's `build.rs`, not `.cargo/config.toml`,
+because `defmt.x` only exists when the `defmt` crate is in the graph. The bootloader emits it
+only under its `defmt` feature, and `demo-app` (always defmt) emits it unconditionally.
+
+The lean bootloader has been flashed on silicon (UNO R4 Minima via an ESP-Prog SWD probe and
+pyOCD). It boots a valid application, serves a USB-DFU download, and re-enters DFU on a
+double-tap reset.
 
 ## Emulation (Renode) — run the suites
 

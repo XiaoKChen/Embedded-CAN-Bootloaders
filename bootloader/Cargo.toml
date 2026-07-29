@@ -43,7 +43,7 @@ boot-logic = { path = "../crates/boot-logic", default-features = false }
 # git-pinned dep once that repo is pushed — CI needs git, see workspace Cargo.toml).
 # `default-features = false` keeps defmt out of the lean graph; `ra4m1-embassy/defmt`
 # in the `defmt` feature above pulls it back for the debug flavor.
-ra4m1-embassy = { git = "http://172.16.8.103:8003/Embassy/ra4m1-embassy.git", branch = "master", default-features = false }
+ra4m1-embassy = { version = "1.0.0", registry = "gitea", default-features = false }
 ra4m1 = { workspace = true }
 
 # U0.3 (spike S2): thread-mode executor only — no interrupt executor; nothing

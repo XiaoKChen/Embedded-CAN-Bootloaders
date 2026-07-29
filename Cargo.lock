@@ -93,9 +93,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -681,8 +681,9 @@ dependencies = [
 
 [[package]]
 name = "ra4m1-embassy"
-version = "0.1.0"
-source = "git+http://172.16.8.103:8003/Embassy/ra4m1-embassy.git?branch=master#42d336b77d4599f9639dfcb99375fb6c17364c47"
+version = "1.0.0"
+source = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
+checksum = "9f7c4329638c801852a1bdb7274e608651bfac9e5500f9a7e4fe6138544a36e7"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

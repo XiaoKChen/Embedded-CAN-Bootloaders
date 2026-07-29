@@ -30,6 +30,9 @@ rustflags = [
   # build.rs adds it, gated on the `defmt` feature (see that file).
 ]
 
+[registries.gitea]
+index = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
+
 [build]
 target = "thumbv7em-none-eabihf"
 

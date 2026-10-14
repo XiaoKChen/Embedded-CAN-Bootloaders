@@ -3,9 +3,10 @@
  * =============================================================================
  * The stock ESP-IDF 2nd-stage bootloader runs this app when no OTA app is
  * selected: on a fresh board, after an app called can_updater_client (which
- * points the boot partition here), after the recovery GPIO was held at reset
- * (CONFIG_BOOTLOADER_FACTORY_RESET erases otadata), or when every OTA app
- * failed validation / was rolled back. In all of those cases the user wants
+ * points the boot partition here), or when every OTA app failed validation /
+ * was rolled back. (Software recovery — an RTC crash-loop counter and a flash
+ * boot counter the brain trips with EN pulses — arrives in Phase 3; there is
+ * no GPIO recovery, GPIO4 is TWAI TX.) In all of those cases the user wants
  * the updater, so it always parks serving CAN Update Protocol v1 — the only
  * exits are a completed update (GO) or a re-flash over USB/UART.
  *

@@ -36,16 +36,18 @@ restarts into it.
 - **CAN:** the ESP32-S3's TWAI controller via the GPIO matrix to an external
   **3.3 V transceiver** (SN65HVD230, TCAN332, …), 120 Ω at both bus ends.
   TX GPIO, RX GPIO and bitrate are menuconfig options
-  (`./build.sh menuconfig` → *CAN Updater*); defaults **GPIO5 / GPIO6 /
-  250 kbit/s**.
-- **Recovery pin:** **GPIO4**, held low through reset for 5 s, forces the
-  updater (see below).
+  (`./build.sh menuconfig` → *CAN Updater*); defaults **GPIO4 / GPIO5 /
+  250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
+  #2). The brain (WROOM-1U-N16R8, TWAI on GPIO6/GPIO7, driving the node's EN
+  from GPIO3) arrives in later phases.
+- **No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO
+  factory-reset is off (see below).
 
 ## Flash layout (4 MB, `partitions.csv`)
 
 | Partition | Offset | Size | Contents |
 |---|---|---|---|
-| bootloader | `0x0` | — | stock ESP-IDF 2nd stage (rollback + factory-reset GPIO enabled) |
+| bootloader | `0x0` | — | stock ESP-IDF 2nd stage (app rollback enabled) |
 | partition table | `0x8000` | 4 KB | |
 | `nvs` | `0x9000` | 20 KB | application data |
 | `otadata` | `0xE000` | 8 KB | which OTA slot boots (erased = boot `factory`) |
@@ -59,8 +61,8 @@ restarts into it.
 | Path | Mechanism |
 |---|---|
 | **App request** (`can_flash.py --enter-bootloader`) | the app calls `can_updater_client_enter_updater()` (`components/can_updater_client`), which selects `factory` and restarts — the ESP32 twin of the RA4M1 app writing the handoff magic and resetting |
-| **Recovery GPIO** | hold GPIO4 low through reset for 5 s: ESP-IDF's built-in `CONFIG_BOOTLOADER_FACTORY_RESET` erases `otadata` (no app data is erased) and the bootloader boots `factory` — no custom bootloader code |
 | **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
+| **Software recovery** (Phase 3, not yet) | an RTC crash-loop counter, plus a flash boot counter the brain can trip with EN pulses. There is no GPIO recovery: GPIO4 is TWAI TX, and the bootloader would sample the transceiver's D line at reset |
 
 The updater always parks waiting for the host. Because selecting `factory`
 erases `otadata`, a board stays in the updater across resets until an image is

@@ -11,15 +11,10 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # updater on the next reset.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# Hardware recovery path, stock 2nd-stage bootloader (no custom hook): hold
-# GPIO4 low through reset for CONFIG_BOOTLOADER_HOLD_TIME_GPIO (5 s) ->
-# otadata is erased -> the factory app (this updater) boots. The app's own
-# data partitions are left alone (empty erase list).
-CONFIG_BOOTLOADER_FACTORY_RESET=y
-CONFIG_BOOTLOADER_NUM_PIN_FACTORY_RESET=4
-CONFIG_BOOTLOADER_FACTORY_RESET_PIN_LOW=y
-CONFIG_BOOTLOADER_OTA_DATA_ERASE=y
-CONFIG_BOOTLOADER_DATA_FACTORY_RESET=""
+# No GPIO factory-reset (CONFIG_BOOTLOADER_FACTORY_RESET): GPIO4 is the
+# node's TWAI TX, so the bootloader would sample the transceiver's D line at
+# reset. Software recovery (RTC crash-loop counter, EN-pulse boot counter)
+# arrives in Phase 3 (issue #2).
 
 # A hung updater resets (back into itself) instead of only logging.
 CONFIG_ESP_TASK_WDT_PANIC=y

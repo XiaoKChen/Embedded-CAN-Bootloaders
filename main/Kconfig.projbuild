@@ -3,7 +3,7 @@ menu "CAN Updater"
     config CAN_UPDATER_TWAI_TX_GPIO
         int "TWAI TX GPIO (to transceiver TXD)"
         range 0 48
-        default 5
+        default 4
         help
             GPIO driving the external 3.3 V CAN transceiver's TXD input. TWAI
             is routed through the GPIO matrix, so any free output-capable pin
@@ -13,7 +13,7 @@ menu "CAN Updater"
     config CAN_UPDATER_TWAI_RX_GPIO
         int "TWAI RX GPIO (from transceiver RXD)"
         range 0 48
-        default 6
+        default 5
         help
             GPIO reading the external CAN transceiver's RXD output. Same pin
             constraints as the TX GPIO.

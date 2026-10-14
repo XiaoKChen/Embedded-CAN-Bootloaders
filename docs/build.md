@@ -61,7 +61,7 @@ the scripts the next time they run natively; it is only build output.
 
 | Offset | File | What |
 |---|---|---|
-| `0x0` | `build/bootloader/bootloader.bin` | stock 2nd-stage bootloader (rollback + recovery GPIO) |
+| `0x0` | `build/bootloader/bootloader.bin` | stock 2nd-stage bootloader (app rollback) |
 | `0x8000` | `build/partition_table/partition-table.bin` | `partitions.csv` |
 | `0xE000` | `build/ota_data_initial.bin` | empty `otadata` → boots `factory` |
 | `0x20000` | `build/can_updater.bin` | the CAN updater (`factory`) |
@@ -90,18 +90,25 @@ unconfigured, so octal vs. quad PSRAM does not matter to it.
 
 | Option | Default | Notes |
 |---|---|---|
-| `CAN_UPDATER_TWAI_TX_GPIO` | 5 | to the transceiver's TXD |
-| `CAN_UPDATER_TWAI_RX_GPIO` | 6 | from the transceiver's RXD |
+| `CAN_UPDATER_TWAI_TX_GPIO` | 4 | to the transceiver's TXD (TCAN332 `D`) |
+| `CAN_UPDATER_TWAI_RX_GPIO` | 5 | from the transceiver's RXD (TCAN332 `R`) |
 | `CAN_UPDATER_BITRATE` | 250 kbit/s | 125 k / 250 k / 500 k / 1 M; must match `can_flash.py --bitrate` |
 
 TWAI goes through the GPIO matrix, so any free GPIO works. Avoid the strapping
 pins (0, 3, 45, 46), USB (19, 20), flash/PSRAM pins (26–37 on octal-PSRAM
 modules such as the N16R8) and UART0 (43, 44).
 
-The recovery pin is ESP-IDF's own option: **Bootloader config → GPIO triggers
-factory reset** (`BOOTLOADER_NUM_PIN_FACTORY_RESET`, default **4**, active
-low, held for `BOOTLOADER_HOLD_TIME_GPIO` = 5 s). It is set in
-`sdkconfig.defaults` to erase only `otadata` (the app's `nvs` survives).
+The defaults match the node board (ESP32-S3FH4R2 + TCAN332DR, issue #2).
+
+**No recovery pin.** ESP-IDF's GPIO factory reset
+(`CONFIG_BOOTLOADER_FACTORY_RESET`) is off: GPIO4 is the node's TWAI TX, and
+the bootloader would sample the transceiver's D line at reset. Software
+recovery (an RTC crash-loop counter, plus a flash boot counter the brain can
+trip with EN pulses) arrives in Phase 3. Until then the ways into the updater
+are: a fresh board, the app calling `can_updater_client_enter_updater()`, or
+rollback of an app that never marks itself valid. On the bench, erasing
+`otadata` over USB (`python -m esptool --chip esp32s3 erase_region 0xe000
+0x2000`) also brings the updater back.
 
 To keep a board-specific configuration in git, put the overrides in
 `sdkconfig.defaults` (the generated `sdkconfig` is ignored).
@@ -110,8 +117,8 @@ To keep a board-specific configuration in git, put the overrides in
 
 ```
 ESP32-S3                 3.3 V CAN transceiver           bus
-TX GPIO (5) ───────────► TXD                 CANH ───────
-RX GPIO (6) ◄─────────── RXD                 CANL ───────
+TX GPIO (4) ───────────► TXD                 CANH ───────
+RX GPIO (5) ◄─────────── RXD                 CANL ───────
 3V3 ──────────────────── VCC (and VIO)                 120 Ω at both ends
 GND ──────────────────── GND ─── common ground with the host adapter
 ```

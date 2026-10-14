@@ -1,5 +1,5 @@
 # =============================================================================
-# .gitignore — Arduino-Custom-Bootloader (Rust/Embassy CAN bootloader)
+# .gitignore — Embedded-CAN-Bootloaders (Rust/Embassy CAN bootloader)
 # =============================================================================
 # Files and directories that should NEVER be tracked by git.
 # Keep this file grouped by purpose so it stays readable as the project grows.

@@ -1,5 +1,5 @@
 /* =============================================================================
- * test_crc32.c — Host-side Unity tests for crc32_ieee
+ * test_crc32.c — Host-side Unity tests for crc32_ieee / crc32_ieee_update
  * =============================================================================
  * Golden vectors for the IEEE 802.3 / zlib-compatible CRC32 (reflected,
  * poly 0xEDB88320, init 0xFFFFFFFF, final XOR 0xFFFFFFFF).
@@ -44,13 +44,20 @@ static void test_all_0xff_write_unit(void)
     TEST_ASSERT_EQUAL_HEX32(0x2144DF1Cu, crc32_ieee(erased, sizeof(erased)));
 }
 
-static void test_incremental_vs_whole_differs_by_design(void)
+static void test_update_over_chunks_matches_one_shot(void)
 {
-    /* crc32_ieee is one-shot (no running-state API); a concatenation is NOT
-     * the CRC of the parts. Guard against accidental "resumable" misuse. */
-    const uint8_t part_a[] = {'1', '2', '3', '4'};
-    const uint8_t whole[]  = {'1', '2', '3', '4', '1', '2', '3', '4'};
-    TEST_ASSERT_NOT_EQUAL(crc32_ieee(part_a, 4u), crc32_ieee(whole, 8u));
+    /* zlib-style chaining: feeding "1234" then "56789" through
+     * crc32_ieee_update equals the one-shot CRC of "123456789". */
+    const uint8_t *msg = (const uint8_t *)"123456789";
+    const uint32_t first = crc32_ieee_update(0u, msg, 4u);
+    TEST_ASSERT_EQUAL_HEX32(crc32_ieee(msg, 4u), first);
+    TEST_ASSERT_EQUAL_HEX32(0xCBF43926u, crc32_ieee_update(first, &msg[4], 5u));
+}
+
+static void test_update_with_empty_chunk_is_identity(void)
+{
+    const uint32_t crc = crc32_ieee((const uint8_t *)"a", 1u);
+    TEST_ASSERT_EQUAL_HEX32(crc, crc32_ieee_update(crc, (const uint8_t *)"", 0u));
 }
 
 int main(void)
@@ -60,6 +67,7 @@ int main(void)
     RUN_TEST(test_empty_input_is_zero);
     RUN_TEST(test_single_byte_a);
     RUN_TEST(test_all_0xff_write_unit);
-    RUN_TEST(test_incremental_vs_whole_differs_by_design);
+    RUN_TEST(test_update_over_chunks_matches_one_shot);
+    RUN_TEST(test_update_with_empty_chunk_is_identity);
     return UNITY_END();
 }

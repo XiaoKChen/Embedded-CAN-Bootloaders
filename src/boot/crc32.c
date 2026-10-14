@@ -9,9 +9,9 @@
 
 #define CRC32_POLY_REFLECTED 0xEDB88320u
 
-uint32_t crc32_ieee(const uint8_t *data, uint32_t len)
+uint32_t crc32_ieee_update(uint32_t crc, const uint8_t *data, uint32_t len)
 {
-    uint32_t crc = 0xFFFFFFFFu;
+    crc ^= 0xFFFFFFFFu;  /* undo the previous chunk's final XOR */
 
     for (uint32_t i = 0u; i < len; i++) {
         crc ^= data[i];
@@ -20,4 +20,9 @@ uint32_t crc32_ieee(const uint8_t *data, uint32_t len)
         }
     }
     return crc ^ 0xFFFFFFFFu;
+}
+
+uint32_t crc32_ieee(const uint8_t *data, uint32_t len)
+{
+    return crc32_ieee_update(0u, data, len);
 }

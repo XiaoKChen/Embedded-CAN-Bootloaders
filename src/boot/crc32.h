@@ -21,6 +21,14 @@ extern "C" {
 
 uint32_t crc32_ieee(const uint8_t *data, uint32_t len);
 
+/**
+ * Continue a CRC32 over the next chunk of a longer buffer (zlib crc32()
+ * semantics): start with crc = 0, feed each chunk's previous result back in.
+ * crc32_ieee_update(crc32_ieee_update(0, a, n), b, m) equals crc32_ieee over
+ * the concatenation a||b. Lets callers CRC data they can only read in chunks.
+ */
+uint32_t crc32_ieee_update(uint32_t crc, const uint8_t *data, uint32_t len);
+
 #ifdef __cplusplus
 }
 #endif

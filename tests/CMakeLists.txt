@@ -3,7 +3,7 @@
 # =============================================================================
 # Standalone:  cmake -S tests -B build-host && cmake --build build-host
 #              && ctest --test-dir build-host --output-on-failure
-# Also usable via add_subdirectory(tests) from the root CMakeLists.
+# (The repo root is the ESP-IDF firmware project; host tests build alone.)
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.20)

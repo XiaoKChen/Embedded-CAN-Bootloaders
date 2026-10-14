@@ -113,12 +113,14 @@ Builds are automated by GitHub Actions
   xPack **gcc 14.2.1** toolchain, fetches the `.gitignore`d CMSIS_5/FSP deps,
   and enforces the 16,384-byte size gate — the build artifacts are attached to
   the run.
-- **Pushing a `v*` tag** additionally publishes a GitHub Release with the
-  version-named `.hex`/`.bin`/`.elf` and auto-generated notes.
+- **Pushing a `c-cpp-ra4m1-v*` tag** additionally publishes a GitHub Release with the
+  version-named `.hex`/`.bin`/`.elf` (the prefix is stripped, so tag
+  `c-cpp-ra4m1-v1.0.3` yields `bootloader-uno_r4-v1.0.3.*`) and auto-generated
+  notes. Releases up to `v1.0.2` used the old plain `v*` tags.
 
 ```sh
 # Cut a release: tag and push — CI builds and publishes it.
-git tag v1.0.0 && git push origin v1.0.0
+git tag c-cpp-ra4m1-v1.0.3 && git push origin c-cpp-ra4m1-v1.0.3
 ```
 
 The bootloader firmware has no embedded version field; "version" here is the

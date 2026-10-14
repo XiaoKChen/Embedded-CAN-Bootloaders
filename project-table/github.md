@@ -5,8 +5,8 @@ GitHub Actions CI/CD configuration: automated Linux build of the bootloader and
 tag-driven GitHub Releases.
 
 ### .github/workflows/
-- **Responsibility:** Build the UNO R4 Minima bootloader on every push/PR and publish a versioned GitHub Release when a `v*` tag is pushed.
+- **Responsibility:** Build the UNO R4 Minima bootloader on every push/PR and publish a versioned GitHub Release when a `c-cpp-ra4m1-v*` tag is pushed (releases up to `v1.0.2` used the old plain `v*` tags).
 - **Key files:** `release.yml`
 - **Relationships:** runs `scripts/ci-build.sh` (which builds `vendor/arduino-renesas-bootloader` and enforces the size gate); pins the same xPack `arm-none-eabi-gcc` version documented in `docs/build.md`; produces the release artifacts referenced by `README.md`'s Releases section.
 
-- **release.yml** — Two-job workflow. `build` (on push to `version/c-cpp/ra4m1`, `v*` tags, PRs to `version/c-cpp/ra4m1`, and `workflow_dispatch`): checks out, caches/installs xPack `arm-none-eabi-gcc 14.2.1-1.1` (Linux x64) onto PATH, runs `scripts/ci-build.sh`, renames the outputs to `bootloader-uno_r4-<version>.{hex,bin,elf}` (version = tag name on tags, short SHA otherwise), and uploads them as build artifacts. `release` (only on `v*` tags, `permissions: contents: write`): downloads the artifacts and creates a GitHub Release via `softprops/action-gh-release@v2` with auto-generated notes.
+- **release.yml** — Two-job workflow. `build` (on push to `version/c-cpp/ra4m1`, `c-cpp-ra4m1-v*` tags, PRs to `version/c-cpp/ra4m1`, and `workflow_dispatch`): checks out, caches/installs xPack `arm-none-eabi-gcc 14.2.1-1.1` (Linux x64) onto PATH, runs `scripts/ci-build.sh`, renames the outputs to `bootloader-uno_r4-<version>.{hex,bin,elf}` (version = tag name minus the `c-cpp-ra4m1-` prefix on tags, e.g. `v1.0.3`; short SHA otherwise), and uploads them as build artifacts. `release` (only on `c-cpp-ra4m1-v*` tags, `permissions: contents: write`): downloads the artifacts and creates a GitHub Release via `softprops/action-gh-release@v2` with auto-generated notes.

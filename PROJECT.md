@@ -48,7 +48,7 @@ can sit in bootloader mode on one bus and be addressed individually).
 - **tools/** — Host-side python-can CLI/TUI (`can-flash/`) that flashes an application image to the bootloader over CAN (Protocol v1, the same one in `src/boot/can_update.c`), and can also identify (`--info`), scan (`--scan`), and remotely reboot boards into the bootloader (`--enter-bootloader`).
 - **docs/** — Build/flash guide, the dated research/decision document, and byte-exact reference artifacts (stock hex, reference linker script) for verification and unbricking.
 - **scripts/** — Linux build helper (`ci-build.sh`): fetches the gitignored deps and runs the Make build + size gate.
-- **.github/** — GitHub Actions workflow that builds the firmware on push/PR and publishes a versioned Release on `v*` tags.
+- **.github/** — GitHub Actions workflow that builds the firmware on push/PR and publishes a versioned Release on `c-cpp-ra4m1-v*` tags.
 - **vendor/** — Vendored third-party build inputs: Arduino's `arduino-renesas-bootloader` fork (where `src/` is integrated), tinyusb 0.17.0, Renesas FSP, ARM CMSIS_5, and standalone RA4M1 device headers.
 
 The pure-logic `src/boot/` core is developed and tested on the host, then compiled into the vendored `arduino-renesas-bootloader` fork (behind the `CAN_LOADER` and `DFU_CUSTOM_NAME` Makefile flags) to produce the firmware image; `tools/can-flash/` is the host counterpart that speaks the CAN update protocol to the flashed device.

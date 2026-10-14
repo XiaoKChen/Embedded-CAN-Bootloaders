@@ -144,7 +144,8 @@ GND ──────────────────── GND ─── c
 ```
 
 Use a 3.3 V part (SN65HVD230, TCAN332, MCP2562 with VIO = 3.3 V). Tie any
-standby/silent pin to its active level.
+standby/silent pin to its active level. To test a wired board with a PC and
+a USB-CAN adapter, follow **[bench-test.md](bench-test.md)**.
 
 ## Per-device CAN IDs and INFO name (optional)
 

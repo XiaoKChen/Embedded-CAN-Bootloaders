@@ -15,6 +15,11 @@ offset. Checkout paths with spaces work on Windows (via a data-less junction,
 see the guide); on Linux/macOS clone to a path without spaces. Details:
 **[docs/build.md](docs/build.md)**.
 
+A first argument naming another project builds it with the same ESP-IDF,
+e.g. the bench-test app: `./build.sh examples/bench_app`. Testing a node on
+the bench with a PC and a USB-CAN adapter:
+**[docs/bench-test.md](docs/bench-test.md)**.
+
 ---
 
 Flash an application `.bin` onto custom **ESP32-S3** boards over classic CAN
@@ -144,5 +149,6 @@ git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
 │                          RA4M1 prior art, host-tested but not in the firmware)
 ├── tests/                 Unity/CTest host tests for src/boot/
 ├── tools/can-flash/       python-can host flasher / scanner / TUI
-└── docs/                  build guide; research/ holds the RA4M1 prior art
+└── docs/                  build and bench-test guides; research/ holds the
+                           RA4M1 prior art
 ```

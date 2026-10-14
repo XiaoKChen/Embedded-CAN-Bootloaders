@@ -138,6 +138,7 @@ git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
 ├── components/
 │   ├── boot_core/         compiles src/boot/ into the firmware
 │   └── can_updater_client/  app-side "enter the updater" call
+├── examples/bench_app/    minimal OTA app for bench tests (docs/bench-test.md)
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
 │                          config-block parser; image_validate/memory_map are
 │                          RA4M1 prior art, host-tested but not in the firmware)

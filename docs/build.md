@@ -41,6 +41,26 @@ repo-local environment:
 powershell -ExecutionPolicy Bypass -File build.ps1 -p COM5 flash monitor
 ```
 
+**Another project.** A first argument naming an ESP-IDF project directory
+(relative to the repo root) builds that project instead, with the same
+repo-local ESP-IDF. Without further arguments it runs `idf.py app`, since an
+application only needs its OTA image, and prints that image's path. Any
+remaining arguments go to `idf.py` as above:
+
+```sh
+./build.sh examples/bench_app                                # -> examples/bench_app/build/bench_app.bin
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app menuconfig
+```
+
+(It is positional rather than a `-Project` switch, because PowerShell would
+bind idf.py's `-p` port option to `-Project` by prefix.) `build`, `size` or
+`flash` on an application also builds its own bootloader, which is never
+used. In a deep Windows checkout, that sub-project's object paths exceed
+`MAX_PATH` and CMake warns, so stay with the default `app`. The bench-test app
+and its rollback-test variant are described in
+**[bench-test.md](bench-test.md)**.
+
 Changing the pin in `idf-version.txt` makes the next run replace
 `.tools/esp-idf` with the new tag. CI (`.github/workflows/esp32-build.yml`)
 runs the same `build.sh`, so CI and local builds always use the same ESP-IDF.
@@ -159,7 +179,8 @@ faults on it.
 
 ## Integrating an application
 
-An application that should be updatable over CAN:
+An application that should be updatable over CAN (`examples/bench_app/` is a
+minimal working example):
 
 1. **Use the updater's layout.** Copy `partitions.csv` and set, in the app's
    `sdkconfig.defaults`:

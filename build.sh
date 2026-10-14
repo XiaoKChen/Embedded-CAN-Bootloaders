@@ -2,11 +2,15 @@
 # =============================================================================
 # build.sh - One-command build of the ESP32-S3 CAN updater (Linux / macOS)
 # =============================================================================
-#   ./build.sh [idf.py arguments]
+#   ./build.sh [project dir] [idf.py arguments]
 #
 # With no arguments it runs `idf.py build` and prints each binary and its
 # flash offset; any arguments are passed to idf.py instead, inside the same
 # repo-local environment (e.g. `menuconfig`, or `-p /dev/ttyUSB0 flash`).
+#
+# An optional first argument naming another ESP-IDF project directory,
+# relative to the repo root (e.g. `examples/bench_app`), builds that project
+# instead of the updater, with the same ESP-IDF install.
 #
 # First run: clones ESP-IDF (the exact tag in idf-version.txt) into
 # .tools/esp-idf, installs its esp32s3 toolchain, CMake, Ninja and Python
@@ -27,8 +31,15 @@ idf_version="$(head -n 1 "$repo_root/idf-version.txt" | tr -d '[:space:]')"
 tools_dir="$repo_root/.tools"
 idf_path="$tools_dir/esp-idf"
 idf_tools_path="$tools_dir/espressif"
-build_dir="$repo_root/build"
 install_stamp="$idf_tools_path/installed-$idf_version-$target"
+
+# Anything that is not a project directory goes to idf.py untouched.
+project_dir="$repo_root"
+if [ $# -gt 0 ] && [ -f "$repo_root/$1/CMakeLists.txt" ]; then
+    project_dir="$(cd "$repo_root/$1" && pwd)"
+    shift
+fi
+build_dir="$project_dir/build"
 
 fail() { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 step() { printf '==> %s\n' "$*"; }
@@ -115,13 +126,13 @@ command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1 \
 cache="$build_dir/CMakeCache.txt"
 if [ -f "$cache" ]; then
     configured="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache")"
-    if [ "$configured" != "$repo_root" ]; then
+    if [ "$configured" != "$project_dir" ]; then
         step "Discarding build/ configured for '$configured'"
         rm -rf "$build_dir"
     fi
 fi
 
-cd "$repo_root"
+cd "$project_dir"
 if [ ! -f sdkconfig ]; then
     step "idf.py set-target $target"
     idf.py set-target "$target" || fail "idf.py set-target failed"
@@ -131,12 +142,29 @@ if [ $# -gt 0 ]; then
     idf.py "$@" || fail "idf.py $* failed"
     exit 0  # custom idf.py command: its own output says what it did
 fi
-step "idf.py build"
-idf.py build || fail "idf.py build failed"
+# An application needs only its OTA image: `app` skips its bootloader, which
+# is never flashed (and whose object paths overflow CMake's limit under a
+# long checkout path).
+action=build
+[ "$project_dir" = "$repo_root" ] || action=app
+step "idf.py $action"
+idf.py "$action" || fail "idf.py $action failed"
 
 # -----------------------------------------------------------------------------
 # 5. Where the binaries are (offsets straight from the build's flasher args)
 # -----------------------------------------------------------------------------
+if [ "$project_dir" != "$repo_root" ]; then
+    # An application reaches the board over CAN. Its flasher args would put it
+    # in the first app partition, `factory`, replacing the updater.
+    printf '\nBuilt with ESP-IDF %s for %s. OTA image to flash over CAN (tools/can-flash):\n' "$idf_version" "$target"
+    python - "$build_dir" <<'EOF'
+import json, os, sys
+build_dir = sys.argv[1]
+print("  " + os.path.join(build_dir, json.load(open(os.path.join(build_dir, "flasher_args.json")))["app"]["file"]))
+EOF
+    printf 'Do not idf.py flash it onto an updater board. Details: docs/bench-test.md\n'
+    exit 0
+fi
 printf '\nBuilt with ESP-IDF %s for %s. Flash offsets and files:\n' "$idf_version" "$target"
 python - "$build_dir" <<'EOF'
 import json, os, sys

@@ -1,0 +1,13 @@
+menu "Bench App"
+
+    config BENCH_APP_SKIP_MARK_VALID
+        bool "Skip marking the image valid (rollback test)"
+        default n
+        help
+            Leave the image in PENDING_VERIFY instead of calling
+            esp_ota_mark_app_valid_cancel_rollback(). It runs once; the next
+            reset makes the bootloader roll it back, which lands the board in
+            the CAN updater. Build it in its own build dir with
+            sdkconfig.skip_mark_valid (docs/bench-test.md).
+
+endmenu

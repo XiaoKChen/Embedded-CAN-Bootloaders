@@ -19,3 +19,5 @@ sdkconfig
 sdkconfig.old
 managed_components/
 /.tools/
+# bench app's SKIP_MARK_VALID build dir (docs/bench-test.md)
+/examples/bench_app/skip/

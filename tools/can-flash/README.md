@@ -58,8 +58,8 @@ CAN transceiver (e.g. **SN65HVD230**, **TCAN332**, **MCP2562** with VIO at
 
 | ESP32-S3 | Transceiver |
 |----------|-------------|
-| TWAI TX GPIO (menuconfig, default GPIO5) | TXD |
-| TWAI RX GPIO (menuconfig, default GPIO6) | RXD |
+| TWAI TX GPIO (menuconfig, default GPIO4) | TXD |
+| TWAI RX GPIO (menuconfig, default GPIO5) | RXD |
 | 3V3      | VCC (VIO) |
 | GND      | GND (common ground with the adapter) |
 
@@ -73,8 +73,7 @@ The updater accepts an update whenever it is running, which is when:
 - the **application requests it**: it calls
   `can_updater_client_enter_updater()` (component
   `components/can_updater_client`), which selects the `factory` partition and
-  restarts — see `docs/build.md`,
-- the **recovery GPIO** (default GPIO4) is held low through reset for 5 s, or
+  restarts — see `docs/build.md`, or
 - **no valid application** is selected (fresh board, or a rolled-back app) —
   the board then stays in the updater waiting for an upload.
 

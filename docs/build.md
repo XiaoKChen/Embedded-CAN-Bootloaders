@@ -213,9 +213,11 @@ applications over CAN (or with esptool to `ota_0` at `0x80000` plus a matching
 ## Host tests
 
 ```sh
-cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
+cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host -C Debug --output-on-failure
 ```
 
-They cover the shared pure-logic core in `src/boot/` (protocol engine, CRC32,
+`-C Debug` is needed with multi-config generators (the Visual Studio default
+on Windows) and ignored by single-config ones. They cover the shared
+pure-logic core in `src/boot/` (protocol engine, CRC32,
 config-block parser, and the RA4M1 image validator kept as prior art). No
 ESP-IDF needed.

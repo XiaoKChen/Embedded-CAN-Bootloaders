@@ -110,7 +110,7 @@ IDs, and the first USB/UART flash of a board: **[docs/build.md](docs/build.md)**
 ## Tests and CI
 
 ```sh
-cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
+cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host -C Debug --output-on-failure
 ```
 
 `.github/workflows/esp32-build.yml` runs the host tests and `./build.sh` on

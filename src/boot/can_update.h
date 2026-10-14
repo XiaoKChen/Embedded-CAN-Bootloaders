@@ -48,7 +48,7 @@
  * command is strictly ordered and NAKs err 0x05 out of order).
  *
  * Fail-safe (power loss at any instant) — the HAL contract below guarantees
- * the slot being written is never the image the device boots before GO:
+ * the slot being written is never selected for boot before GO:
  *   during ERASE / DATA ..... slot partial, not selected for boot -> the
  *                             device comes back up in the updater
  *   after VERIFY, before GO . image accepted but not selected -> updater
@@ -108,8 +108,8 @@ extern "C" {
  * -----------------------------------------------------------------------------
  * Offsets are relative to the start of the update slot. The contract every
  * implementation keeps (it is what makes the fail-safe table hold): the slot
- * written here is never the image the device boots until slot_activate has
- * returned true.
+ * written here is never the one selected for boot (ESP32: otadata) until
+ * slot_activate has returned true.
  */
 typedef struct {
     /* Bytes the slot can hold: announced in the HELLO ACK, bounds SIZE. */

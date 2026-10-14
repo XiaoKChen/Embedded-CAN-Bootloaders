@@ -13,3 +13,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.swp
+
+# ESP-IDF (generated config, local toolchain, component manager)
+sdkconfig
+sdkconfig.old
+managed_components/
+/.tools/

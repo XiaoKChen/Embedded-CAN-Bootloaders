@@ -1,0 +1,25 @@
+# ESP32-S3 CAN updater — committed defaults (sdkconfig itself is generated).
+CONFIG_IDF_TARGET="esp32s3"
+
+# 4 MB layout shared by every supported board (see partitions.csv).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# A freshly CAN-flashed app boots PENDING_VERIFY; if it never calls
+# esp_ota_mark_app_valid_cancel_rollback() the bootloader falls back to the
+# updater on the next reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Hardware recovery path, stock 2nd-stage bootloader (no custom hook): hold
+# GPIO4 low through reset for CONFIG_BOOTLOADER_HOLD_TIME_GPIO (5 s) ->
+# otadata is erased -> the factory app (this updater) boots. The app's own
+# data partitions are left alone (empty erase list).
+CONFIG_BOOTLOADER_FACTORY_RESET=y
+CONFIG_BOOTLOADER_NUM_PIN_FACTORY_RESET=4
+CONFIG_BOOTLOADER_FACTORY_RESET_PIN_LOW=y
+CONFIG_BOOTLOADER_OTA_DATA_ERASE=y
+CONFIG_BOOTLOADER_DATA_FACTORY_RESET=""
+
+# A hung updater resets (back into itself) instead of only logging.
+CONFIG_ESP_TASK_WDT_PANIC=y

@@ -65,7 +65,7 @@ PROJECT.md
 # C bootloader-era leftovers (live on the `main` branch, not the Embassy rewrite)
 # -----------------------------------------------------------------------------
 # These directories are tracked on `main` (the original C bootloader) and remain
-# as untracked working-tree copies here after `version/embassy` cleared the C
+# as untracked working-tree copies here after `version/embassy/ra4m1` cleared the C
 # tree. They are NOT part of the Rust build; read them via `git show main:<path>`
 # when needed. `build-host/` is the C project's CMake out-of-source build dir.
 vendor/

@@ -2,10 +2,10 @@
 
 A custom bootloader for the Arduino UNO R4 Minima (Renesas **RA4M1**, Cortex-M4F) that adds
 **flash-over-CAN** and flash-time-configurable USB DFU identity/CAN-IDs on top of the stock
-upload workflow. This branch (`version/embassy`) is a from-scratch rewrite of the bootloader in
+upload workflow. This branch (`version/embassy/ra4m1`) is a from-scratch rewrite of the bootloader in
 Rust on the [Embassy](https://github.com/embassy-rs/embassy) async framework, running directly
 against the `ra4m1` PAC (no Embassy HAL exists for RA yet). The original C bootloader (TinyUSB +
-FSP) lives on `main` and is preserved as both prior art and the recovery/reference image.
+FSP) lives on `version/c-cpp/ra4m1` and is preserved as both prior art and the recovery/reference image.
 
 Full design record: [`docs/plan.md`](docs/plan.md) (locked decisions, workspace layout, milestone
 plan) and [`docs/research/`](docs/research/) (behavior spec + ecosystem findings the plan is

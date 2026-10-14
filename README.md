@@ -69,4 +69,14 @@ stage-0 bootloader:
 ## Releases
 
 Prebuilt binaries are published on the [Releases](../../releases) page by each
-branch's CI workflow.
+branch's CI workflow. Release tags carry the branch's `<language>-<target>` prefix
+so the variants never collide:
+
+| Branch | Release tag |
+|---|---|
+| `version/c-cpp/ra4m1` | `c-cpp-ra4m1-vX.Y.Z` |
+| `version/embassy/ra4m1` | `embassy-ra4m1-vX.Y.Z` |
+| `version/c-cpp/esp32` | `c-cpp-esp32-vX.Y.Z` |
+
+Releases made before this scheme use plain tags: `v1.0.0`–`v1.0.2` are the C/C++
+RA4M1 bootloader and `v0.1.0-alpha.1` is the Embassy RA4M1 bootloader.

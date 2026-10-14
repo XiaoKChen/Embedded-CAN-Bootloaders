@@ -1,0 +1,85 @@
+# =============================================================================
+# esp32-build.yml — Host tests + ESP32-S3 updater build; release on c-cpp-esp32-v*
+# =============================================================================
+# The firmware is built with ./build.sh, the same one-command script users
+# run, so CI and local builds share the ESP-IDF pin in idf-version.txt.
+# Release tags follow <lang>-<target>-v* across branches (c-cpp-ra4m1-v*,
+# embassy-ra4m1-v*): this one is c-cpp-esp32-v*, and the release/artifact
+# version is the tag minus that prefix (c-cpp-esp32-v1.0.0 -> v1.0.0).
+# =============================================================================
+
+name: esp32-build
+
+on:
+  push:
+    branches: [version/c-cpp/esp32]
+    tags: ['c-cpp-esp32-v*']
+  pull_request:
+    branches: [version/c-cpp/esp32]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12'
+
+      - name: Host tests (pure-logic core)
+        run: |
+          cmake -S tests -B build-host
+          cmake --build build-host
+          ctest --test-dir build-host --output-on-failure
+
+      - name: Cache ESP-IDF and its tools
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          # The cached virtualenv is bound to this exact interpreter.
+          key: esp-idf-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('idf-version.txt') }}
+
+      - name: Build firmware
+        run: ./build.sh
+
+      - name: Stage binaries
+        run: |
+          mkdir -p dist
+          cd build
+          cp --parents bootloader/bootloader.bin partition_table/partition-table.bin \
+             ota_data_initial.bin can_updater.bin flash_args flasher_args.json ../dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-can-updater
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/c-cpp-esp32-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: esp32s3-can-updater
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#c-cpp-esp32-}"   # c-cpp-esp32-v1.0.0 -> v1.0.0
+          (cd dist && zip -r "../esp32s3-can-updater-${version}.zip" .)
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "ESP32-S3 CAN updater ${version}" --generate-notes \
+            "esp32s3-can-updater-${version}.zip" \
+            dist/bootloader/bootloader.bin dist/partition_table/partition-table.bin \
+            dist/ota_data_initial.bin dist/can_updater.bin

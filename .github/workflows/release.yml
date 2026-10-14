@@ -2,10 +2,10 @@ name: Build & Release Bootloader
 
 on:
   push:
-    branches: [main]
+    branches: [version/c-cpp/ra4m1]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [version/c-cpp/ra4m1]
   workflow_dispatch:
 
 permissions:

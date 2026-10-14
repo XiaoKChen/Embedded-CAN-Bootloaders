@@ -109,7 +109,7 @@ page — grab `bootloader-uno_r4-<version>.hex` and flash it over SWD (see above
 Builds are automated by GitHub Actions
 (`.github/workflows/release.yml`, which calls `scripts/ci-build.sh`):
 
-- **Every push / PR to `main`** builds the firmware on Linux with the pinned
+- **Every push / PR to `version/c-cpp/ra4m1`** builds the firmware on Linux with the pinned
   xPack **gcc 14.2.1** toolchain, fetches the `.gitignore`d CMSIS_5/FSP deps,
   and enforces the 16,384-byte size gate — the build artifacts are attached to
   the run.

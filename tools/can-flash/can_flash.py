@@ -78,6 +78,7 @@ ERR_FLASH_FAILURE = 0x02
 ERR_CRC_MISMATCH = 0x03
 ERR_SIZE_BOUNDS = 0x04
 ERR_BAD_STATE = 0x05
+ERR_IMAGE_REJECTED = 0x06      # CRC ok, target refused the image (ESP32: not a valid esp32s3 app)
 
 ERR_NAMES = {
     ERR_UNEXPECTED_SEQ: "unexpected sequence number",
@@ -85,6 +86,7 @@ ERR_NAMES = {
     ERR_CRC_MISMATCH: "CRC mismatch",
     ERR_SIZE_BOUNDS: "image size out of bounds",
     ERR_BAD_STATE: "command received in bad state",
+    ERR_IMAGE_REJECTED: "image rejected by the target (not a valid app for this chip?)",
 }
 
 FRAME_DLC = 8
@@ -107,7 +109,9 @@ SEND_TIMEOUT_S = 2.0           # give a full local TX queue this long to drain
 EARLY_POLL_EVERY_FRAMES = 32
 EARLY_POLL_TIMEOUT_S = 0.001
 
-EXPECTED_SLOT_SIZE = 0x0003_B800  # 243,712 bytes announced in the HELLO ACK
+# ESP32-S3 updater: one OTA slot of partitions.csv (1.75 MB = 896 windows),
+# announced in the HELLO ACK.
+EXPECTED_SLOT_SIZE = 0x001C_0000
 
 # ---------------------------------------------------------------------------
 # Airform RPC: reboot a RUNNING app into the CAN bootloader (no ACK expected)
@@ -188,6 +192,25 @@ def frame_payload_range(image_size, frame_index):
         image_size - offset,
     )
     return offset, valid
+
+
+def window_start_seq(window):
+    return (window * FRAMES_PER_WINDOW) % SEQ_MODULUS
+
+
+def rewind_window(window, n_windows, seq):
+    """Map a rewind NAK's seq to the window the bootloader wants resent.
+
+    The bootloader is always filling either our current window or, when our
+    ACK for it was lost, the next one -- never anything further away. Window
+    start seqs repeat every 128 windows (342 mod 256 = 86, period 128), so
+    resolving only against those two keeps the mapping unique for slots of
+    any size (an ESP32 OTA slot spans 896 windows). Returns None if neither
+    matches."""
+    for candidate in (window, window + 1):
+        if candidate < n_windows and window_start_seq(candidate) == seq:
+            return candidate
+    return None
 
 
 def _pad_frame(data):
@@ -319,12 +342,6 @@ class CanFlasher:
     def send_image(self, image):
         size = len(image)
         n_windows = window_count(size)
-        # Window start seqs are unique across the transfer: consecutive starts
-        # differ by 342 mod 256 = 86, which has period 128 windows, and the
-        # app slot holds at most 119 blocks -- so a rewind seq maps to exactly
-        # one window.
-        seq_to_window = {(w * FRAMES_PER_WINDOW) % SEQ_MODULUS: w
-                         for w in range(n_windows)}
         started = time.monotonic()
         window = 0
         attempts = 0
@@ -357,7 +374,7 @@ class CanFlasher:
                 # The bootloader NAKs every frame after a seq gap; flush the
                 # burst before resending or we would misread stale NAKs.
                 self._drain()
-                target = seq_to_window.get(arg)
+                target = rewind_window(window, n_windows, arg)
                 if target is None:
                     raise FlashError(
                         "bootloader asked to rewind to unknown seq 0x%02X" % arg)
@@ -806,10 +823,26 @@ def check_enter_bootloader_vector():
           % len(actual))
 
 
+def check_rewind_window_beyond_128():
+    """Window start seqs repeat every 128 windows; a rewind must still resolve
+    to the current or next window in a slot as large as the ESP32 OTA slot."""
+    n_windows = window_count(EXPECTED_SLOT_SIZE)
+    for window in (0, 127, 128, 130, n_windows - 2):
+        same = rewind_window(window, n_windows, window_start_seq(window))
+        nxt = rewind_window(window, n_windows, window_start_seq(window + 1))
+        if same != window or nxt != window + 1:
+            raise FlashError("selftest FAILED: rewind for window %d resolved to "
+                             "%r/%r" % (window, same, nxt))
+    if rewind_window(n_windows - 1, n_windows, window_start_seq(n_windows)) is not None:
+        raise FlashError("selftest FAILED: rewind past the last window accepted")
+    print("selftest: rewind resolution OK across %d windows" % n_windows)
+
+
 def run_selftest(retries):
     import random
 
     check_enter_bootloader_vector()
+    check_rewind_window_beyond_128()
 
     print("selftest: %d-byte image, virtual bus, forced frame drop at frame %d"
           % (SELFTEST_IMAGE_SIZE, SELFTEST_DROP_FRAME))

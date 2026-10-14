@@ -103,7 +103,7 @@ pure-bash Debian package for ARM/Linux hosts.
 ## Releases & CI
 
 Prebuilt bootloader binaries (`.hex`/`.bin`/`.elf`) are published on the
-**[Releases](https://github.com/XiaoKChen/Arduino-Custom-Bootloader/releases)**
+**[Releases](https://github.com/XiaoKChen/Embedded-CAN-Bootloaders/releases)**
 page — grab `bootloader-uno_r4-<version>.hex` and flash it over SWD (see above).
 
 Builds are automated by GitHub Actions

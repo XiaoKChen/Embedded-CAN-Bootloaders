@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    tags: ["v*"]
+    # Variant-prefixed: other branches of this repo ship other bootloaders,
+    # so tags must not collide. v0.1.0-alpha.1 predates this (plain v* tag).
+    tags: ["embassy-ra4m1-v*"]
   workflow_dispatch:
 
 env:
@@ -181,12 +183,25 @@ jobs:
 
   release:
     name: Create GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/embassy-ra4m1-v')
     needs: firmware-build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # embassy-ra4m1-v0.1.0-alpha.2 -> version v0.1.0-alpha.2; any SemVer
+      # pre-release suffix (-alpha/-beta/-rc) marks the release a pre-release.
+      - name: Derive version from tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#embassy-ra4m1-}"
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "version=$version prerelease=$prerelease"
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -196,5 +211,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: Embassy RA4M1 bootloader ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
           files: dist/*
           generate_release_notes: true

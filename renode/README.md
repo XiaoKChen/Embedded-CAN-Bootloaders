@@ -141,5 +141,5 @@ All four suites run in CI as a **`renode` job** (`needs: firmware-build`) in the
 `antmicro/renode:1.16.1` container (`.github/workflows/ci.yml`), which rebuilds the `ra4m1-hal`
 example + bootloader ELFs the suites `LoadELF`. The suites use `${CURDIR}`-relative absolute paths
 (clean in a CI checkout), the C# models compile at runtime (no Renode rebuild), and each run is
-headless, bounded (per-test timeout), and deterministic (virtual time). CI now runs only on `v*` tag
+headless, bounded (per-test timeout), and deterministic (virtual time). CI now runs only on `embassy-ra4m1-v*` tag
 pushes and manual `workflow_dispatch`. Renode version pinned: **v1.16.1**.

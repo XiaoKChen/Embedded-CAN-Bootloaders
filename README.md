@@ -207,7 +207,7 @@ driver *logic* only — see the honesty boundaries in [`renode/README.md`](renod
 
 ## CI
 
-`.github/workflows/ci.yml` runs on **`v*` tag pushes (releases)** and manual `workflow_dispatch`
+`.github/workflows/ci.yml` runs on **`embassy-ra4m1-v*` tag pushes (releases)** and manual `workflow_dispatch`
 only — no longer on every branch push or PR:
 
 - `cargo fmt --all -- --check`
@@ -221,8 +221,17 @@ only — no longer on every branch push or PR:
   [`renode/README.md`](renode/README.md))
 - Build artifacts (`.bin`/`.elf`/`.hex`) are uploaded
 
-Pushing a `v*` tag additionally publishes a GitHub Release with those artifacts and
-auto-generated notes.
+Pushing an `embassy-ra4m1-v*` tag additionally publishes a GitHub Release with those artifacts and
+auto-generated notes. The tags carry a variant prefix because other branches of this repo release
+other bootloaders; the release name strips it (`embassy-ra4m1-v0.1.0-alpha.2` → version
+`v0.1.0-alpha.2`), and a `-alpha`/`-beta`/`-rc` suffix marks the release as a pre-release. To cut one:
+
+```sh
+git tag embassy-ra4m1-v0.1.0-alpha.2
+git push origin embassy-ra4m1-v0.1.0-alpha.2
+```
+
+`v0.1.0-alpha.1` was cut before this scheme and used the old plain `v*` tag.
 
 ## Further reading
 

@@ -724,4 +724,4 @@ Quality gates
       250 k, 0x79E/0x79F, 3 retries, 2 s/15 s timeouts) must flash the rewritten bootloader
       end-to-end, including `--info`, `--scan`, and `--enter-bootloader`.
 - [ ] R43. CI builds with a pinned toolchain, enforces the size gate, and publishes
-      version-named artifacts on `v*` tags.
+      version-named artifacts on `embassy-ra4m1-v*` tags.

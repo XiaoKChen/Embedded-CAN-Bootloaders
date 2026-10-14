@@ -1,149 +1,145 @@
-# Arduino UNO R4 Minima — CAN + DFU Bootloader
+# ESP32-S3 CAN Updater
 
-A fork of Arduino's stock TinyUSB **USB DFU** bootloader for the UNO R4 Minima
-(Renesas **RA4M1**, Cortex-M4F), extended with three added features while keeping
-the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
+**Build it (installs everything it needs on first run):**
 
-1. **Flash-over-CAN** — program an application `.bin` over classic CAN 2.0B on
-   **D4 (CTX0) / D5 (CRX0)**, using a small polled CAN0 driver and a windowed,
-   CRC32-checked update protocol (**CAN Update Protocol v1**).
-2. **Flash-time-configurable USB DFU names** — the DFU manufacturer/product
-   strings are read at boot from a config block in data flash (written by the
-   ESP-Prog-2 flasher), falling back to the compiled defaults when unset.
-3. **Per-device CAN IDs** — each board's bootloader can be assigned its own CAN
-   update ID pair (in that same config block), so multiple boards can sit in
-   bootloader mode on one bus simultaneously and be addressed individually.
-   Unprovisioned boards default to `0x79E` (host→boot) / `0x79F` (boot→host).
-   Config reads are guarded fail-safe: if data flash isn't readable (e.g.
-   after a software reset leaves the FACI in a bad state), the board still
-   parks and serves CAN on the default IDs rather than faulting.
+```sh
+./build.sh                                              # Linux / macOS
+powershell -ExecutionPolicy Bypass -File build.ps1      # Windows
+```
 
-> Full project map: **[PROJECT.md](PROJECT.md)**. Build & flash guide:
-> **[docs/build.md](docs/build.md)**. Design/decision record:
-> **[docs/research/r4-minima-can-bootloader.md](docs/research/r4-minima-can-bootloader.md)**.
+Requires only **Git** and **Python 3.8–3.13**. The first run clones the pinned
+ESP-IDF (`idf-version.txt`, currently v5.3.6) and its esp32s3 toolchain into
+`.tools/` inside the repo (nothing goes to your user profile), then builds;
+later runs only rebuild. The script ends by printing each binary and its flash
+offset. Checkout paths with spaces work on Windows (via a data-less junction,
+see the guide); on Linux/macOS clone to a path without spaces. Details:
+**[docs/build.md](docs/build.md)**.
 
 ---
 
-## Hardware / Peripherals
+Flash an application `.bin` onto custom **ESP32-S3** boards over classic CAN
+(TWAI), using the same **CAN Update Protocol v1** — and the same host tool,
+`tools/can-flash/can_flash.py` — as the UNO R4 Minima (RA4M1) CAN bootloader
+on the `version/c-cpp/ra4m1` branch. Tracks issue #1.
 
-- **MCU / board:** Renesas RA4M1 (R7FA4M1AB) on the Arduino UNO R4 Minima, 5 V logic.
-- **CAN:** the RA4M1's single classic **CAN0** channel — **D4 = P103 = CTX0**,
-  **D5 = P102 = CRX0**. The board has **no on-board transceiver**: an external
-  **5 V** CAN transceiver (TJA1050 / MCP2551 / MCP2562 / TCAN332) is required,
-  with 120 Ω termination at both bus ends.
-- **Transceiver power (custom boards):** CAN update mode switches on the
-  RA4M1's internal **USB regulator (`USBMC.VDCEN`)** at entry, because custom
-  boards may power the transceiver/level-shifter path from the USB `VUSB`
-  rail. Without this, a board entering CAN mode via the app handoff (where
-  USB is never initialized) sits deaf on the bus — operate mode, TEC frozen
-  at 0, no bus-idle ever seen. Harmless on boards that don't use that rail.
-- **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (HOCO-clocked; prefer
-  250 k for clock-tolerance margin).
+The updater is an ordinary ESP-IDF app living in the **`factory`** partition,
+booted by the stock ESP-IDF 2nd-stage bootloader. It receives an image over
+CAN, writes it to the inactive OTA slot with `esp_ota_*` (which validates the
+ESP image format, chip ID and SHA-256), and on GO selects that slot and
+restarts into it.
+
+## Hardware
+
+- **Boards:** ESP32-S3-WROOM-1U-N16R8 (16 MB flash, 8 MB octal PSRAM) and
+  ESP32-S3FH4R2 (4 MB in-package flash, 2 MB PSRAM). One build serves both:
+  the partition table fits 4 MB, and the updater does not use PSRAM.
+- **CAN:** the ESP32-S3's TWAI controller via the GPIO matrix to an external
+  **3.3 V transceiver** (SN65HVD230, TCAN332, …), 120 Ω at both bus ends.
+  TX GPIO, RX GPIO and bitrate are menuconfig options
+  (`./build.sh menuconfig` → *CAN Updater*); defaults **GPIO5 / GPIO6 /
+  250 kbit/s**.
+- **Recovery pin:** **GPIO4**, held low through reset for 5 s, forces the
+  updater (see below).
+
+## Flash layout (4 MB, `partitions.csv`)
+
+| Partition | Offset | Size | Contents |
+|---|---|---|---|
+| bootloader | `0x0` | — | stock ESP-IDF 2nd stage (rollback + factory-reset GPIO enabled) |
+| partition table | `0x8000` | 4 KB | |
+| `nvs` | `0x9000` | 20 KB | application data |
+| `otadata` | `0xE000` | 8 KB | which OTA slot boots (erased = boot `factory`) |
+| `phy_init` | `0x10000` | 4 KB | |
+| `cancfg` | `0x11000` | 4 KB | per-device CAN-ID / name block (optional) |
+| `factory` | `0x20000` | 384 KB | **this CAN updater** (~50 % free) |
+| `ota_0` / `ota_1` | `0x80000` / `0x240000` | 1.75 MB each | the application |
+
+## How a board gets into the updater
+
+| Path | Mechanism |
+|---|---|
+| **App request** (`can_flash.py --enter-bootloader`) | the app calls `can_updater_client_enter_updater()` (`components/can_updater_client`), which selects `factory` and restarts — the ESP32 twin of the RA4M1 app writing the handoff magic and resetting |
+| **Recovery GPIO** | hold GPIO4 low through reset for 5 s: ESP-IDF's built-in `CONFIG_BOOTLOADER_FACTORY_RESET` erases `otadata` (no app data is erased) and the bootloader boots `factory` — no custom bootloader code |
+| **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
+
+The updater always parks waiting for the host. Because selecting `factory`
+erases `otadata`, a board stays in the updater across resets until an image is
+flashed — it is never bricked, and always reachable over CAN.
+
+## Fail-safe
+
+Nothing in the update path writes the `factory` partition. The only
+boot-selection change is the `otadata` write on GO, which ESP-IDF makes atomic
+across its two sectors. Power loss before or during GO therefore comes back up
+in the updater; after GO the new app boots in `PENDING_VERIFY` and rolls back
+to the updater if it does not confirm itself. Full table: `main/main.c`.
 
 ## CAN Update Protocol v1
 
-Two fixed CAN IDs per device (default `0x79E` host→boot / `0x79F` boot→host, or
-the per-device pair from the config block). 8-byte frames:
+Default IDs `0x79E` (host→board) / `0x79F` (board→host), or a per-device pair
+from the `cancfg` block (same 80-byte v2 format the RA4M1 parses,
+`src/boot/dfu_config.h`). 8-byte frames,
+`HELLO → SIZE → ERASE → DATA windows → VERIFY → GO`, 2 KB ACK-paced windows,
+CRC32 (IEEE/zlib) over the image, plus `INFO (0x07)` for discovery
+(`--scan`). The engine (`src/boot/can_update.c`) is shared, host-tested pure C
+behind a slot HAL.
 
-```
-HELLO → SIZE → ERASE → DATA windows → VERIFY → GO
-```
+ESP32 deltas, all handled by `tools/can-flash` on this branch:
 
-Each 2 KB flash block is one ACK-paced DATA window (342 frames); the image is
-CRC32-validated (IEEE/zlib) and a metadata block is written last so power loss
-never bricks the device. `INFO (0x07)` returns the board's product name so a
-parked board can be identified over CAN. The pure-logic engine
-(`src/boot/can_update.c`) is host-tested; `tools/can-flash/` is the host side.
-
-## Build & Flash
-
-Built by compiling the pure-logic `src/boot/` core into the vendored
-`arduino-renesas-bootloader` fork (behind the `CAN_LOADER` and `DFU_CUSTOM_NAME`
-Makefile flags). See **[docs/build.md](docs/build.md)** for the exact toolchain
-(gcc 14.2.1 xPack, GNU Make + POSIX sh, the space-free-path `subst`), the size
-gate, and the flashing/unbrick procedures (rfp-cli ROM boot mode, pyOCD/SWD).
-
-```sh
-# Firmware (from the vendored fork, via CMake wrapper or direct Make — see docs/build.md)
-cmake --build build-host --target bootloader
-
-# Host tests (pure-logic core: crc32, image_validate, can_update, dfu_config)
-cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
-
-# Flash the built bootloader to a board (SWD)
-pyocd flash -e chip -a 0x0 -t r7fa4m1ab vendor/arduino-renesas-bootloader/_build/uno_r4/arduino-renesas-bootloader.hex
-```
-
-Language standards: **C11** (firmware), C++17 reserved for Arduino-framework
-targets. CPU flags: `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb`.
+- HELLO announces a **1.75 MB** slot (896 windows). Window start seqs repeat
+  every 128 windows, so can-flash now resolves a rewind NAK against the
+  current/next window only (the wire format is unchanged).
+- New NAK code **`0x06`** on VERIFY: the CRC matched, but `esp_ota_end`
+  rejected the image (not an esp32s3 app, bad SHA-256).
+- ERASE answers immediately; flash sectors are erased as DATA reaches them.
 
 ## Flashing an application over CAN
 
-Host tool: `tools/can-flash/can_flash.py` (uv-runnable; TUI on bare invocation,
-CLI with flags). Requires an external 5 V transceiver on D4/D5.
-
 ```sh
-# Interactive TUI
-uv run tools/can-flash/can_flash.py
+# Reboot a running app into the updater, then flash its OTA image
+uv run tools/can-flash/can_flash.py path/to/app/build/my_app.bin \
+    --interface socketcan --channel can0 --enter-bootloader
 
-# Headless: reboot a running app into the bootloader, then flash
-uv run tools/can-flash/can_flash.py firmware.bin --interface socketcan --channel can0 --enter-bootloader
-
-# Discover all boards parked in the bootloader (per-device IDs)
-uv run tools/can-flash/can_flash.py --scan
+uv run tools/can-flash/can_flash.py --scan      # find parked boards
+uv run tools/can-flash/can_flash.py             # interactive TUI
 ```
 
-A device enters CAN update mode when the application writes the magic
-`0xB007CAFE` to `VBTBKR[4]` and resets (or when no valid app is present). The
-full no-touch cycle — `--enter-bootloader` → INFO discovery on the per-device
-IDs → flash → GO back into the app — is bench-verified end-to-end. The
-sibling **AIRFORM-PKG `airform-tui-can-flasher`** provides the same flow as a
-pure-bash Debian package for ARM/Linux hosts.
+Integrating `can_updater_client` into an application, provisioning per-device
+IDs, and the first USB/UART flash of a board: **[docs/build.md](docs/build.md)**.
 
-## Releases & CI
-
-Prebuilt bootloader binaries (`.hex`/`.bin`/`.elf`) are published on the
-**[Releases](https://github.com/XiaoKChen/Arduino-Custom-Bootloader/releases)**
-page — grab `bootloader-uno_r4-<version>.hex` and flash it over SWD (see above).
-
-Builds are automated by GitHub Actions
-(`.github/workflows/release.yml`, which calls `scripts/ci-build.sh`):
-
-- **Every push / PR to `version/c-cpp/ra4m1`** builds the firmware on Linux with the pinned
-  xPack **gcc 14.2.1** toolchain, fetches the `.gitignore`d CMSIS_5/FSP deps,
-  and enforces the 16,384-byte size gate — the build artifacts are attached to
-  the run.
-- **Pushing a `v*` tag** additionally publishes a GitHub Release with the
-  version-named `.hex`/`.bin`/`.elf` and auto-generated notes.
+## Tests and CI
 
 ```sh
-# Cut a release: tag and push — CI builds and publishes it.
-git tag v1.0.0 && git push origin v1.0.0
+cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
 ```
 
-The bootloader firmware has no embedded version field; "version" here is the
-release tag and the artifact filenames.
+`.github/workflows/esp32-build.yml` runs the host tests and `./build.sh` on
+every push / PR to `version/c-cpp/esp32` and uploads the bootloader, partition
+table, `otadata` image and updater as artifacts. Pushing a
+**`c-cpp-esp32-v*`** tag publishes a GitHub Release versioned by the tag minus
+its prefix (`c-cpp-esp32-v1.0.0` → `v1.0.0`, asset
+`esp32s3-can-updater-v1.0.0.zip`). Every branch uses `<lang>-<target>-v*`
+(`c-cpp-ra4m1-v*`, `embassy-ra4m1-v*`).
 
-## Repo Layout
+```sh
+git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
+```
+
+## Repo layout
 
 ```
 .
-├── src/boot/     pure-logic core (host-testable): memory_map, image/dfu-config
-│                 validation, crc32, CAN Update Protocol v1 state machine
-├── src/drivers/  polled register-level RA4M1 CAN0 driver (D4/D5)
-├── tests/        Unity/CTest host tests for the pure-logic core
-├── tools/        python-can host flasher (can-flash/)
-├── docs/         build/flash guide, research doc, reference artifacts (stock hex, .ld)
-├── scripts/      ci-build.sh — Linux dep-fetch + Make build used by CI
-├── .github/      GitHub Actions build + tag-driven release workflow
-├── vendor/       vendored third-party (arduino-renesas-bootloader fork, tinyusb, FSP, CMSIS_5)
-└── CMakeLists.txt  root wrapper: `bootloader` target (wraps Make) + host tests
+├── build.sh / build.ps1   one-command build (repo-local ESP-IDF in .tools/)
+├── idf-version.txt        the ESP-IDF tag every build uses (scripts + CI)
+├── CMakeLists.txt         ESP-IDF project; sdkconfig.defaults, partitions.csv
+├── main/                  the updater app: TWAI link, slot HAL, CAN service
+├── components/
+│   ├── boot_core/         compiles src/boot/ into the firmware
+│   └── can_updater_client/  app-side "enter the updater" call
+├── src/boot/              shared pure-logic core (protocol engine, CRC32,
+│                          config-block parser; image_validate/memory_map are
+│                          RA4M1 prior art, host-tested but not in the firmware)
+├── tests/                 Unity/CTest host tests for src/boot/
+├── tools/can-flash/       python-can host flasher / scanner / TUI
+└── docs/                  build guide; research/ holds the RA4M1 prior art
 ```
-
-## Dependencies
-
-Vendored under `vendor/` (no external package manager): the
-`arduino-renesas-bootloader` fork (where `src/` is integrated), tinyusb 0.17.0,
-Renesas FSP, ARM CMSIS_5, and standalone RA4M1 device headers. CMSIS_5 and FSP
-are `.gitignore`d and fetched per `docs/build.md`. The host flasher depends on
-`python-can`, `can-isotp`, and `textual` (see `tools/can-flash/requirements.txt`).

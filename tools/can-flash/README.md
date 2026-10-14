@@ -1,8 +1,11 @@
-# can-flash — CAN flashing tool for the UNO R4 Minima CAN bootloader
+# can-flash — CAN flashing tool for the ESP32-S3 CAN updater
 
-Streams a `.bin` application image to the custom CAN bootloader on the
-Arduino UNO R4 Minima (Renesas RA4M1) over classic CAN 2.0B, using the
-CAN Update Protocol v1.
+Streams a `.bin` application image to the ESP32-S3 CAN (TWAI) updater (the
+`factory` app built from this branch) over classic CAN 2.0B, using the CAN
+Update Protocol v1 — the same protocol, byte for byte, as the UNO R4 Minima
+(RA4M1) CAN bootloader on the `version/c-cpp/ra4m1` branch. Flash the app's
+`build/<project>.bin` (the image ESP-IDF writes to an OTA slot), not a merged
+or bootloader image.
 
 ## Requirements
 
@@ -47,31 +50,36 @@ The tool runs two ways from the same file:
   uv run can_flash.py app.bin --interface slcan --channel COM5
   ```
 
-## Wiring — the board has NO CAN transceiver
+## Wiring — an external 3.3 V transceiver is required
 
-The Minima exposes CAN0 as logic-level pins only. You must wire an
-external **5 V** CAN transceiver (e.g. **TJA1050**, **MCP2551**, or
-**MCP2562**) between the board and the bus:
+The ESP32-S3's TWAI controller drives logic-level pins only. Wire a **3.3 V**
+CAN transceiver (e.g. **SN65HVD230**, **TCAN332**, **MCP2562** with VIO at
+3.3 V) between the board and the bus:
 
-| Board pin | Transceiver |
-|-----------|-------------|
-| D4 (CTX)  | TXD |
-| D5 (CRX)  | RXD |
-| 5V        | VCC |
-| GND       | GND (common ground with the adapter) |
+| ESP32-S3 | Transceiver |
+|----------|-------------|
+| TWAI TX GPIO (menuconfig, default GPIO5) | TXD |
+| TWAI RX GPIO (menuconfig, default GPIO6) | RXD |
+| 3V3      | VCC (VIO) |
+| GND      | GND (common ground with the adapter) |
 
-Terminate the bus with **120 Ω** at both ends. Do not use a 3.3 V-only
-transceiver (e.g. SN65HVD230) directly on this 5 V board.
+Terminate the bus with **120 Ω** at both ends. Do not feed a 5 V-logic
+transceiver's RXD straight into an ESP32-S3 pin.
 
 ## Entering CAN update mode
 
-The bootloader accepts an update when either:
+The updater accepts an update whenever it is running, which is when:
 
-- the **application requests it**: it writes the magic `0xB007CAFE` to
-  `R_SYSTEM->VBTBKR[4]` (unlock with `PRCR = 0xA502`, re-lock with
-  `0xA500`) and resets, or
-- **no valid application** is present in the slot — the board then stays
-  in the bootloader waiting for an upload.
+- the **application requests it**: it calls
+  `can_updater_client_enter_updater()` (component
+  `components/can_updater_client`), which selects the `factory` partition and
+  restarts — see `docs/build.md`,
+- the **recovery GPIO** (default GPIO4) is held low through reset for 5 s, or
+- **no valid application** is selected (fresh board, or a rolled-back app) —
+  the board then stays in the updater waiting for an upload.
+
+Once entered, the board stays in the updater across resets until an image is
+flashed (unlike the RA4M1, where a reset returns to the app).
 
 ### Rebooting a running app remotely (`--enter-bootloader`)
 
@@ -236,8 +244,8 @@ Required order: HELLO → SIZE → ERASE → DATA windows → VERIFY → GO.
 
 | Cmd | byte0 | Payload | Notes |
 |-----|-------|---------|-------|
-| HELLO | `0x01` | byte1 = protocol version (`0x01`) | ACK: byte3 = bootloader version, bytes4..7 = app slot size (uint32 LE, expect `0x0003B800` = 243,712) |
-| ERASE | `0x02` | — | erases 120 blocks; ACK can take seconds (tool waits 15 s) |
+| HELLO | `0x01` | byte1 = protocol version (`0x01`) | ACK: byte3 = bootloader version, bytes4..7 = app slot size (uint32 LE, ESP32-S3: `0x001C0000` = 1,835,008) |
+| ERASE | `0x02` | — | ESP32-S3: opens the OTA slot and answers at once (sectors are erased as DATA reaches them); tool waits up to 15 s |
 | DATA | `0x03` | byte1 = seq (uint8, mod 256 over the whole transfer), bytes2..7 = 6 image bytes | no per-frame reply |
 | SIZE | `0x04` | bytes2..5 = image size (uint32 LE) | |
 | VERIFY | `0x05` | bytes2..5 = CRC32 of image (uint32 LE, IEEE/zlib) | |
@@ -245,11 +253,15 @@ Required order: HELLO → SIZE → ERASE → DATA windows → VERIFY → GO.
 
 Replies: ACK `{0x79, cmd_echo, 0x00, arg, ...}` / NAK `{0x79, cmd_echo, err, arg, ...}`
 with err `0x01` unexpected seq (arg = seq to rewind to), `0x02` flash failure,
-`0x03` CRC mismatch, `0x04` size out of bounds, `0x05` bad state.
+`0x03` CRC mismatch, `0x04` size out of bounds, `0x05` bad state, `0x06` image
+rejected by the target (ESP32-S3: VERIFY's CRC matched but `esp_ota_end` refused
+the image — not an esp32s3 app, or a bad SHA-256).
 
 **Windows:** one window = one 2048-byte flash block = 342 DATA frames
 (341×6 + 1×2 bytes; the final image block may be short). Individual DATA
 frames get no reply; after a full window the host must wait for the window
 ACK/NAK — the bootloader stalls during flash writes and its RX FIFO is only
 4 deep. On NAK `0x01` the host rewinds to the window containing the
-requested seq and resends it from the start.
+requested seq and resends it from the start. Window start seqs repeat
+every 128 windows, so the rewind is resolved against the current and the
+next window only (an ESP32-S3 slot spans 896 windows).

@@ -1,8 +1,11 @@
 # =============================================================================
-# esp32-build.yml — Host tests + ESP32-S3 updater build; release on c-cpp-esp32-v*
+# esp32-build.yml — Host tests + ESP32-S3 node updater and brain builds;
+#                   release on c-cpp-esp32-v*
 # =============================================================================
 # The firmware is built with ./build.sh, the same one-command script users
-# run, so CI and local builds share the ESP-IDF pin in idf-version.txt.
+# run, so CI and local builds share the ESP-IDF pin in idf-version.txt. Each
+# board gets its own artifact and release zip: esp32s3-node-updater (the
+# node's CAN updater) and esp32s3-brain (the brain's Ethernet OTA firmware).
 # Release tags follow <lang>-<target>-v* across branches (c-cpp-ra4m1-v*,
 # embassy-ra4m1-v*): this one is c-cpp-esp32-v*, and the release/artifact
 # version is the tag minus that prefix (c-cpp-esp32-v1.0.0 -> v1.0.0).
@@ -44,11 +47,12 @@ jobs:
           # The cached virtualenv is bound to this exact interpreter.
           key: esp-idf-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('idf-version.txt') }}
 
-      - name: Build firmware
+      # No argument: node_updater, then brain.
+      - name: Build firmware (node updater + brain)
         run: ./build.sh
 
       # The examples share the pinned ESP-IDF; building them keeps the shared
-      # components (can_link, can_updater_client) honest.
+      # components (can_link, can_updater_client, node_reset) honest.
       - name: Build examples
         run: |
           ./build.sh examples/bench_app
@@ -56,15 +60,25 @@ jobs:
 
       - name: Stage binaries
         run: |
-          mkdir -p dist
-          cd node_updater/build
-          cp --parents bootloader/bootloader.bin partition_table/partition-table.bin \
-             ota_data_initial.bin can_updater.bin flash_args flasher_args.json ../dist/
+          stage() {  # <project dir> <app .bin> <dist dir>
+            mkdir -p "$3"
+            (cd "$1/build" && cp --parents bootloader/bootloader.bin \
+               partition_table/partition-table.bin ota_data_initial.bin "$2" \
+               flash_args flasher_args.json "$OLDPWD/$3/")
+          }
+          stage node_updater can_updater.bin dist/node
+          stage brain brain_ota.bin dist/brain
 
       - uses: actions/upload-artifact@v4
         with:
-          name: esp32s3-can-updater
-          path: dist/
+          name: esp32s3-node-updater
+          path: dist/node/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-brain
+          path: dist/brain/
           if-no-files-found: error
 
   release:
@@ -76,17 +90,26 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: esp32s3-can-updater
-          path: dist
+          name: esp32s3-node-updater
+          path: dist/node
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: esp32s3-brain
+          path: dist/brain
+
+      # One zip per board, each with its own bootloader, partition table,
+      # otadata and flash_args. The loose assets are the two app images (OTA
+      # over CAN for the node, over HTTP for the brain); the other files
+      # share names between the boards, so they ship only in the zips.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#c-cpp-esp32-}"   # c-cpp-esp32-v1.0.0 -> v1.0.0
-          (cd dist && zip -r "../esp32s3-can-updater-${version}.zip" .)
+          (cd dist/node && zip -r "../../esp32s3-node-updater-${version}.zip" .)
+          (cd dist/brain && zip -r "../../esp32s3-brain-${version}.zip" .)
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "ESP32-S3 CAN updater ${version}" --generate-notes \
-            "esp32s3-can-updater-${version}.zip" \
-            dist/bootloader/bootloader.bin dist/partition_table/partition-table.bin \
-            dist/ota_data_initial.bin dist/can_updater.bin
+            --title "ESP32-S3 node updater + brain ${version}" --generate-notes \
+            "esp32s3-node-updater-${version}.zip" "esp32s3-brain-${version}.zip" \
+            dist/node/can_updater.bin dist/brain/brain_ota.bin

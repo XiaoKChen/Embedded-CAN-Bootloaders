@@ -1,0 +1,302 @@
+/* =============================================================================
+ * node_flash.c — Brain staging partition and TWAI adapter for the pure C host
+ * ============================================================================= */
+#include "node_flash.h"
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "can_flash_host.h"
+#include "can_link.h"
+#include "esp_log.h"
+#include "esp_partition.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define NODE_FW_LABEL       "node_fw"
+#define NODE_FW_SUBTYPE     ((esp_partition_subtype_t)0x41)
+#define CAN_TX_GPIO         6
+#define CAN_RX_GPIO         7
+#define CAN_BITRATE         250000u
+#define CAN_RX_QUEUE        64u
+#define STAGE_CHUNK_BYTES   4096u
+#define NODE_STATUS_BYTES   192u
+#define NODE_JSON_BYTES     384u
+#define SCAN_MAX_NODES      64u
+#define QUERY_BYTES         96u
+#define ID_TEXT_BYTES       16u
+#define US_PER_MS           1000u
+#define PERCENT_MAX         100u
+#define JSON_ESCAPE_BYTES   6u
+
+static const char *TAG = "node_flash";
+static const esp_partition_t *s_partition;
+static bool s_link_ready;
+static can_flash_host_t s_host;
+static uint8_t s_chunk[STAGE_CHUNK_BYTES];
+static uint8_t s_readback[STAGE_CHUNK_BYTES];
+static can_flash_host_info_t s_found[SCAN_MAX_NODES];
+static uint16_t s_cmd_id, s_reply_id;
+static uint32_t s_image_size;
+
+typedef enum {
+    NODE_IDLE = 0, NODE_STAGING, NODE_FLASHING, NODE_SUCCESS, NODE_FAILED,
+} node_state_t;
+
+typedef struct {
+    node_state_t state;
+    uint32_t bytes;
+    uint32_t total;
+    char text[NODE_STATUS_BYTES];
+} node_status_t;
+
+static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
+static node_status_t s_status;
+
+static void set_status(node_state_t state, uint32_t bytes, uint32_t total, const char *text)
+{
+    node_status_t next = { .state = state, .bytes = bytes, .total = total };
+    (void)snprintf(next.text, sizeof(next.text), "%s", text);
+    portENTER_CRITICAL(&s_status_lock);
+    s_status = next;
+    portEXIT_CRITICAL(&s_status_lock);
+}
+
+static esp_err_t respond(httpd_req_t *req, const char *status, const char *text)
+{
+    esp_err_t err = httpd_resp_set_status(req, status);
+    if (err == ESP_OK) { err = httpd_resp_set_type(req, "text/plain"); }
+    if (err == ESP_OK) { err = httpd_resp_sendstr(req, text); }
+    return err;
+}
+
+static uint32_t clock_ms(void *user)
+{
+    (void)user;
+    return (uint32_t)((uint64_t)esp_timer_get_time() / US_PER_MS);
+}
+
+static can_flash_host_io_t send_frame(void *user, const can_flash_host_frame_t *frame, uint32_t timeout)
+{
+    const uint32_t start = clock_ms(user);
+    do {
+        const can_link_status_t status = can_link_send(frame->id, frame->data);
+        if (status == CAN_LINK_STATUS_OK) { return CAN_FLASH_HOST_IO_OK; }
+        if (status == CAN_LINK_STATUS_INVALID_ARG) { return CAN_FLASH_HOST_IO_ERROR; }
+        /* can_link waits 50 ms for queue space; do not spin during bus-off. */
+        vTaskDelay(1u);
+    } while (clock_ms(user) - start < timeout);
+    return CAN_FLASH_HOST_IO_TIMEOUT;
+}
+
+static can_flash_host_io_t receive_frame(void *user, can_flash_host_frame_t *frame, uint32_t timeout)
+{
+    (void)user;
+    can_link_frame_t rx;
+    /* can_link truncates milliseconds to ticks. Round UP so the essential
+     * 1 ms early poll really yields even with the default 100 Hz tick. */
+    const uint32_t wait = timeout == 0u ? 0u :
+        ((timeout + portTICK_PERIOD_MS - 1u) / portTICK_PERIOD_MS) * portTICK_PERIOD_MS;
+    const can_link_status_t status = can_link_receive_frame(&rx, wait);
+    if (status == CAN_LINK_STATUS_TIMEOUT) { return CAN_FLASH_HOST_IO_TIMEOUT; }
+    if (status != CAN_LINK_STATUS_OK) { return CAN_FLASH_HOST_IO_ERROR; }
+    *frame = (can_flash_host_frame_t){ .id = rx.id, .dlc = rx.dlc,
+        .extended = rx.extended, .remote = rx.remote };
+    memcpy(frame->data, rx.data, sizeof(frame->data));
+    return CAN_FLASH_HOST_IO_OK;
+}
+
+static bool read_image(void *user, uint32_t offset, uint8_t *buf, uint32_t len)
+{
+    (void)user;
+    return offset <= s_image_size && len <= s_image_size - offset &&
+           esp_partition_read(s_partition, offset, buf, len) == ESP_OK;
+}
+
+static void flash_progress(void *user, uint32_t bytes, uint32_t total)
+{
+    (void)user;
+    set_status(NODE_FLASHING, bytes, total, "CAN transfer; awaiting VERIFY and GO");
+}
+
+/* Decimal or 0x-prefixed hexadecimal only; no signs, whitespace, truncation,
+ * implicit octal, URL encoding, or values outside the standard CAN ID range. */
+static bool query_id(const char *query, const char *key, uint16_t *id)
+{
+    char text[ID_TEXT_BYTES];
+    const esp_err_t err = httpd_query_key_value(query, key, text, sizeof(text));
+    if (err == ESP_ERR_NOT_FOUND) { return true; }
+    if (err != ESP_OK || text[0] == '\0') { return false; }
+    uint32_t value = 0u;
+    uint32_t base = 10u;
+    const char *p = text;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16u; p += 2; }
+    if (*p == '\0') { return false; }
+    for (; *p != '\0'; ++p) {
+        uint32_t digit;
+        if (*p >= '0' && *p <= '9') { digit = (uint32_t)(*p - '0'); }
+        else if (*p >= 'a' && *p <= 'f') { digit = (uint32_t)(*p - 'a') + 10u; }
+        else if (*p >= 'A' && *p <= 'F') { digit = (uint32_t)(*p - 'A') + 10u; }
+        else { return false; }
+        if (digit >= base || value > (DFU_CONFIG_CAN_ID_MAX - digit) / base) { return false; }
+        value = value * base + digit;
+    }
+    *id = (uint16_t)value;
+    return true;
+}
+
+static bool get_ids(httpd_req_t *req, const char *key_a, uint16_t *a, const char *key_b, uint16_t *b)
+{
+    char query[QUERY_BYTES] = { 0 };
+    const esp_err_t err = httpd_req_get_url_query_str(req, query, sizeof(query));
+    if (err == ESP_ERR_NOT_FOUND) { return true; }
+    return err == ESP_OK && query_id(query, key_a, a) && query_id(query, key_b, b);
+}
+
+esp_err_t node_flash_init(void)
+{
+    s_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, NODE_FW_SUBTYPE, NODE_FW_LABEL);
+    s_host = (can_flash_host_t){ .send = send_frame, .receive = receive_frame,
+        .clock_ms = clock_ms, .read = read_image, .progress = flash_progress };
+    const can_link_config_t cfg = { .tx_gpio = CAN_TX_GPIO, .rx_gpio = CAN_RX_GPIO,
+        .bitrate_bps = CAN_BITRATE, .accept_all = true, .rx_queue_len = CAN_RX_QUEUE };
+    s_link_ready = can_link_init(&cfg) == CAN_LINK_STATUS_OK;
+    if (!s_link_ready) { return ESP_FAIL; }
+    ESP_LOGI(TAG, "TWAI TX%d/RX%d, %u bit/s, broad discovery RX", CAN_TX_GPIO, CAN_RX_GPIO, CAN_BITRATE);
+    return s_partition == NULL ? ESP_ERR_NOT_FOUND : ESP_OK;
+}
+
+esp_err_t node_flash_scan(httpd_req_t *req)
+{
+    if (!s_link_ready) { return respond(req, "503 Service Unavailable", "CAN link unavailable\n"); }
+    uint16_t from = CAN_FLASH_HOST_SCAN_FROM, to = CAN_FLASH_HOST_SCAN_TO;
+    if (!get_ids(req, "from", &from, "to", &to) || from > to) {
+        return respond(req, "400 Bad Request", "Expected 0 <= from <= to <= 0x7FF\n");
+    }
+    uint32_t count;
+    const can_flash_host_status_t status = can_flash_host_scan(&s_host, from, to, s_found, SCAN_MAX_NODES, &count);
+    if (status != CAN_FLASH_HOST_STATUS_OK && status != CAN_FLASH_HOST_STATUS_CAPACITY) {
+        char text[NODE_STATUS_BYTES];
+        can_flash_host_result_text(&s_host.result, text, sizeof(text));
+        return respond(req, "502 Bad Gateway", text);
+    }
+    esp_err_t err = httpd_resp_set_type(req, "application/json");
+    if (err == ESP_OK) { err = httpd_resp_sendstr_chunk(req, "{\"nodes\":["); }
+    for (uint32_t i = 0u; i < count && err == ESP_OK; ++i) {
+        /* Encode every byte, including quotes/control bytes, as JSON Unicode.
+         * Provisioning says ASCII; non-ASCII follows Python's replacement. */
+        char name[DFU_CONFIG_STR_MAX * JSON_ESCAPE_BYTES + 1u];
+        for (uint32_t j = 0u; j < s_found[i].name_len; ++j) {
+            const uint8_t byte = (uint8_t)s_found[i].name[j];
+            (void)snprintf(&name[j * JSON_ESCAPE_BYTES], JSON_ESCAPE_BYTES + 1u,
+                           "\\u%04x", byte < 0x80u ? byte : 0xFFFDu);
+        }
+        name[s_found[i].name_len * JSON_ESCAPE_BYTES] = '\0';
+        char json[NODE_JSON_BYTES];
+        (void)snprintf(json, sizeof(json), "%s{\"cmd_id\":%u,\"reply_id\":%u,\"name\":\"%s\",\"protocol\":%u}",
+                       i == 0u ? "" : ",", s_found[i].cmd_id, s_found[i].reply_id, name, s_found[i].protocol_version);
+        err = httpd_resp_sendstr_chunk(req, json);
+    }
+    if (err == ESP_OK) {
+        err = httpd_resp_sendstr_chunk(req, status == CAN_FLASH_HOST_STATUS_CAPACITY ?
+            "],\"truncated\":true}\n" : "],\"truncated\":false}\n");
+    }
+    if (err == ESP_OK) { err = httpd_resp_sendstr_chunk(req, NULL); }
+    return err;
+}
+
+static esp_err_t stage_failed(httpd_req_t *req, const char *http_status, const char *text, uint32_t received)
+{
+    set_status(NODE_FAILED, received, s_image_size, text);
+    s_image_size = 0u; /* incomplete data is never an eligible CAN source */
+    return respond(req, http_status, text);
+}
+
+esp_err_t node_flash_stage(httpd_req_t *req, bool *ready)
+{
+    *ready = false;
+    if (!s_link_ready || s_partition == NULL || s_partition->encrypted || s_partition->readonly) {
+        return respond(req, "503 Service Unavailable", "CAN or writable unencrypted node_fw partition unavailable\n");
+    }
+    s_cmd_id = CAN_ID_HOST_TO_BOOT;
+    s_reply_id = CAN_ID_BOOT_TO_HOST;
+    if (!get_ids(req, "cmd", &s_cmd_id, "reply", &s_reply_id)) {
+        return respond(req, "400 Bad Request", "cmd/reply must be standard CAN IDs (0..0x7FF)\n");
+    }
+    if (req->content_len == 0u) { return respond(req, "411 Length Required", "Nonempty Content-Length required\n"); }
+    if (req->content_len > s_partition->size) { return respond(req, "413 Payload Too Large", "Image exceeds node_fw partition\n"); }
+    s_image_size = (uint32_t)req->content_len;
+    set_status(NODE_STAGING, 0u, s_image_size, "Receiving into node_fw");
+    uint32_t received = 0u;
+    uint32_t erased = 0u;
+    while (received < s_image_size) {
+        const uint32_t left = s_image_size - received;
+        const int got = httpd_req_recv(req, (char *)s_chunk, left < sizeof(s_chunk) ? left : sizeof(s_chunk));
+        if (got == HTTPD_SOCK_ERR_TIMEOUT) { return stage_failed(req, "408 Request Timeout", "Upload receive timeout", received); }
+        if (got <= 0) {
+            set_status(NODE_FAILED, received, s_image_size, "Upload connection closed");
+            s_image_size = 0u;
+            return ESP_FAIL;
+        }
+        const uint32_t end = received + (uint32_t)got;
+        while (erased < end) {
+            if (s_partition->erase_size == 0u || s_partition->erase_size > s_partition->size - erased ||
+                esp_partition_erase_range(s_partition, erased, s_partition->erase_size) != ESP_OK) {
+                return stage_failed(req, "500 Internal Server Error", "node_fw erase failed", received);
+            }
+            erased += s_partition->erase_size;
+        }
+        if (esp_partition_write(s_partition, received, s_chunk, (size_t)got) != ESP_OK ||
+            esp_partition_read(s_partition, received, s_readback, (size_t)got) != ESP_OK ||
+            memcmp(s_chunk, s_readback, (size_t)got) != 0) {
+            return stage_failed(req, "500 Internal Server Error", "node_fw write/read-back failed", received);
+        }
+        received = end;
+        set_status(NODE_STAGING, received, s_image_size, "Receiving into node_fw");
+    }
+    const esp_err_t err = respond(req, "202 Accepted", "Node image staged; poll /node/status\n");
+    if (err != ESP_OK) {
+        set_status(NODE_FAILED, received, s_image_size, "Upload response connection closed; CAN not started");
+        s_image_size = 0u;
+        return err;
+    }
+    *ready = true;
+    return ESP_OK;
+}
+
+void node_flash_run(void)
+{
+    set_status(NODE_FLASHING, 0u, s_image_size, "CAN handshake");
+    can_flash_host_result_t result;
+    const can_flash_host_status_t status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
+    char text[NODE_STATUS_BYTES];
+    can_flash_host_result_text(&result, text, sizeof(text));
+    set_status(status == CAN_FLASH_HOST_STATUS_OK ? NODE_SUCCESS : NODE_FAILED, result.bytes, s_image_size, text);
+    ESP_LOGI(TAG, "node cmd 0x%03X reply 0x%03X: %s", s_cmd_id, s_reply_id, text);
+    can_link_health_t health;
+    if (can_link_get_health(&health) == CAN_LINK_STATUS_OK) {
+        ESP_LOGI(TAG, "CAN health: state %u, TX errors %" PRIu32 ", RX errors %" PRIu32 ", missed %" PRIu32 ", overrun %" PRIu32,
+                 (unsigned)health.state, health.tx_error_counter, health.rx_error_counter, health.rx_missed_count, health.rx_overrun_count);
+    }
+}
+
+esp_err_t node_flash_status(httpd_req_t *req)
+{
+    static const char *const names[] = { "idle", "staging", "flashing", "success", "failed" };
+    node_status_t status;
+    portENTER_CRITICAL(&s_status_lock);
+    status = s_status;
+    portEXIT_CRITICAL(&s_status_lock);
+    char json[NODE_JSON_BYTES];
+    /* text is exclusively internal fixed/protocol diagnostic text, never an
+     * HTTP input or device name, so it cannot inject JSON quotes. */
+    (void)snprintf(json, sizeof(json), "{\"state\":\"%s\",\"percent\":%" PRIu32 ",\"bytes\":%" PRIu32
+                   ",\"total\":%" PRIu32 ",\"status\":\"%s\"}\n", names[status.state],
+                   status.total == 0u ? 0u : status.bytes * PERCENT_MAX / status.total,
+                   status.bytes, status.total, status.text);
+    esp_err_t err = httpd_resp_set_type(req, "application/json");
+    if (err == ESP_OK) { err = httpd_resp_sendstr(req, json); }
+    return err;
+}

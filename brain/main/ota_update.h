@@ -24,8 +24,8 @@
  *   after finish    the new image boots PENDING_VERIFY; if it resets before
  *                   it is marked valid, the bootloader rolls back.
  *
- * Not thread-safe: one caller at a time (the HTTP server runs its handlers
- * on a single task).
+ * Not thread-safe: one caller at a time. The HTTP server serializes mutations
+ * with node staging/flashing on its single update worker.
  * ============================================================================= */
 
 #ifndef OTA_UPDATE_H

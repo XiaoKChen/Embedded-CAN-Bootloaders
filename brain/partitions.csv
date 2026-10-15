@@ -4,9 +4,9 @@
 # rollback falls back to the other slot. Over USB, `idf.py flash` writes the
 # app into ota_0 and a blank otadata (the bootloader then records ota_0 VALID).
 # App slots start on 64 KB boundaries (MMU page size).
-# node_fw: reserved for staging the node's firmware image before the brain
-#          sends it over CAN (later phase); unused for now. Subtype 0x41 is a
-#          custom data subtype (0x40 is the node's cancfg in
+# node_fw: disposable staging for POST /node/flash before sending over CAN.
+#          Length/validity live only in RAM; never resumed after reset.
+#          Subtype 0x41 is custom (0x40 is the node's cancfg in
 #          ../node_updater/partitions.csv).
 # 0x820000-0x1000000 (7.9 MB) is left free.
 # Name,     Type, SubType, Offset,   Size

@@ -26,6 +26,7 @@
 #include "eth_w5500.h"
 #include "http_ota_server.h"
 #include "node_reset.h"
+#include "node_flash.h"
 #include "ota_update.h"
 
 
@@ -112,6 +113,10 @@ void app_main(void)
     ESP_ERROR_CHECK(node_reset_release());  /* first: GPIO3 floats until then */
     ESP_LOGI(TAG, "GPIO%d (node reset) driven LOW", CONFIG_NODE_RESET_GPIO);
     log_identity();
+    const esp_err_t can_err = node_flash_init();
+    if (can_err != ESP_OK) {
+        ESP_LOGE(TAG, "node CAN host unavailable: %s; own OTA remains available", esp_err_to_name(can_err));
+    }
     confirm_image(start_network());
     /* Returning ends only this task; Ethernet and the HTTP server keep running. */
 }

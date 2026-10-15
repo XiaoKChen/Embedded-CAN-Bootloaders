@@ -34,12 +34,15 @@
 
 #include "eth_w5500.h"
 #include "ota_update.h"
+#include "node_flash.h"
 
 
 /* -----------------------------------------------------------------------------
  * Constants
  * ----------------------------------------------------------------------------- */
 #define SERVER_STACK_BYTES   8192u
+#define WORKER_STACK_BYTES   8192u
+#define WORKER_PRIORITY      5u
 #define RECV_TIMEOUT_S       10u    /* longest silence tolerated mid-upload   */
 #define OTA_CHUNK_BYTES      4096u  /* one flash sector per esp_ota_write     */
 #define STATUS_TEXT_BYTES    512u
@@ -61,9 +64,17 @@ static const char *TAG = "http_ota";
 /* -----------------------------------------------------------------------------
  * File-local state
  * ----------------------------------------------------------------------------- */
-/* Static rather than on the server task's stack. Handlers run one at a time
- * on that single task, so one buffer serves every upload. */
+/* One static worker owns all flash mutations and CAN operations. The HTTP
+ * task stays free to answer status and reject conflicting requests with 409. */
 static char s_chunk[OTA_CHUNK_BYTES];
+static StaticTask_t s_worker_tcb;
+static StackType_t s_worker_stack[WORKER_STACK_BYTES / sizeof(StackType_t)];
+static TaskHandle_t s_worker;
+static portMUX_TYPE s_job_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_busy;
+typedef enum { JOB_OTA, JOB_SCAN, JOB_NODE_FLASH } job_type_t;
+static job_type_t s_job;
+static httpd_req_t *s_request;
 
 
 /* -----------------------------------------------------------------------------
@@ -81,8 +92,8 @@ static esp_err_t send_text(httpd_req_t *req, const char *status, const char *tex
     return err;
 }
 
-/* Rejects before anything is read: returning ESP_OK lets the server read and
- * discard the unread body, so the client still gets the reply. */
+/* Reject before reading anything. The worker closes its async connection
+ * after the response rather than draining a rejected image. */
 static esp_err_t reject_upload(httpd_req_t *req, const char *status, esp_err_t cause)
 {
     ESP_LOGE(TAG, "OTA rejected: %s (%s); boot partition unchanged", status, esp_err_to_name(cause));
@@ -171,7 +182,7 @@ static esp_err_t handle_ota(httpd_req_t *req)
             (void)snprintf(text, sizeof(text), "OTA aborted at byte %u: %s\n",
                            (unsigned)received, esp_err_to_name(err));
             (void)send_text(req, (err == ESP_ERR_OTA_VALIDATE_FAILED) ? STATUS_400 : STATUS_500, text);
-            return ESP_OK;  /* the server discards the rest of the body */
+            return ESP_OK;  /* the worker closes without draining the rest */
         }
         received += (size_t)got;
     }
@@ -195,11 +206,85 @@ static esp_err_t handle_ota(httpd_req_t *req)
 }
 
 
+static void release_job(void)
+{
+    portENTER_CRITICAL(&s_job_lock);
+    s_busy = false;
+    portEXIT_CRITICAL(&s_job_lock);
+}
+
+static esp_err_t submit_job(httpd_req_t *req, job_type_t job)
+{
+    portENTER_CRITICAL(&s_job_lock);
+    const bool busy = s_busy;
+    if (!busy) { s_busy = true; }
+    portEXIT_CRITICAL(&s_job_lock);
+    if (busy) {
+        /* Close instead of draining a rejected multi-MB upload on the HTTP
+         * task, so status and further conflict replies remain responsive. */
+        (void)send_text(req, STATUS_409, "An OTA, node upload/flash, or scan is active\n"); /* best effort */
+        return ESP_FAIL;
+    }
+    httpd_req_t *copy = NULL;
+    const esp_err_t err = httpd_req_async_handler_begin(req, &copy);
+    if (err != ESP_OK) {
+        release_job();
+        (void)send_text(req, STATUS_500, "Cannot start asynchronous request\n"); /* best effort */
+        return ESP_FAIL;
+    }
+    portENTER_CRITICAL(&s_job_lock);
+    s_request = copy;
+    s_job = job;
+    portEXIT_CRITICAL(&s_job_lock);
+    xTaskNotifyGive(s_worker);
+    return ESP_OK;
+}
+
+static esp_err_t submit_ota(httpd_req_t *req) { return submit_job(req, JOB_OTA); }
+static esp_err_t submit_scan(httpd_req_t *req) { return submit_job(req, JOB_SCAN); }
+static esp_err_t submit_node_flash(httpd_req_t *req) { return submit_job(req, JOB_NODE_FLASH); }
+
+static void request_worker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); /* only the HTTP task wakes us */
+        portENTER_CRITICAL(&s_job_lock);
+        httpd_req_t *req = s_request;
+        const job_type_t job = s_job;
+        portEXIT_CRITICAL(&s_job_lock);
+        bool ready = false;
+        esp_err_t err = httpd_resp_set_hdr(req, "Connection", "close");
+        if (err == ESP_OK) {
+            if (job == JOB_OTA) { err = handle_ota(req); }
+            else if (job == JOB_SCAN) { err = node_flash_scan(req); }
+            else { err = node_flash_stage(req, &ready); }
+        }
+        if (err != ESP_OK) { ESP_LOGW(TAG, "request ended: %s", esp_err_to_name(err)); }
+        const httpd_handle_t server = req->handle;
+        const int socket = httpd_req_to_sockfd(req);
+        /* Async requests do not inherit the synchronous handler's automatic
+         * error cleanup or unread-body drain. Always release and close ours. */
+        const esp_err_t complete = httpd_req_async_handler_complete(req);
+        if (complete != ESP_OK) { ESP_LOGE(TAG, "async completion: %s", esp_err_to_name(complete)); }
+        const esp_err_t close = httpd_sess_trigger_close(server, socket);
+        if (close != ESP_OK && close != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "session close: %s", esp_err_to_name(close));
+        }
+        if (ready) { node_flash_run(); }
+        release_job();
+    }
+}
+
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
 esp_err_t http_ota_server_start(void)
 {
+    if (s_worker != NULL) { return ESP_ERR_INVALID_STATE; }
+    s_worker = xTaskCreateStatic(request_worker, "update_worker", WORKER_STACK_BYTES,
+                                 NULL, WORKER_PRIORITY, s_worker_stack, &s_worker_tcb);
+    if (s_worker == NULL) { return ESP_ERR_NO_MEM; }
     httpd_config_t config    = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = SERVER_STACK_BYTES;
     config.recv_wait_timeout = RECV_TIMEOUT_S;
@@ -207,6 +292,8 @@ esp_err_t http_ota_server_start(void)
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
     if (err != ESP_OK) {
+        vTaskDelete(s_worker);
+        s_worker = NULL;
         return err;
     }
 
@@ -214,16 +301,31 @@ esp_err_t http_ota_server_start(void)
         .uri = "/", .method = HTTP_GET, .handler = handle_status, .user_ctx = NULL,
     };
     static const httpd_uri_t ota_uri = {
-        .uri = "/ota", .method = HTTP_POST, .handler = handle_ota, .user_ctx = NULL,
+        .uri = "/ota", .method = HTTP_POST, .handler = submit_ota, .user_ctx = NULL,
+    };
+    static const httpd_uri_t scan_uri = {
+        .uri = "/node/scan", .method = HTTP_GET, .handler = submit_scan,
+    };
+    static const httpd_uri_t flash_uri = {
+        .uri = "/node/flash", .method = HTTP_POST, .handler = submit_node_flash,
+    };
+    static const httpd_uri_t node_status_uri = {
+        .uri = "/node/status", .method = HTTP_GET, .handler = node_flash_status,
     };
     err = httpd_register_uri_handler(server, &status_uri);
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &ota_uri);
     }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &scan_uri); }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &flash_uri); }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &node_status_uri); }
     if (err != ESP_OK) {
         (void)httpd_stop(server);  /* reporting err, not the cleanup result */
+        vTaskDelete(s_worker);
+        s_worker = NULL;
         return err;
     }
-    ESP_LOGI(TAG, "HTTP server on port %u: GET /, POST /ota", (unsigned)config.server_port);
+    ESP_LOGI(TAG, "HTTP port %u: GET /, POST /ota, GET /node/scan, POST /node/flash, GET /node/status",
+             (unsigned)config.server_port);
     return ESP_OK;
 }

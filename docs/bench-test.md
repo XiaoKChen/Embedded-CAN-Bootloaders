@@ -64,12 +64,13 @@ GPIO3 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄�
   (remove one); open means none.
 - **Common ground:** a GND wire between the boards, next to CANH/CANL.
   Without it the bus works intermittently or not at all.
-- **GPIO3 → node EN** (the brain's reset line to the node) is not needed for
-  these tests. If your harness connects it anyway, the bridge firmware holds
-  GPIO3 as a floating input (high-impedance) and never drives it, so the
-  node is never held in reset. While the brain itself resets or is being
-  flashed, GPIO3 floats as well, and the node's own EN pull-up must keep it
-  running (section 6).
+- **GPIO3 → node reset** (the brain's reset line to the node) goes through an
+  inverting stage on this board: **GPIO3 HIGH holds the node in reset, LOW
+  lets it run.** The bridge firmware drives GPIO3 LOW from boot, so flash the
+  bridge onto the brain first. While the brain is blank, in download mode or
+  being flashed, GPIO3 floats and the node can stay in reset: it then does
+  not appear as a USB device at all. Once the bridge runs, re-plug the node
+  (holding BOOT for its first flash) and it enumerates (section 6).
 
 ## 2. Build
 
@@ -171,7 +172,7 @@ carries SLCAN and nothing else: do not open `monitor` on it (a COM port takes
 one program at a time, and can-flash needs it). The bridge logs to UART0:
 
 ```
-I (...) slcan_bridge: SLCAN on USB-Serial-JTAG (serial N1A2B); TWAI TX GPIO6, RX GPIO7, 250000 bit/s until the host sends Sn; GPIO3 (node EN) released
+I (...) slcan_bridge: SLCAN on USB-Serial-JTAG (serial N1A2B); TWAI TX GPIO6, RX GPIO7, 250000 bit/s until the host sends Sn; GPIO3 (node reset) driven LOW
 I (...) slcan_bridge: channel open at 250000 bit/s      <- each can-flash run
 I (...) slcan_bridge: channel closed
 ```
@@ -347,19 +348,20 @@ else is rewritten:
 python -m esptool --chip esp32s3 -p COM7 erase_region 0xe000 0x2000
 ```
 
-## 6. Notes for the brain's EN line (not driven in this phase)
+## 6. Notes for the brain's reset line to the node
 
-The brain (ESP32-S3-WROOM-1U-N16R8, TWAI TX GPIO6 / RX GPIO7) drives the
-node's EN (reset) pin from its **GPIO3**. That is the only brain-to-node wire
-besides CAN and ground. The SLCAN bridge leaves GPIO3 a floating input and
-never drives it; EN pulses arrive with Phase 3.
+The brain (ESP32-S3-WROOM-1U-N16R8, TWAI TX GPIO6 / RX GPIO7) controls the
+node's EN (reset) from its **GPIO3**. That is the only brain-to-node wire
+besides CAN and ground. Reset pulses arrive with Phase 3.
 
-- **Drive GPIO3 open-drain, pull-low only.** To reset the node, drive it low;
-  otherwise release it (high-Z), never drive it high. A push-pull high would
-  fight the node's EN RC pull-up and override its power-on delay.
-- **The node's EN must have its own pull-up (the RC network).** While the
-  brain boots, or is itself held in reset, its GPIO3 floats and the node must
-  keep running on that pull-up alone.
+- **Polarity is inverted: GPIO3 HIGH = node held in reset, LOW = node runs.**
+  Firmware on the brain drives GPIO3 push-pull LOW as early as possible
+  (latching the level before enabling the output, so it never glitches high)
+  and pulses it HIGH only to reset the node.
+- **A floating GPIO3 can hold the node in reset.** While the brain is blank,
+  in ROM download mode, being flashed or still booting, GPIO3 is not driven;
+  on these boards that has been observed to keep the node in reset (no USB
+  enumeration). Flash the brain first, then plug in or reset the node.
 - **GPIO3 is an ESP32-S3 strapping pin, but only if the `STRAP_JTAG_SEL`
   eFuse is burned** (it selects the JTAG source at reset). On a default chip
   it is not burned, so the level on GPIO3 at the brain's own reset does not

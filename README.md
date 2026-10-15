@@ -63,8 +63,8 @@ uv run tools/can-flash/can_flash.py app.bin --interface slcan --channel COM8 --b
 
 It speaks exactly the SLCAN subset python-can uses (`C`/`O`/`L`, `S0`–`S8`
 except 750 k, `t`/`T`/`r`/`R`, `V`, `N`), logs bus errors and frame loss to
-UART0 (never to the SLCAN port), and leaves GPIO3, the node's EN line, an
-undriven input. Setup and tests: [docs/bench-test.md](docs/bench-test.md).
+UART0 (never to the SLCAN port), and drives GPIO3, the node's reset line
+(HIGH = node held in reset), LOW so the node runs. Setup and tests: [docs/bench-test.md](docs/bench-test.md).
 
 ## Flash layout (4 MB, `partitions.csv`)
 

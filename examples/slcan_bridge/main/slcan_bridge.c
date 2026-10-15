@@ -401,14 +401,19 @@ static void can_to_usb_task(void *arg)
 /* -----------------------------------------------------------------------------
  * Board bring-up
  * ----------------------------------------------------------------------------- */
-/* GPIO3 is wired to the node's EN (reset) line. This firmware never resets
- * the node: GPIO3 is a floating input (no pull, never an output), so the
- * node's own EN pull-up keeps it running. */
+/* GPIO3 drives the node's reset through an inverting stage: HIGH holds the
+ * node in reset, LOW lets it run. A floating GPIO3 can read as HIGH, so this
+ * firmware drives it LOW and never resets the node. The level is latched
+ * before the output is enabled so the pin never glitches HIGH. */
 static esp_err_t release_node_en(void)
 {
+    const esp_err_t err = gpio_set_level(NODE_EN_GPIO, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
     const gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << NODE_EN_GPIO,
-        .mode         = GPIO_MODE_INPUT,
+        .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
@@ -451,7 +456,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "SLCAN on USB-Serial-JTAG (serial N%04X); TWAI TX GPIO%d, RX GPIO%d, "
-                  "%d bit/s until the host sends Sn; GPIO%d (node EN) released",
+                  "%d bit/s until the host sends Sn; GPIO%d (node reset) driven LOW",
              (unsigned)s_serial, CONFIG_SLCAN_BRIDGE_TWAI_TX_GPIO,
              CONFIG_SLCAN_BRIDGE_TWAI_RX_GPIO, CONFIG_SLCAN_BRIDGE_BITRATE_BPS, NODE_EN_GPIO);
 }

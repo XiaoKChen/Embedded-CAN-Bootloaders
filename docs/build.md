@@ -187,8 +187,8 @@ examples/slcan_bridge menuconfig` → **SLCAN Bridge**:
   7.5 KB of SLCAN; the USB-Serial-JTAG driver drops host bytes on overflow
   rather than stalling USB), an 8 KB USB TX ring and a 256-frame TWAI RX
   queue.
-- **GPIO3** (the node's EN) is configured as a floating input and never
-  driven.
+- **GPIO3** (the node's reset, inverted: HIGH holds the node in reset) is
+  driven LOW from boot so the node always runs.
 
 ## Per-device CAN IDs and INFO name (optional)
 

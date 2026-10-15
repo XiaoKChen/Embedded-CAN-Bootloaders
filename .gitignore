@@ -22,4 +22,4 @@ managed_components/
 # bench app's SKIP_MARK_VALID build dir (docs/bench-test.md)
 /examples/bench_app/skip/
 # brain OTA's SKIP_MARK_VALID build dir (docs/bench-test.md, section 8)
-/examples/brain_ota/skip/
+/brain/skip/

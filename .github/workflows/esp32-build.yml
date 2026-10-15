@@ -57,7 +57,7 @@ jobs:
       - name: Stage binaries
         run: |
           mkdir -p dist
-          cd build
+          cd node_updater/build
           cp --parents bootloader/bootloader.bin partition_table/partition-table.bin \
              ota_data_initial.bin can_updater.bin flash_args flasher_args.json ../dist/
 

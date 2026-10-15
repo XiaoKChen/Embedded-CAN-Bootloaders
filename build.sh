@@ -34,7 +34,7 @@ idf_tools_path="$tools_dir/espressif"
 install_stamp="$idf_tools_path/installed-$idf_version-$target"
 
 # Anything that is not a project directory goes to idf.py untouched.
-project_dir="$repo_root"
+project_dir="$repo_root/node_updater"
 if [ $# -gt 0 ] && [ -f "$repo_root/$1/CMakeLists.txt" ]; then
     project_dir="$(cd "$repo_root/$1" && pwd)"
     shift
@@ -44,8 +44,7 @@ build_dir="$project_dir/build"
 # board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
 # image flashed over USB, so it gets a full build and its flash offsets.
 is_ota_app=0
-if [ "$project_dir" != "$repo_root" ] &&
-   grep -qF '../../partitions.csv' "$project_dir/sdkconfig.defaults" 2>/dev/null; then
+if grep -qF '../../node_updater/partitions.csv' "$project_dir/sdkconfig.defaults" 2>/dev/null; then
     is_ota_app=1
 fi
 

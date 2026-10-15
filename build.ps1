@@ -39,7 +39,7 @@ $ToolsDir     = Join-Path $RepoRoot '.tools'
 # Positional, not a -Project parameter: PowerShell would bind idf.py's `-p`
 # (port) to it by prefix. Anything that is not a project directory goes to
 # idf.py untouched.
-$ProjectDir = $RepoRoot
+$ProjectDir = Join-Path $RepoRoot 'node_updater'
 $IdfCliArgs = @($args)
 if ($IdfCliArgs.Count -gt 0) {
     try {
@@ -56,7 +56,7 @@ $BuildDir     = Join-Path $ProjectDir 'build'
 # An OTA application shares the updater's partition table and reaches the
 # board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
 # image flashed over USB, so it gets a full build and its flash offsets.
-$IsOtaApp = ($ProjectDir -ne $RepoRoot) -and [bool](Select-String -Quiet -SimpleMatch -Pattern '../../partitions.csv' `
+$IsOtaApp = [bool](Select-String -Quiet -SimpleMatch -Pattern '../../node_updater/partitions.csv' `
     -LiteralPath (Join-Path $ProjectDir 'sdkconfig.defaults') -ErrorAction SilentlyContinue)
 
 function Fail([string]$Message) {

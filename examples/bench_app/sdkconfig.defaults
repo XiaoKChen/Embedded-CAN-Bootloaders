@@ -1,10 +1,10 @@
 # Bench-test app — committed defaults (sdkconfig itself is generated).
 CONFIG_IDF_TARGET="esp32s3"
 
-# The updater's 4 MB layout, read from the repo root (single source of truth).
+# The node updater's 4 MB layout, read from node_updater/ (single source of truth).
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../node_updater/partitions.csv"
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Console on the S3's USB-Serial-JTAG port. Only the primary console reads

@@ -1,0 +1,14 @@
+menu "Brain OTA"
+
+    config BRAIN_OTA_SKIP_MARK_VALID
+        bool "Skip marking the image valid (rollback test)"
+        default n
+        help
+            Leave the image in PENDING_VERIFY instead of calling
+            esp_ota_mark_app_valid_cancel_rollback() once Ethernet has an IP.
+            It runs until the next reset, which makes the bootloader roll
+            back to the previous slot. While pending it refuses new uploads.
+            Build it in its own build dir with sdkconfig.skip_mark_valid
+            (docs/bench-test.md).
+
+endmenu

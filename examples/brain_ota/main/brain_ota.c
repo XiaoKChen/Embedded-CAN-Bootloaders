@@ -1,0 +1,139 @@
+/* =============================================================================
+ * brain_ota.c — Brain self-update over Ethernet: entry point and self-test
+ * =============================================================================
+ * Bench firmware for the brain (ESP32-S3-WROOM-1U-N16R8, W5500 on SPI2):
+ *   - drives GPIO3 LOW first, so the node is not held in reset;
+ *   - logs its version, running slot and OTA state;
+ *   - brings up Ethernet (DHCP) and the HTTP server (GET /, POST /ota);
+ *   - when it boots as a fresh OTA image (PENDING_VERIFY), its self-test is
+ *     "Ethernet got an IP within SELF_TEST_IP_TIMEOUT_MS": it then marks
+ *     itself valid, otherwise it rolls back and reboots. A
+ *     CONFIG_BRAIN_OTA_SKIP_MARK_VALID build stays PENDING_VERIFY, so the
+ *     next reset rolls it back (docs/bench-test.md, section 8).
+ * ============================================================================= */
+
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "driver/gpio.h"
+#include "esp_app_desc.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "freertos/FreeRTOS.h"
+#include "sdkconfig.h"
+
+#include "eth_w5500.h"
+#include "http_ota_server.h"
+#include "ota_update.h"
+
+
+/* -----------------------------------------------------------------------------
+ * Constants
+ * ----------------------------------------------------------------------------- */
+#define NODE_EN_GPIO             3        /* brain GPIO3 -> node EN (reset)   */
+#define SELF_TEST_IP_TIMEOUT_MS  30000u
+#define MS_PER_S                 1000u
+
+static const char *TAG = "brain_ota";
+
+
+/* -----------------------------------------------------------------------------
+ * Private helpers
+ * ----------------------------------------------------------------------------- */
+/* GPIO3 drives the node's reset through an inverting stage: HIGH holds the
+ * node in reset, LOW lets it run. A floating GPIO3 can read as HIGH, so this
+ * firmware drives it LOW and never resets the node. The level is latched
+ * before the output is enabled so the pin never glitches HIGH. (Same as
+ * examples/slcan_bridge.) */
+static esp_err_t release_node_en(void)
+{
+    const esp_err_t err = gpio_set_level(NODE_EN_GPIO, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << NODE_EN_GPIO,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&cfg);
+}
+
+static void log_identity(void)
+{
+    const esp_app_desc_t  *desc    = esp_app_get_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+
+    ESP_LOGI(TAG, "%s version %s (ESP-IDF %s), running from %s (0x%" PRIx32 "), OTA state %s",
+             desc->project_name, desc->version, desc->idf_ver,
+             (running != NULL) ? running->label : "?",
+             (running != NULL) ? running->address : 0u,
+             ota_update_running_state_name());
+}
+
+static bool start_network(void)
+{
+    esp_err_t err = eth_w5500_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    err = http_ota_server_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+static bool running_image_pending(void)
+{
+    esp_ota_img_states_t state;
+    return esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+           state == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+static void confirm_image(bool network_up)
+{
+    if (!running_image_pending()) {
+        return;
+    }
+    ESP_LOGI(TAG, "self-test: new image, waiting up to %u s for an IP",
+             SELF_TEST_IP_TIMEOUT_MS / MS_PER_S);
+    const bool passed = network_up && eth_w5500_wait_for_ip(pdMS_TO_TICKS(SELF_TEST_IP_TIMEOUT_MS));
+    if (!passed) {
+        ESP_LOGE(TAG, "self-test failed (no network within %u s); rolling back and rebooting",
+                 SELF_TEST_IP_TIMEOUT_MS / MS_PER_S);
+        const esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();  /* returns only on failure */
+        ESP_LOGE(TAG, "rollback failed: %s; staying on this image", esp_err_to_name(err));
+        return;
+    }
+#ifdef CONFIG_BRAIN_OTA_SKIP_MARK_VALID
+    ESP_LOGW(TAG, "self-test passed, but this SKIP_MARK_VALID build leaves the image "
+                  "unconfirmed; the next reset rolls back to the previous slot");
+#else
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "marking the image valid failed: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "self-test passed; image marked VALID (rollback cancelled)");
+#endif
+}
+
+
+/* -----------------------------------------------------------------------------
+ * Entry
+ * ----------------------------------------------------------------------------- */
+void app_main(void)
+{
+    ESP_ERROR_CHECK(release_node_en());
+    ESP_LOGI(TAG, "GPIO3 (node reset) driven LOW");
+    log_identity();
+    confirm_image(start_network());
+    /* Returning ends only this task; Ethernet and the HTTP server keep running. */
+}

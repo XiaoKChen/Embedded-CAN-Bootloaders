@@ -1,0 +1,17 @@
+# Brain OTA partition table — ESP32-S3-WROOM-1U-N16R8, 16 MB flash.
+# Bootloader at 0x0, this table at 0x8000 (CONFIG_PARTITION_TABLE_OFFSET).
+# No factory app: the brain updates itself A/B between ota_0 and ota_1, and
+# rollback falls back to the other slot. Over USB, `idf.py flash` writes the
+# app into ota_0 and a blank otadata (the bootloader then records ota_0 VALID).
+# App slots start on 64 KB boundaries (MMU page size).
+# node_fw: reserved for staging the node's firmware image before the brain
+#          sends it over CAN (later phase); unused for now. Subtype 0x41 is a
+#          custom data subtype (0x40 is the node's cancfg in ../../partitions.csv).
+# 0x820000-0x1000000 (7.9 MB) is left free.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x5000
+otadata,    data, ota,     0xe000,   0x2000
+phy_init,   data, phy,     0x10000,  0x1000
+ota_0,      app,  ota_0,   0x20000,  0x300000
+ota_1,      app,  ota_1,   0x320000, 0x300000
+node_fw,    data, 0x41,    0x620000, 0x200000

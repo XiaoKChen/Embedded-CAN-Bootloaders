@@ -1,0 +1,3 @@
+# Extra defaults for the "bad" brain image (rollback test, docs/bench-test.md).
+# Layered on sdkconfig.defaults in its own build dir; see that guide.
+CONFIG_BRAIN_OTA_SKIP_MARK_VALID=y

@@ -79,10 +79,10 @@ From the repo root (the first run installs ESP-IDF into `.tools/`, see
 [build.md](build.md)):
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1                         # the updater (node)
+powershell -ExecutionPolicy Bypass -File build.ps1 node_updater           # the updater (node)
 powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app      # the bench app (node, over CAN)
 powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge   # the SLCAN bridge (brain)
-./build.sh                                                                 # Linux / macOS
+./build.sh node_updater                                                    # Linux / macOS
 ./build.sh examples/bench_app
 ./build.sh examples/slcan_bridge
 ```
@@ -122,11 +122,11 @@ This writes the bootloader, partition table, `otadata` and the updater
 IDs `0x79E`/`0x79F`).
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1 -p COM7 erase-flash flash monitor
-./build.sh -p /dev/ttyACM0 erase-flash flash monitor
+powershell -ExecutionPolicy Bypass -File build.ps1 node_updater -p COM7 erase-flash flash monitor
+./build.sh node_updater -p /dev/ttyACM0 erase-flash flash monitor
 ```
 
-or with esptool directly, from `build/` (esptool 4.x, the version ESP-IDF
+or with esptool directly, from `node_updater/build/` (esptool 4.x, the version ESP-IDF
 v5.3 installs):
 
 ```sh
@@ -150,8 +150,8 @@ I (...) can_updater: parked: cmd ID 0x79E, reply ID 0x79F, 250000 bit/s, slot ot
 
 Keep `monitor` open on the node (`COM7`) through the tests: it reconnects
 across resets (Ctrl+] quits; Ctrl+T then Ctrl+R resets the node). Reopening
-it resets the node, unless you add `--no-reset` (`build.ps1 -p COM7 monitor
---no-reset`). To see the bench app's logs with its symbols, run the monitor
+it resets the node, unless you add `--no-reset` (`build.ps1 node_updater -p
+COM7 monitor --no-reset`). To see the bench app's logs with its symbols, run the monitor
 from its project: `build.ps1 examples/bench_app -p COM7 monitor`.
 
 ### The brain: the SLCAN bridge
@@ -391,11 +391,11 @@ bitrate 250000`; otherwise unplug and replug it).
 
 ## 8. Brain OTA over Ethernet (issue #5)
 
-`examples/brain_ota` lets the **brain** update itself over its **W5500**
+`brain/` (firmware `brain_ota`) lets the **brain** update itself over its **W5500**
 Ethernet port: an image POSTed over HTTP goes into the inactive OTA slot,
 the brain reboots into it, and a self-test marks it valid or rolls it back.
 The node, CAN and can-flash play no part here. Wi-Fi/BLE follow in issue
-#4: the OTA core (`main/ota_update.c`) takes image chunks from any
+#4: the OTA core (`brain/main/ota_update.c`) takes image chunks from any
 transport, and the HTTP handler is just one caller.
 
 | Item | Value |
@@ -406,7 +406,7 @@ transport, and the HTTP handler is just one caller.
 | Self-test | a fresh image (`PENDING_VERIFY`) must get an IP within **30 s**, then marks itself valid; otherwise it rolls back and reboots |
 | Console | UART0 (GPIO43/44) and, as secondary output, USB-Serial-JTAG (the brain's USB port, **COM63** below) |
 
-Partition table (`examples/brain_ota/partitions.csv`, 16 MB, no factory app):
+Partition table (`brain/partitions.csv`, 16 MB, no factory app):
 
 | Partition | Offset | Size | Contents |
 |---|---|---|---|
@@ -428,27 +428,26 @@ need the bridge: re-flash it over USB to return to CAN bench work
 ### 8.1 Build
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota
-./build.sh examples/brain_ota
+powershell -ExecutionPolicy Bypass -File build.ps1 brain
+./build.sh brain
 ```
 
-brain_ota has its own partition table, so the scripts run a full `build`
-and print its flash offsets (bootloader `0x0`, table `0x8000`, otadata
-`0xe000`, app `0x20000`). The OTA image is
-`examples/brain_ota/build/brain_ota.bin` (about 440 KB). In a deep Windows
-checkout CMake prints an object-path-length warning for the bootloader
-sub-project, as for the bridge; the build still completes.
+(`build.ps1` / `./build.sh` with no argument build it too, after the node
+updater.) brain_ota has its own partition table, so the scripts run a full
+`build` and print its flash offsets (bootloader `0x0`, table `0x8000`,
+otadata `0xe000`, app `0x20000`). The OTA image is
+`brain/build/brain_ota.bin` (about 440 KB).
 
 **The "bad" image for test (2)** skips `esp_ota_mark_app_valid_cancel_rollback()`
 (Kconfig `BRAIN_OTA_SKIP_MARK_VALID`). It is built in its own short build
 dir, as for the bench app:
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
-./build.sh examples/brain_ota -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
+powershell -ExecutionPolicy Bypass -File build.ps1 brain -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
+./build.sh brain -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
 ```
 
-Result: `examples/brain_ota/skip/brain_ota.bin`.
+Result: `brain/skip/brain_ota.bin`.
 
 ### 8.2 First flash over USB
 
@@ -456,8 +455,8 @@ Connect the brain's Ethernet to the same DHCP network as the PC, and its USB
 port to the PC, then:
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota -p COM63 flash monitor
-./build.sh examples/brain_ota -p /dev/ttyACM0 flash monitor
+powershell -ExecutionPolicy Bypass -File build.ps1 brain -p COM63 flash monitor
+./build.sh brain -p /dev/ttyACM0 flash monitor
 ```
 
 esptool resets the brain into download mode through USB-Serial-JTAG by
@@ -466,7 +465,7 @@ retry. `flash` writes the bootloader, the 16 MB table, a blank `otadata` and
 the app into `ota_0`, replacing whatever the brain held (the bridge
 included); add `erase-flash` before `flash` for a clean slate. `monitor`
 reconnects across resets (Ctrl+] quits; Ctrl+T then Ctrl+R resets the
-brain); `build.ps1 examples/brain_ota -p COM63 monitor` reopens it later.
+brain); `build.ps1 brain -p COM63 monitor` reopens it later.
 
 Expected on the console. The version is the repo's `git describe`; the
 2nd-stage bootloader's `boot:` lines may appear on UART0 only.
@@ -512,7 +511,7 @@ Upload an image. In PowerShell write `curl.exe`: plain `curl` is an alias
 for `Invoke-WebRequest` there.
 
 ```sh
-curl.exe --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+curl.exe --data-binary "@brain/build/brain_ota.bin" http://<ip>/ota
 ```
 
 `--data-binary` sends the file unmodified, with a `Content-Length` header.
@@ -558,7 +557,7 @@ old slot, VALID.
 #### (1) Good image: reboot, self-test, VALID
 
 ```sh
-curl.exe --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+curl.exe --data-binary "@brain/build/brain_ota.bin" http://<ip>/ota
 ```
 
 ```
@@ -583,7 +582,7 @@ Each further upload goes to the other slot.
 #### (2) Bad (SKIP_MARK_VALID) image: rollback on the next reset
 
 ```sh
-curl.exe --data-binary "@examples/brain_ota/skip/brain_ota.bin" http://<ip>/ota
+curl.exe --data-binary "@brain/skip/brain_ota.bin" http://<ip>/ota
 ```
 
 It is written and booted as in (1), but stays unconfirmed:
@@ -616,7 +615,7 @@ Slow the upload down so there is time to act. At 8 KB/s the image takes
 about 55 s; `--limit-rate 20k` (about 22 s) also works if you are quick.
 
 ```sh
-curl.exe --limit-rate 8k --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+curl.exe --limit-rate 8k --data-binary "@brain/build/brain_ota.bin" http://<ip>/ota
 ```
 
 Pull the brain's Ethernet cable at around 50 %:
@@ -643,7 +642,8 @@ again. The half-written slot is overwritten by the next upload.
 ### 8.5 GPIO3 and the node during brain reboots
 
 brain_ota drives GPIO3 (the node's reset; HIGH holds the node in reset) LOW
-first thing in `app_main`, as the bridge does. From each brain reset until
+first thing in `app_main`, through the same `components/node_reset` as the
+bridge. From each brain reset until
 then (the bootloader plus start-up, well under a second) GPIO3 floats, so
 **every OTA reboot, rollback and reset of the brain can hold the node in
 reset briefly, and the node restarts.** That is accepted for this bench. A

@@ -7,6 +7,15 @@
 powershell -ExecutionPolicy Bypass -File build.ps1      # Windows (PowerShell 5.1 or 7)
 ```
 
+With no argument this builds both boards' firmware, in this order:
+
+| Project | Board | Output |
+|---|---|---|
+| `node_updater/` | the node (ESP32-S3FH4R2) | the CAN updater, `can_updater.bin` (`factory`), 4 MB table |
+| `brain/` | the brain (ESP32-S3-WROOM-1U-N16R8) | Ethernet OTA firmware, `brain_ota.bin` (`ota_0`), 16 MB table |
+
+A failure in either stops the script with an error.
+
 **Requirements:** Git, and Python 3.8–3.13 (on Windows: python.org, the `py`
 launcher, or a uv-managed interpreter; on Debian/Ubuntu also `python3-venv`).
 The script checks both up front and names whichever is missing.
@@ -20,9 +29,9 @@ What the first run does (later runs skip straight to the build):
    a Python virtualenv. pip and ccache caches also stay under `.tools/`, so
    nothing is written to your user profile. `.tools/` is git-ignored; delete
    it to start over.
-3. Exports that environment and runs `idf.py set-target esp32s3` (only when
-   there is no `sdkconfig` yet) and `idf.py build`.
-4. Prints every binary with its flash offset.
+3. Exports that environment and, in each project, runs `idf.py set-target
+   esp32s3` (only when there is no `sdkconfig` yet) and `idf.py build`.
+4. Prints every binary with its flash offset, per project.
 
 **Checkout path with spaces.** The ESP-IDF toolchain cannot run from a path
 containing spaces (CMake passes such a compiler path to Ninja as an 8.3 short
@@ -32,20 +41,30 @@ directory junction at `%LOCALAPPDATA%\esp-can-updater-tools\<hash>` — a link
 only, holding no data; delete it any time. `build.sh` stops with a clear
 message instead: clone into a path without spaces on Linux/macOS.
 
-Any arguments are passed to `idf.py` instead of `build`, inside the same
-repo-local environment:
+**One project.** A first argument naming an ESP-IDF project directory
+(relative to the repo root: `node_updater`, `brain`, `examples/bench_app`,
+`examples/slcan_bridge`) builds only that project, with the same repo-local
+ESP-IDF. Any further arguments are passed to `idf.py` instead of the default
+build:
 
 ```sh
-./build.sh menuconfig                    # Kconfig (pins, bitrate, ...)
-./build.sh -p /dev/ttyUSB0 flash monitor # first flash over USB/UART
-powershell -ExecutionPolicy Bypass -File build.ps1 -p COM5 flash monitor
+./build.sh node_updater menuconfig                    # Kconfig (pins, bitrate, ...)
+./build.sh node_updater -p /dev/ttyUSB0 flash monitor # first flash over USB/UART
+powershell -ExecutionPolicy Bypass -File build.ps1 node_updater -p COM64 flash monitor
+powershell -ExecutionPolicy Bypass -File build.ps1 brain -p COM63 flash
 ```
 
-**Another project.** A first argument naming an ESP-IDF project directory
-(relative to the repo root) builds that project instead, with the same
-repo-local ESP-IDF. Without further arguments it runs `idf.py app`, since an
-application only needs its OTA image, and prints that image's path. Any
-remaining arguments go to `idf.py` as above:
+idf.py arguments always follow a project. Without one (`build.ps1 -p COM5
+flash`) the scripts stop with an error naming the projects, because the
+command could be meant for either board. (It is positional rather than a
+`-Project` switch, because PowerShell would bind idf.py's `-p` port option
+to `-Project` by prefix.)
+
+**Applications (OTA images).** A project whose `sdkconfig.defaults` uses the
+node updater's partition table (`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME`
+naming `node_updater/partitions.csv`) is an application that reaches the
+node over CAN. Without further arguments the scripts run `idf.py app` for
+it, since it only needs its OTA image, and print that image's path:
 
 ```sh
 ./build.sh examples/bench_app                                # -> examples/bench_app/build/bench_app.bin
@@ -53,8 +72,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
 powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app menuconfig
 ```
 
-(It is positional rather than a `-Project` switch, because PowerShell would
-bind idf.py's `-p` port option to `-Project` by prefix.) `build`, `size` or
+`build`, `size` or
 `flash` on an application also builds its own bootloader, which is never
 used. In a deep Windows checkout, that sub-project's object paths exceed
 `MAX_PATH` and CMake warns, so stay with the default `app`. The bench-test app
@@ -74,9 +92,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8
 Its bootloader sub-project triggers the same CMake path-length warning in a
 deep Windows checkout; the build still completes.
 
-`examples/brain_ota` (the brain updating itself over Ethernet, issue #5) is
-built and first flashed the same way, with its own 16 MB partition table;
-after that it takes new images over HTTP. See
+`brain/` (the brain updating itself over Ethernet, issue #5) is built and
+first flashed the same way, with its own 16 MB partition table; after that
+it takes new images over HTTP. See
 [bench-test.md, section 8](bench-test.md#8-brain-ota-over-ethernet-issue-5).
 
 Changing the pin in `idf-version.txt` makes the next run replace
@@ -86,10 +104,10 @@ runs the same `build.sh`, so CI and local builds always use the same ESP-IDF.
 ### Already have ESP-IDF v5.3, or prefer Docker
 
 ```sh
-idf.py set-target esp32s3 build          # in an exported ESP-IDF v5.3 shell
+cd node_updater && idf.py set-target esp32s3 build   # in an exported ESP-IDF v5.3 shell
 
-docker run --rm -v "$PWD:/project" -w /project espressif/idf:v5.3.6 \
-    idf.py set-target esp32s3 build
+docker run --rm -v "$PWD:/project" -w /project/node_updater espressif/idf:v5.3.6 \
+    idf.py set-target esp32s3 build                   # from the repo root; brain alike
 ```
 
 A `build/` configured in Docker (`/project`) is discarded automatically by
@@ -97,15 +115,20 @@ the scripts the next time they run natively; it is only build output.
 
 ## Outputs
 
+The node updater, in `node_updater/build/`:
+
 | Offset | File | What |
 |---|---|---|
-| `0x0` | `build/bootloader/bootloader.bin` | stock 2nd-stage bootloader (app rollback) |
-| `0x8000` | `build/partition_table/partition-table.bin` | `partitions.csv` |
-| `0xE000` | `build/ota_data_initial.bin` | empty `otadata` → boots `factory` |
-| `0x20000` | `build/can_updater.bin` | the CAN updater (`factory`) |
+| `0x0` | `bootloader/bootloader.bin` | stock 2nd-stage bootloader (app rollback) |
+| `0x8000` | `partition_table/partition-table.bin` | `node_updater/partitions.csv` |
+| `0xE000` | `ota_data_initial.bin` | empty `otadata` → boots `factory` |
+| `0x20000` | `can_updater.bin` | the CAN updater (`factory`) |
 
-The offsets come from `build/flasher_args.json`; the scripts print them from
-there.
+The brain's firmware has the same set in `brain/build/`, with `brain_ota.bin`
+at `0x20000` (`ota_0`) and its 16 MB `brain/partitions.csv`.
+
+The offsets come from each project's `build/flasher_args.json`; the scripts
+print them from there.
 
 ## First flash of a board (USB/UART, once per board)
 
@@ -113,8 +136,8 @@ The updater, bootloader and partition table go on over the S3's USB-Serial-JTAG
 or UART0 with esptool. After that, applications arrive over CAN.
 
 ```sh
-./build.sh -p /dev/ttyUSB0 flash
-# or, from build/ in an environment with esptool:
+./build.sh node_updater -p /dev/ttyUSB0 flash
+# or, from node_updater/build/ in an environment with esptool:
 python -m esptool --chip esp32s3 write_flash @flash_args
 ```
 
@@ -124,7 +147,7 @@ unconfigured, so octal vs. quad PSRAM does not matter to it.
 
 ## Configuration (menuconfig)
 
-`./build.sh menuconfig` → **CAN Updater**:
+`./build.sh node_updater menuconfig` → **CAN Updater**:
 
 | Option | Default | Notes |
 |---|---|---|
@@ -149,7 +172,7 @@ rollback of an app that never marks itself valid. On the bench, erasing
 0x2000`) also brings the updater back.
 
 To keep a board-specific configuration in git, put the overrides in
-`sdkconfig.defaults` (the generated `sdkconfig` is ignored).
+`node_updater/sdkconfig.defaults` (the generated `sdkconfig` is ignored).
 
 ## Wiring a transceiver
 
@@ -178,6 +201,7 @@ examples/slcan_bridge menuconfig` → **SLCAN Bridge**:
 | `SLCAN_BRIDGE_TWAI_TX_GPIO` | 6 | to the brain transceiver's TXD (TCAN332 `D`) |
 | `SLCAN_BRIDGE_TWAI_RX_GPIO` | 7 | from its RXD (TCAN332 `R`) |
 | `SLCAN_BRIDGE_BITRATE` | 250 kbit/s | used by an `O` without a prior `Sn`; python-can sends `Sn` |
+| `NODE_RESET_GPIO` (*Node reset line*) | 3 | the node's EN (inverted); shared with `brain/` (`components/node_reset`) |
 
 - **Commands:** exactly python-can's `slcan` subset (`components/slcan_codec`):
   `C`, `O`, `L` (listen-only), `S0`–`S8`, `t`/`T`/`r`/`R`, `V`, `N`;
@@ -231,7 +255,8 @@ faults on it.
 An application that should be updatable over CAN (`examples/bench_app/` is a
 minimal working example):
 
-1. **Use the updater's layout.** Copy `partitions.csv` and set, in the app's
+1. **Use the updater's layout.** Copy `node_updater/partitions.csv` (or point
+   at it, as `examples/bench_app` does) and set, in the app's
    `sdkconfig.defaults`:
 
    ```

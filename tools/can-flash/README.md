@@ -1,7 +1,7 @@
 # can-flash — CAN flashing tool for the ESP32-S3 CAN updater
 
 Streams a `.bin` application image to the ESP32-S3 CAN (TWAI) updater (the
-`factory` app built from this branch) over classic CAN 2.0B, using the CAN
+`factory` app built from `node_updater/` on this branch) over classic CAN 2.0B, using the CAN
 Update Protocol v1 — the same protocol, byte for byte, as the UNO R4 Minima
 (RA4M1) CAN bootloader on the `version/c-cpp/ra4m1` branch. Flash the app's
 `build/<project>.bin` (the image ESP-IDF writes to an OTA slot), not a merged

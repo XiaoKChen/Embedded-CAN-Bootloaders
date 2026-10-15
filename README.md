@@ -10,18 +10,50 @@ powershell -ExecutionPolicy Bypass -File build.ps1      # Windows
 Requires only **Git** and **Python 3.8–3.13**. The first run clones the pinned
 ESP-IDF (`idf-version.txt`, currently v5.3.6) and its esp32s3 toolchain into
 `.tools/` inside the repo (nothing goes to your user profile), then builds;
-later runs only rebuild. The script ends by printing each binary and its flash
-offset. Checkout paths with spaces work on Windows (via a data-less junction,
-see the guide); on Linux/macOS clone to a path without spaces. Details:
-**[docs/build.md](docs/build.md)**.
+later runs only rebuild. With no argument it builds both boards' firmware,
+the node's CAN updater (`node_updater/`) and the brain's (`brain/`), and
+prints each binary and its flash offset. Checkout paths with spaces work on
+Windows (via a data-less junction, see the guide); on Linux/macOS clone to a
+path without spaces. Details: **[docs/build.md](docs/build.md)**.
 
-A first argument naming another project builds it with the same ESP-IDF,
-e.g. the bench-test app: `./build.sh examples/bench_app`, or the brain's
-USB-CAN bridge: `./build.sh examples/slcan_bridge`. Testing a node on the
-bench from a PC, with the brain (or any python-can adapter) as the USB-CAN
-adapter: **[docs/bench-test.md](docs/bench-test.md)**. The brain updating
-itself over Ethernet (`examples/brain_ota`, issue #5): section 8 of the same
+A first argument names one project, and anything after it goes to `idf.py`:
+`./build.sh node_updater`, `./build.sh brain -p /dev/ttyACM0 flash`, the
+bench-test app `./build.sh examples/bench_app`, or the brain's USB-CAN
+bridge `./build.sh examples/slcan_bridge` (on Windows: `build.ps1
+node_updater -p COM64 flash`, `build.ps1 brain -p COM63 flash`). idf.py
+arguments without a project are refused: they could mean either board. Testing a
+node on the bench from a PC, with the brain (or any python-can adapter) as
+the USB-CAN adapter: **[docs/bench-test.md](docs/bench-test.md)**. The brain
+updating itself over Ethernet (`brain/`, issue #5): section 8 of the same
 guide.
+
+## Repository layout
+
+```
+.
+├── build.sh / build.ps1   one-command build (repo-local ESP-IDF in .tools/)
+├── idf-version.txt        the ESP-IDF tag every build uses (scripts + CI)
+├── node_updater/          ESP-IDF project: the node's CAN updater (factory app,
+│                          can_updater.bin); its partitions.csv is the 4 MB
+│                          layout every node OTA app shares
+├── brain/                 ESP-IDF project: the brain updating itself over
+│                          Ethernet (W5500 + HTTP, brain_ota.bin), 16 MB table
+├── components/            shared by the projects above and the examples
+│   ├── boot_core/         compiles src/boot/ into the firmware
+│   ├── can_link/          TWAI wrapper shared by the updater and the bridge
+│   ├── can_updater_client/  app-side "enter the updater" call
+│   ├── node_reset/        the brain's GPIO3 reset line to the node
+│   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
+├── examples/bench_app/    minimal node OTA app for bench tests (docs/bench-test.md)
+├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
+├── src/boot/              shared pure-logic core (protocol engine, CRC32,
+│                          config-block parser; image_validate/memory_map are
+│                          RA4M1 prior art, host-tested but not in the firmware)
+├── tests/                 Unity/CTest host tests for src/boot/ and slcan_codec
+├── tools/can-flash/       python-can host flasher / scanner / TUI
+└── docs/                  build and bench-test guides; research/ holds the
+                           RA4M1 prior art
+```
 
 ---
 
@@ -44,7 +76,7 @@ restarts into it.
 - **CAN:** the ESP32-S3's TWAI controller via the GPIO matrix to an external
   **3.3 V transceiver** (SN65HVD230, TCAN332, …), 120 Ω at both bus ends.
   TX GPIO, RX GPIO and bitrate are menuconfig options
-  (`./build.sh menuconfig` → *CAN Updater*); defaults **GPIO4 / GPIO5 /
+  (`./build.sh node_updater menuconfig` → *CAN Updater*); defaults **GPIO4 / GPIO5 /
   250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
   #2). The brain (WROOM-1U-N16R8, TWAI on GPIO6/GPIO7, driving the node's EN
   from GPIO3) arrives in later phases; for now it can serve as the bench
@@ -66,9 +98,10 @@ uv run tools/can-flash/can_flash.py app.bin --interface slcan --channel COM8 --b
 It speaks exactly the SLCAN subset python-can uses (`C`/`O`/`L`, `S0`–`S8`
 except 750 k, `t`/`T`/`r`/`R`, `V`, `N`), logs bus errors and frame loss to
 UART0 (never to the SLCAN port), and drives GPIO3, the node's reset line
-(HIGH = node held in reset), LOW so the node runs. Setup and tests: [docs/bench-test.md](docs/bench-test.md).
+(HIGH = node held in reset), LOW so the node runs (`components/node_reset`,
+shared with `brain/`). Setup and tests: [docs/bench-test.md](docs/bench-test.md).
 
-## Flash layout (4 MB, `partitions.csv`)
+## Flash layout (4 MB, `node_updater/partitions.csv`)
 
 | Partition | Offset | Size | Contents |
 |---|---|---|---|
@@ -99,7 +132,8 @@ Nothing in the update path writes the `factory` partition. The only
 boot-selection change is the `otadata` write on GO, which ESP-IDF makes atomic
 across its two sectors. Power loss before or during GO therefore comes back up
 in the updater; after GO the new app boots in `PENDING_VERIFY` and rolls back
-to the updater if it does not confirm itself. Full table: `main/main.c`.
+to the updater if it does not confirm itself. Full table:
+`node_updater/main/main.c`.
 
 ## CAN Update Protocol v1
 
@@ -140,39 +174,17 @@ IDs, and the first USB/UART flash of a board: **[docs/build.md](docs/build.md)**
 cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir build-host -C Debug --output-on-failure
 ```
 
-`.github/workflows/esp32-build.yml` runs the host tests and `./build.sh` on
-every push / PR to `version/c-cpp/esp32` and uploads the bootloader, partition
-table, `otadata` image and updater as artifacts. Pushing a
-**`c-cpp-esp32-v*`** tag publishes a GitHub Release versioned by the tag minus
-its prefix (`c-cpp-esp32-v1.0.0` → `v1.0.0`, asset
-`esp32s3-can-updater-v1.0.0.zip`). Every branch uses `<lang>-<target>-v*`
-(`c-cpp-ra4m1-v*`, `embassy-ra4m1-v*`).
+`.github/workflows/esp32-build.yml` runs the host tests and `./build.sh`
+(node updater + brain), then builds both examples, on every push / PR to
+`version/c-cpp/esp32`. It uploads one artifact per board, each with its
+bootloader, partition table, `otadata` image, app and `flash_args`:
+`esp32s3-node-updater` (`can_updater.bin`) and `esp32s3-brain`
+(`brain_ota.bin`). Pushing a **`c-cpp-esp32-v*`** tag publishes a GitHub
+Release versioned by the tag minus its prefix (`c-cpp-esp32-v1.0.0` →
+`v1.0.0`), with `esp32s3-node-updater-v1.0.0.zip`,
+`esp32s3-brain-v1.0.0.zip` and the two app images. Every branch uses
+`<lang>-<target>-v*` (`c-cpp-ra4m1-v*`, `embassy-ra4m1-v*`).
 
 ```sh
 git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
-```
-
-## Repo layout
-
-```
-.
-├── build.sh / build.ps1   one-command build (repo-local ESP-IDF in .tools/)
-├── idf-version.txt        the ESP-IDF tag every build uses (scripts + CI)
-├── CMakeLists.txt         ESP-IDF project; sdkconfig.defaults, partitions.csv
-├── main/                  the updater app: slot HAL, CAN service
-├── components/
-│   ├── boot_core/         compiles src/boot/ into the firmware
-│   ├── can_link/          TWAI wrapper shared by the updater and the bridge
-│   ├── can_updater_client/  app-side "enter the updater" call
-│   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
-├── examples/bench_app/    minimal OTA app for bench tests (docs/bench-test.md)
-├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
-├── examples/brain_ota/    the brain updating itself over Ethernet (W5500 + HTTP)
-├── src/boot/              shared pure-logic core (protocol engine, CRC32,
-│                          config-block parser; image_validate/memory_map are
-│                          RA4M1 prior art, host-tested but not in the firmware)
-├── tests/                 Unity/CTest host tests for src/boot/ and slcan_codec
-├── tools/can-flash/       python-can host flasher / scanner / TUI
-└── docs/                  build and bench-test guides; research/ holds the
-                           RA4M1 prior art
 ```

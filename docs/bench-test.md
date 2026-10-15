@@ -1,40 +1,80 @@
-# Bench Test — ESP32-S3 Node + CAN Updater (Phase 0, issue #2)
+# Bench Test — ESP32-S3 Node + CAN Updater (Phase 0, issues #2 and #3)
 
-Tests the **node** on its own, before the brain exists: a PC with a USB-CAN
-adapter (python-can) plays the brain, using `tools/can-flash`. The node is the
-custom **ESP32-S3FH4R2** board (4 MB in-package flash) with a **TCAN332DR**
-on TWAI **TX = GPIO4, RX = GPIO5**, at **250 kbit/s**.
+Tests the **node**'s CAN updater from a PC with `tools/can-flash`, using the
+**brain** board as the USB-CAN adapter: the brain runs the SLCAN bridge
+(`examples/slcan_bridge`), so python-can talks to it as an ordinary `slcan`
+adapter. The node is the custom **ESP32-S3FH4R2** board (4 MB in-package
+flash) with a **TCAN332DR** on TWAI **TX = GPIO4, RX = GPIO5**; the brain is
+the **ESP32-S3-WROOM-1U-N16R8** board with a TCAN332DR on **TX = GPIO6,
+RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
+works in the brain's place (section 7).
 
 You need:
 
-- the node board, a USB cable to its USB-Serial-JTAG port (GPIO19/20);
-- a python-can adapter (CANable/slcan, PCAN, Kvaser, gs_usb, SocketCAN, …);
-- `uv` (or Python 3.9+ with `tools/can-flash/requirements.txt`).
+- the node, with a USB cable to its USB-Serial-JTAG port (GPIO19/20). The
+  node keeps this connection through the tests: it carries the first
+  updater flash and the node's console (logs, and the bench app's `u`
+  command);
+- the brain, with a USB cable to its native USB port (GPIO19/20). It is
+  flashed with the bridge once; after that this port is the SLCAN adapter;
+- three wires between the boards: CANH, CANL and GND;
+- `uv` (or Python 3.9+ with `tools/can-flash/requirements.txt` plus
+  `pyserial`);
+- optional: a 3.3 V USB-UART on the brain's UART0 (GPIO43 TX, GPIO44 RX,
+  115200 baud) to read the bridge's log (bus errors, frame loss). The tests
+  do not need it.
 
-The commands below use a CANable on Windows (`--interface slcan --channel
-COM8`) and the node's USB port as `COM7`. Substitute your own, e.g.
-`--interface pcan --channel PCAN_USBBUS1`, or `--interface socketcan
---channel can0` and `/dev/ttyACM0` on Linux.
+**Ports.** The commands use **`COM8` for the brain** (`--interface slcan
+--channel COM8`) and **`COM7` for the node**; yours will differ (`COM7`,
+`COM12`, …; `/dev/ttyACM0`, `/dev/ttyACM1` on Linux). Both boards enumerate
+as the same USB device (VID:PID `303A:1001`), so tell them apart by unplugging
+one, or list them with their serial numbers (the chip's MAC):
+
+```sh
+uv run --with pyserial python -m serial.tools.list_ports -v
+```
+
+**`--with pyserial`.** python-can's `slcan` backend needs pyserial, which
+can-flash's script dependencies do not include. Without it can-flash stops
+with `error: The serial module is not installed`, so every command below
+runs `uv run --with pyserial tools/can-flash/can_flash.py …`.
+
+**Bitrate.** `--bitrate 250000` (can-flash's default) makes python-can send
+the SLCAN command `S5` before opening the channel, and the bridge opens TWAI
+at 250 kbit/s, matching the node.
 
 ## 1. Wiring
 
+Each board carries its own TCAN332DR (3.3 V, so its R output feeds the S3
+directly). Between the boards run only the bus and ground:
+
 ```
-ESP32-S3FH4R2 node          TCAN332DR                     USB-CAN adapter
-GPIO4 (TWAI TX) ──────────► D                CANH ──────────── CANH
-GPIO5 (TWAI RX) ◄────────── R                CANL ──────────── CANL
-3V3 ─────────────────────── VCC                                  │
-GND ─────────────────────── GND ─────────── GND (common ground) ─┘
-                             120 Ω CANH–CANL here ... and 120 Ω at the adapter
+brain: ESP32-S3-WROOM-1U-N16R8                     node: ESP32-S3FH4R2
+GPIO6 (TWAI TX) ──► D  TCAN332DR       TCAN332DR  D ◄── GPIO4 (TWAI TX)
+GPIO7 (TWAI RX) ◄── R                             R ──► GPIO5 (TWAI RX)
+                       CANH ──────────────── CANH
+                       CANL ──────────────── CANL
+GND ────────────────── GND ───────────────── GND ────── GND
+                       120 Ω CANH–CANL       120 Ω CANH–CANL
+GPIO3 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ EN  (optional, see below)
 ```
 
-- **3.3 V** supply on the transceiver's VCC (the TCAN332 is a 3.3 V part, so
-  R is safe to feed straight into GPIO5).
-- **Termination: 120 Ω at both ends** of the bus: one at the node, one at the
-  adapter (most adapters have a jumper or switch for it). With everything
-  unpowered, CANH–CANL should measure about **60 Ω**. If the node board
-  already carries a terminator, do not add a second one at that end.
-- **Common ground** between the node and the adapter. Without it the bus
-  works intermittently or not at all.
+- **CANH to CANH, CANL to CANL.**
+- **Termination: 120 Ω at each end** of the bus, one at the brain and one at
+  the node. This repo does not record whether either board already fits a
+  terminator (120 Ω, or a split 2 × 60 Ω, across CANH–CANL next to the
+  transceiver): **check both schematics.** Then, with both boards unpowered
+  and wired together, measure CANH–CANL: about **60 Ω** is right; about
+  **120 Ω** means one end has no terminator; about **40 Ω** means three
+  (remove one); open means none.
+- **Common ground:** a GND wire between the boards, next to CANH/CANL.
+  Without it the bus works intermittently or not at all.
+- **GPIO3 → node EN** (the brain's reset line to the node) is not needed for
+  these tests. If your harness connects it anyway, the bridge firmware holds
+  GPIO3 as a floating input (high-impedance) and never drives it, so the
+  node is never held in reset. While the brain itself resets or is being
+  flashed, GPIO3 floats as well, and the node's own EN pull-up must keep it
+  running (section 6).
 
 ## 2. Build
 
@@ -42,10 +82,12 @@ From the repo root (the first run installs ESP-IDF into `.tools/`, see
 [build.md](build.md)):
 
 ```sh
-powershell -ExecutionPolicy Bypass -File build.ps1                      # the updater
-powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app   # the bench app
-./build.sh                                                              # Linux / macOS
+powershell -ExecutionPolicy Bypass -File build.ps1                         # the updater (node)
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app      # the bench app (node, over CAN)
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge   # the SLCAN bridge (brain)
+./build.sh                                                                 # Linux / macOS
 ./build.sh examples/bench_app
+./build.sh examples/slcan_bridge
 ```
 
 The bench app (`examples/bench_app/`) logs its version and OTA state at boot,
@@ -74,6 +116,8 @@ instead, switch it with `build.ps1 examples/bench_app menuconfig` →
 *Component config → ESP System Settings → Channel for console output*.
 
 ## 3. First flash over USB (once per board)
+
+### The node: the updater
 
 This writes the bootloader, partition table, `otadata` and the updater
 (`factory`). `erase-flash` first clears whatever the board held before, so
@@ -107,21 +151,62 @@ I (...) boot: Loaded app from partition at offset 0x20000
 I (...) can_updater: parked: cmd ID 0x79E, reply ID 0x79F, 250000 bit/s, slot ota_0 (1835008 bytes)
 ```
 
-Keep `monitor` open through the tests: it reconnects across resets
-(Ctrl+] quits; Ctrl+T then Ctrl+R resets the node). Reopening it resets the
-node, unless you add `--no-reset` (`build.ps1 -p COM7 monitor --no-reset`).
-To see the bench app's logs with its symbols, run the monitor from its
-project: `build.ps1 examples/bench_app -p COM7 monitor`.
+Keep `monitor` open on the node (`COM7`) through the tests: it reconnects
+across resets (Ctrl+] quits; Ctrl+T then Ctrl+R resets the node). Reopening
+it resets the node, unless you add `--no-reset` (`build.ps1 -p COM7 monitor
+--no-reset`). To see the bench app's logs with its symbols, run the monitor
+from its project: `build.ps1 examples/bench_app -p COM7 monitor`.
+
+### The brain: the SLCAN bridge
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8 flash
+./build.sh examples/slcan_bridge -p /dev/ttyACM1 flash
+```
+
+`flash` writes the bridge's own bootloader, partition table and app over the
+brain's USB, replacing whatever the brain held. The bridge is not an OTA
+image: built without `flash`, the scripts call its `.bin` an "OTA image to
+flash over CAN"; ignore that for the bridge. In a deep Windows checkout,
+`flash` also builds the bridge's bootloader and CMake prints an
+object-path-length warning for it; the build still completes.
+
+The brain restarts as an SLCAN adapter on the same COM port. That port now
+carries SLCAN and nothing else: do not open `monitor` on it (a COM port takes
+one program at a time, and can-flash needs it). The bridge logs to UART0:
+
+```
+I (...) slcan_bridge: SLCAN on USB-Serial-JTAG (serial N1A2B); TWAI TX GPIO6, RX GPIO7, 250000 bit/s until the host sends Sn; GPIO3 (node EN) released
+I (...) slcan_bridge: channel open at 250000 bit/s      <- each can-flash run
+I (...) slcan_bridge: channel closed
+```
+
+Bus trouble and frame loss appear there as `W` lines, e.g. `bus
+error-passive (TEC 128, REC 0)` or `... frame(s) lost: TWAI RX queue full`.
+
+**Check the bridge** (the node is not needed):
+
+```sh
+uv run --with python-can --with pyserial python -c "import can; b = can.Bus(interface='slcan', channel='COM8', bitrate=250000); print(b.get_version(1), b.get_serial_number(1)); b.shutdown()"
+```
+
+Expected after about 2 s (python-can waits that long after opening a port):
+`(1, 1) 1A2B`, where the serial number is the last two bytes of the brain's
+MAC. `(None, None) None` means `COM8` is not the bridge: wrong port, or the
+brain is not running it (if a UART0 log shows `waiting for download`, the
+brain sits in its ROM download mode; power-cycle it).
 
 ## 4. Tests
 
-Run `can_flash.py` from the repo root. `uv run` pulls its dependencies.
+Run `can_flash.py` from the repo root. `uv run` pulls its dependencies;
+`--with pyserial` adds the one the `slcan` backend needs. `--channel COM8` is
+the brain; substitute your port.
 
 ### (a) The node is visible: `--info` / `--scan`
 
 ```sh
-uv run tools/can-flash/can_flash.py --info --interface slcan --channel COM8
-uv run tools/can-flash/can_flash.py --scan --interface slcan --channel COM8
+uv run --with pyserial tools/can-flash/can_flash.py --info --interface slcan --channel COM8
+uv run --with pyserial tools/can-flash/can_flash.py --scan --interface slcan --channel COM8
 ```
 
 Expected (unprovisioned node, so the name is empty):
@@ -138,13 +223,14 @@ Scanned N candidate cmd IDs (band 0x700..0x71F plus legacy 0x79E); found 1 parke
 ```
 
 `no INFO reply after 4 attempts` or `found 0 parked board(s)` means no CAN
-link: check wiring, termination, common ground, the adapter bitrate (250 k),
-and that the console shows the `parked:` line.
+link: check wiring, termination, common ground, the bitrate (250 k), the
+bridge check in section 3, and that the node's console shows the `parked:`
+line.
 
 ### (b) Flash the bench app over CAN, GO, app confirms itself
 
 ```sh
-uv run tools/can-flash/can_flash.py examples/bench_app/build/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
+uv run --with pyserial tools/can-flash/can_flash.py examples/bench_app/build/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
 ```
 
 Expected from can-flash (sizes and CRC vary with the build):
@@ -193,7 +279,7 @@ now stays in the updater across resets until an image is flashed.
 With the node in the updater (after (c)), flash the SKIP_MARK_VALID build:
 
 ```sh
-uv run tools/can-flash/can_flash.py examples/bench_app/skip/bench_app.bin --interface slcan --channel COM8
+uv run --with pyserial tools/can-flash/can_flash.py examples/bench_app/skip/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
 ```
 
 can-flash ends as in (b). The node boots it once, unconfirmed:
@@ -232,17 +318,22 @@ reopens the slot from the start.)
 ### (f) CAN unplugged mid-transfer: an error, then a clean retry
 
 With the node in the updater, start (b) and disconnect CANH/CANL at around
-50 %. can-flash fails, depending on the adapter, with one of:
+50 %. Through the bridge can-flash fails with:
 
 ```
 error: DATA window N not accepted after 4 attempts
-error: local CAN TX queue stayed full for 2 s -- frames are not leaving the interface ...
 ```
 
-The node keeps running the updater (no reset). Reconnect the bus. If the
-adapter reports an error-passive or bus-off state, restart it (SocketCAN:
-`ip link set can0 down && ip link set can0 up type can bitrate 250000`;
-otherwise unplug and replug it). Run (b) again: it succeeds.
+(python-can's `slcan` writes never block: the bridge NAKs a frame it cannot
+queue, and python-can ignores the NAK, so can-flash only notices the missing
+ACKs.) Alone on the bus, the brain's frames go unacknowledged; its UART0 log
+shows `bus error-passive` and `... frame(s) not sent`. The node keeps running
+the updater (no reset).
+
+Reconnect the bus and run (b) again: it succeeds. The bridge needs no
+restart: can-flash's exit closed the channel (`C`), which stopped TWAI and
+dropped the frames still queued, and the next run reopens it. Bus-off, if it
+happens, recovers on its own.
 
 ## 5. Recovery until Phase 3
 
@@ -261,11 +352,12 @@ else is rewritten:
 python -m esptool --chip esp32s3 -p COM7 erase_region 0xe000 0x2000
 ```
 
-## 6. Notes for the brain hardware (no code in this phase)
+## 6. Notes for the brain's EN line (not driven in this phase)
 
 The brain (ESP32-S3-WROOM-1U-N16R8, TWAI TX GPIO6 / RX GPIO7) drives the
 node's EN (reset) pin from its **GPIO3**. That is the only brain-to-node wire
-besides CAN.
+besides CAN and ground. The SLCAN bridge leaves GPIO3 a floating input and
+never drives it; EN pulses arrive with Phase 3.
 
 - **Drive GPIO3 open-drain, pull-low only.** To reset the node, drive it low;
   otherwise release it (high-Z), never drive it high. A push-pull high would
@@ -277,3 +369,24 @@ besides CAN.
   eFuse is burned** (it selects the JTAG source at reset). On a default chip
   it is not burned, so the level on GPIO3 at the brain's own reset does not
   matter. Leave that eFuse alone.
+
+## 7. Alternative: a USB-CAN adapter instead of the brain
+
+Any python-can adapter can stand in for the brain: CANable/slcan, PCAN,
+Kvaser, gs_usb, SocketCAN, …. Wire its CANH, CANL and GND to the node as in
+section 1 with the adapter in the brain's place, and put the second 120 Ω at
+the adapter (most have a jumper or switch for it). Run the same tests with
+its interface and channel, e.g.:
+
+```sh
+uv run --with pyserial tools/can-flash/can_flash.py --info --interface slcan --channel COM9   # CANable (slcan firmware)
+uv run tools/can-flash/can_flash.py --info --interface pcan --channel PCAN_USBBUS1
+sudo ip link set can0 up type can bitrate 250000                                            # Linux SocketCAN, then:
+uv run tools/can-flash/can_flash.py --info --interface socketcan --channel can0
+```
+
+Test (f) differs with an adapter: can-flash may also fail with `error: local
+CAN TX queue stayed full for 2 s -- frames are not leaving the interface
+...`, and an adapter left error-passive or bus-off may need a restart before
+the retry (SocketCAN: `ip link set can0 down && ip link set can0 up type can
+bitrate 250000`; otherwise unplug and replug it).

@@ -16,9 +16,10 @@ see the guide); on Linux/macOS clone to a path without spaces. Details:
 **[docs/build.md](docs/build.md)**.
 
 A first argument naming another project builds it with the same ESP-IDF,
-e.g. the bench-test app: `./build.sh examples/bench_app`. Testing a node on
-the bench with a PC and a USB-CAN adapter:
-**[docs/bench-test.md](docs/bench-test.md)**.
+e.g. the bench-test app: `./build.sh examples/bench_app`, or the brain's
+USB-CAN bridge: `./build.sh examples/slcan_bridge`. Testing a node on the
+bench from a PC, with the brain (or any python-can adapter) as the USB-CAN
+adapter: **[docs/bench-test.md](docs/bench-test.md)**.
 
 ---
 
@@ -44,9 +45,26 @@ restarts into it.
   (`./build.sh menuconfig` → *CAN Updater*); defaults **GPIO4 / GPIO5 /
   250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
   #2). The brain (WROOM-1U-N16R8, TWAI on GPIO6/GPIO7, driving the node's EN
-  from GPIO3) arrives in later phases.
+  from GPIO3) arrives in later phases; for now it can serve as the bench
+  USB-CAN adapter (next section).
 - **No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO
   factory-reset is off (see below).
+
+## SLCAN bridge (brain as USB-CAN adapter)
+
+`examples/slcan_bridge` turns the brain into an **SLCAN (Lawicel) adapter**
+on its native USB port, so `tools/can-flash` reaches a node's updater with no
+other CAN hardware (issue #3):
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8 flash   # once, over USB
+uv run --with pyserial tools/can-flash/can_flash.py app.bin --interface slcan --channel COM8 --bitrate 250000
+```
+
+It speaks exactly the SLCAN subset python-can uses (`C`/`O`/`L`, `S0`–`S8`
+except 750 k, `t`/`T`/`r`/`R`, `V`, `N`), logs bus errors and frame loss to
+UART0 (never to the SLCAN port), and leaves GPIO3, the node's EN line, an
+undriven input. Setup and tests: [docs/bench-test.md](docs/bench-test.md).
 
 ## Flash layout (4 MB, `partitions.csv`)
 
@@ -139,15 +157,18 @@ git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
 ├── build.sh / build.ps1   one-command build (repo-local ESP-IDF in .tools/)
 ├── idf-version.txt        the ESP-IDF tag every build uses (scripts + CI)
 ├── CMakeLists.txt         ESP-IDF project; sdkconfig.defaults, partitions.csv
-├── main/                  the updater app: TWAI link, slot HAL, CAN service
+├── main/                  the updater app: slot HAL, CAN service
 ├── components/
 │   ├── boot_core/         compiles src/boot/ into the firmware
-│   └── can_updater_client/  app-side "enter the updater" call
+│   ├── can_link/          TWAI wrapper shared by the updater and the bridge
+│   ├── can_updater_client/  app-side "enter the updater" call
+│   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
 ├── examples/bench_app/    minimal OTA app for bench tests (docs/bench-test.md)
+├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
 │                          config-block parser; image_validate/memory_map are
 │                          RA4M1 prior art, host-tested but not in the firmware)
-├── tests/                 Unity/CTest host tests for src/boot/
+├── tests/                 Unity/CTest host tests for src/boot/ and slcan_codec
 ├── tools/can-flash/       python-can host flasher / scanner / TUI
 └── docs/                  build and bench-test guides; research/ holds the
                            RA4M1 prior art

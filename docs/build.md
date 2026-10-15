@@ -61,6 +61,19 @@ used. In a deep Windows checkout, that sub-project's object paths exceed
 and its rollback-test variant are described in
 **[bench-test.md](bench-test.md)**.
 
+**The SLCAN bridge is the exception.** `examples/slcan_bridge` runs on the
+brain as a USB-CAN adapter (see below). It is not an OTA image, so it is
+flashed over USB with its own bootloader and partition table, and the
+scripts' "OTA image to flash over CAN" message does not apply to it:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8 flash
+./build.sh examples/slcan_bridge -p /dev/ttyACM1 flash
+```
+
+Its bootloader sub-project triggers the same CMake path-length warning in a
+deep Windows checkout; the build still completes.
+
 Changing the pin in `idf-version.txt` makes the next run replace
 `.tools/esp-idf` with the new tag. CI (`.github/workflows/esp32-build.yml`)
 runs the same `build.sh`, so CI and local builds always use the same ESP-IDF.
@@ -146,6 +159,36 @@ GND ──────────────────── GND ─── c
 Use a 3.3 V part (SN65HVD230, TCAN332, MCP2562 with VIO = 3.3 V). Tie any
 standby/silent pin to its active level. To test a wired board with a PC and
 a USB-CAN adapter, follow **[bench-test.md](bench-test.md)**.
+
+## SLCAN bridge on the brain (`examples/slcan_bridge`)
+
+Turns the brain (ESP32-S3-WROOM-1U-N16R8 + TCAN332DR) into an SLCAN
+(Lawicel) adapter on its native USB-Serial-JTAG port, so
+`can_flash.py --interface slcan --channel COMx` reaches a node with no other
+CAN hardware ([bench-test.md](bench-test.md)). `build.ps1
+examples/slcan_bridge menuconfig` → **SLCAN Bridge**:
+
+| Option | Default | Notes |
+|---|---|---|
+| `SLCAN_BRIDGE_TWAI_TX_GPIO` | 6 | to the brain transceiver's TXD (TCAN332 `D`) |
+| `SLCAN_BRIDGE_TWAI_RX_GPIO` | 7 | from its RXD (TCAN332 `R`) |
+| `SLCAN_BRIDGE_BITRATE` | 250 kbit/s | used by an `O` without a prior `Sn`; python-can sends `Sn` |
+
+- **Commands:** exactly python-can's `slcan` subset (`components/slcan_codec`):
+  `C`, `O`, `L` (listen-only), `S0`–`S8`, `t`/`T`/`r`/`R`, `V`, `N`;
+  received frames go out as `t`/`T`/`r`/`R` lines. `sXXYY`, `S9` and CAN FD
+  are NAKed, and so is an `O` after `S7`: the 80 MHz TWAI clock cannot make
+  750 kbit/s.
+- **The USB port carries SLCAN only.** Logs and panics go to UART0
+  (GPIO43/44, 115200): `CONFIG_ESP_CONSOLE_SECONDARY_NONE` in its
+  `sdkconfig.defaults`. Bus-state changes (error-passive, bus-off and its
+  automatic recovery) and lost frames are logged there.
+- **Buffering:** a 16 KB USB RX ring (a 342-frame can-flash window is
+  7.5 KB of SLCAN; the USB-Serial-JTAG driver drops host bytes on overflow
+  rather than stalling USB), an 8 KB USB TX ring and a 256-frame TWAI RX
+  queue.
+- **GPIO3** (the node's EN) is configured as a floating input and never
+  driven.
 
 ## Per-device CAN IDs and INFO name (optional)
 
@@ -248,5 +291,5 @@ cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir bui
 `-C Debug` is needed with multi-config generators (the Visual Studio default
 on Windows) and ignored by single-config ones. They cover the shared
 pure-logic core in `src/boot/` (protocol engine, CRC32,
-config-block parser, and the RA4M1 image validator kept as prior art). No
-ESP-IDF needed.
+config-block parser, and the RA4M1 image validator kept as prior art) and
+the SLCAN codec in `components/slcan_codec/`. No ESP-IDF needed.

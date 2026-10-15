@@ -34,11 +34,6 @@ one, or list them with their serial numbers (the chip's MAC):
 uv run --with pyserial python -m serial.tools.list_ports -v
 ```
 
-**`--with pyserial`.** python-can's `slcan` backend needs pyserial, which
-can-flash's script dependencies do not include. Without it can-flash stops
-with `error: The serial module is not installed`, so every command below
-runs `uv run --with pyserial tools/can-flash/can_flash.py …`.
-
 **Bitrate.** `--bitrate 250000` (can-flash's default) makes python-can send
 the SLCAN command `S5` before opening the channel, and the bridge opens TWAI
 at 250 kbit/s, matching the node.
@@ -165,9 +160,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8
 ```
 
 `flash` writes the bridge's own bootloader, partition table and app over the
-brain's USB, replacing whatever the brain held. The bridge is not an OTA
-image: built without `flash`, the scripts call its `.bin` an "OTA image to
-flash over CAN"; ignore that for the bridge. In a deep Windows checkout,
+brain's USB, replacing whatever the brain held. The bridge is a standalone
+image, not an OTA image: built without `flash`, the scripts print its flash
+offsets rather than an image to send over CAN. In a deep Windows checkout,
 `flash` also builds the bridge's bootloader and CMake prints an
 object-path-length warning for it; the build still completes.
 
@@ -198,15 +193,15 @@ brain sits in its ROM download mode; power-cycle it).
 
 ## 4. Tests
 
-Run `can_flash.py` from the repo root. `uv run` pulls its dependencies;
-`--with pyserial` adds the one the `slcan` backend needs. `--channel COM8` is
-the brain; substitute your port.
+Run `can_flash.py` from the repo root. `uv run` pulls its dependencies,
+including pyserial for the `slcan` backend. `--channel COM8` is the brain;
+substitute your port.
 
 ### (a) The node is visible: `--info` / `--scan`
 
 ```sh
-uv run --with pyserial tools/can-flash/can_flash.py --info --interface slcan --channel COM8
-uv run --with pyserial tools/can-flash/can_flash.py --scan --interface slcan --channel COM8
+uv run tools/can-flash/can_flash.py --info --interface slcan --channel COM8
+uv run tools/can-flash/can_flash.py --scan --interface slcan --channel COM8
 ```
 
 Expected (unprovisioned node, so the name is empty):
@@ -230,7 +225,7 @@ line.
 ### (b) Flash the bench app over CAN, GO, app confirms itself
 
 ```sh
-uv run --with pyserial tools/can-flash/can_flash.py examples/bench_app/build/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
+uv run tools/can-flash/can_flash.py examples/bench_app/build/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
 ```
 
 Expected from can-flash (sizes and CRC vary with the build):
@@ -279,7 +274,7 @@ now stays in the updater across resets until an image is flashed.
 With the node in the updater (after (c)), flash the SKIP_MARK_VALID build:
 
 ```sh
-uv run --with pyserial tools/can-flash/can_flash.py examples/bench_app/skip/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
+uv run tools/can-flash/can_flash.py examples/bench_app/skip/bench_app.bin --interface slcan --channel COM8 --bitrate 250000
 ```
 
 can-flash ends as in (b). The node boots it once, unconfirmed:
@@ -379,7 +374,7 @@ the adapter (most have a jumper or switch for it). Run the same tests with
 its interface and channel, e.g.:
 
 ```sh
-uv run --with pyserial tools/can-flash/can_flash.py --info --interface slcan --channel COM9   # CANable (slcan firmware)
+uv run tools/can-flash/can_flash.py --info --interface slcan --channel COM9   # CANable (slcan firmware)
 uv run tools/can-flash/can_flash.py --info --interface pcan --channel PCAN_USBBUS1
 sudo ip link set can0 up type can bitrate 250000                                            # Linux SocketCAN, then:
 uv run tools/can-flash/can_flash.py --info --interface socketcan --channel can0

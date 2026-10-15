@@ -40,6 +40,14 @@ if [ $# -gt 0 ] && [ -f "$repo_root/$1/CMakeLists.txt" ]; then
     shift
 fi
 build_dir="$project_dir/build"
+# An OTA application shares the updater's partition table and reaches the
+# board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
+# image flashed over USB, so it gets a full build and its flash offsets.
+is_ota_app=0
+if [ "$project_dir" != "$repo_root" ] &&
+   grep -qF '../../partitions.csv' "$project_dir/sdkconfig.defaults" 2>/dev/null; then
+    is_ota_app=1
+fi
 
 fail() { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 step() { printf '==> %s\n' "$*"; }
@@ -146,14 +154,14 @@ fi
 # is never flashed (and whose object paths overflow CMake's limit under a
 # long checkout path).
 action=build
-[ "$project_dir" = "$repo_root" ] || action=app
+[ "$is_ota_app" = 0 ] || action=app
 step "idf.py $action"
 idf.py "$action" || fail "idf.py $action failed"
 
 # -----------------------------------------------------------------------------
 # 5. Where the binaries are (offsets straight from the build's flasher args)
 # -----------------------------------------------------------------------------
-if [ "$project_dir" != "$repo_root" ]; then
+if [ "$is_ota_app" = 1 ]; then
     # An application reaches the board over CAN. Its flasher args would put it
     # in the first app partition, `factory`, replacing the updater.
     printf '\nBuilt with ESP-IDF %s for %s. OTA image to flash over CAN (tools/can-flash):\n' "$idf_version" "$target"

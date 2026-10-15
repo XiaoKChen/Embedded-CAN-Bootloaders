@@ -53,6 +53,11 @@ if ($IdfCliArgs.Count -gt 0) {
     }
 }
 $BuildDir     = Join-Path $ProjectDir 'build'
+# An OTA application shares the updater's partition table and reaches the
+# board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
+# image flashed over USB, so it gets a full build and its flash offsets.
+$IsOtaApp = ($ProjectDir -ne $RepoRoot) -and [bool](Select-String -Quiet -SimpleMatch -Pattern '../../partitions.csv' `
+    -LiteralPath (Join-Path $ProjectDir 'sdkconfig.defaults') -ErrorAction SilentlyContinue)
 
 function Fail([string]$Message) {
     Write-Host "build.ps1: $Message" -ForegroundColor Red
@@ -231,7 +236,7 @@ try {
     # which is never flashed (and whose object paths overflow CMake's limit
     # under a long checkout path).
     $IdfArgs = @(if ($IdfCliArgs.Count -gt 0) { $IdfCliArgs }
-                 elseif ($ProjectDir -ne $RepoRoot) { 'app' }
+                 elseif ($IsOtaApp) { 'app' }
                  else { 'build' })
     Step "idf.py $($IdfArgs -join ' ')"
     & python $IdfPy @IdfArgs
@@ -248,7 +253,7 @@ if ($IdfCliArgs.Count -gt 0) {
     exit 0  # custom idf.py command: its own output says what it did
 }
 $flasher = Get-Content -LiteralPath (Join-Path $BuildDir 'flasher_args.json') -Raw | ConvertFrom-Json
-if ($ProjectDir -ne $RepoRoot) {
+if ($IsOtaApp) {
     # An application reaches the board over CAN. Its flasher args would put it
     # in the first app partition, `factory`, replacing the updater.
     Write-Host ''

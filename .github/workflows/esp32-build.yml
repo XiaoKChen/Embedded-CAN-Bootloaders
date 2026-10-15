@@ -47,6 +47,13 @@ jobs:
       - name: Build firmware
         run: ./build.sh
 
+      # The examples share the pinned ESP-IDF; building them keeps the shared
+      # components (can_link, can_updater_client) honest.
+      - name: Build examples
+        run: |
+          ./build.sh examples/bench_app
+          ./build.sh examples/slcan_bridge
+
       - name: Stage binaries
         run: |
           mkdir -p dist

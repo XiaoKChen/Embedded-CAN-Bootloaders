@@ -13,6 +13,8 @@
 
 cmake_minimum_required(VERSION 3.16)
 
+# The node's reset line is shared with examples/slcan_bridge.
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/node_reset")
 set(COMPONENTS main)
 
 # Windows: as for examples/slcan_bridge, object paths in a long checkout pass

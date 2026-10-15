@@ -1,0 +1,12 @@
+menu "Node reset line"
+
+    config NODE_RESET_GPIO
+        int "Brain GPIO driving the node's reset (EN)"
+        range 0 48
+        default 3
+        help
+            The brain GPIO wired to the node's EN through an inverting stage:
+            HIGH holds the node in reset, LOW lets it run. Firmware on the
+            brain drives it LOW from boot (node_reset_release()).
+
+endmenu

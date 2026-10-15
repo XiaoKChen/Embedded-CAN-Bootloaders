@@ -12,9 +12,11 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# The TWAI wrapper and the SLCAN codec are used straight from the repo.
+# The TWAI wrapper, the node's reset line and the SLCAN codec are used
+# straight from the repo.
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components/can_link"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/node_reset"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/slcan_codec")
 set(COMPONENTS main)
 

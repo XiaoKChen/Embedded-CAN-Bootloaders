@@ -30,7 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -41,6 +40,7 @@
 #include "sdkconfig.h"
 
 #include "can_link.h"
+#include "node_reset.h"
 #include "slcan_codec.h"
 
 
@@ -55,8 +55,6 @@
 #define RX_POLL_MS            10u      /* bounds how long C/O wait for the link */
 #define CLOSED_POLL_MS        10u
 #define HEALTH_POLL_MS        250u
-
-#define NODE_EN_GPIO          3        /* brain GPIO3 -> node EN (reset)        */
 
 #define ADAPTER_HW_VERSION    1u       /* V reply: "V0101"                      */
 #define ADAPTER_SW_VERSION    1u
@@ -401,26 +399,6 @@ static void can_to_usb_task(void *arg)
 /* -----------------------------------------------------------------------------
  * Board bring-up
  * ----------------------------------------------------------------------------- */
-/* GPIO3 drives the node's reset through an inverting stage: HIGH holds the
- * node in reset, LOW lets it run. A floating GPIO3 can read as HIGH, so this
- * firmware drives it LOW and never resets the node. The level is latched
- * before the output is enabled so the pin never glitches HIGH. */
-static esp_err_t release_node_en(void)
-{
-    const esp_err_t err = gpio_set_level(NODE_EN_GPIO, 0);
-    if (err != ESP_OK) {
-        return err;
-    }
-    const gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << NODE_EN_GPIO,
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    return gpio_config(&cfg);
-}
-
 static uint16_t adapter_serial(void)
 {
     uint8_t mac[MAC_LEN] = { 0 };
@@ -436,7 +414,7 @@ static uint16_t adapter_serial(void)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_ERROR_CHECK(release_node_en());
+    ESP_ERROR_CHECK(node_reset_release());  /* first: GPIO3 floats until then */
 
     usb_serial_jtag_driver_config_t usb_cfg = {
         .tx_buffer_size = USB_TX_BUFFER_BYTES,
@@ -458,5 +436,6 @@ void app_main(void)
     ESP_LOGI(TAG, "SLCAN on USB-Serial-JTAG (serial N%04X); TWAI TX GPIO%d, RX GPIO%d, "
                   "%d bit/s until the host sends Sn; GPIO%d (node reset) driven LOW",
              (unsigned)s_serial, CONFIG_SLCAN_BRIDGE_TWAI_TX_GPIO,
-             CONFIG_SLCAN_BRIDGE_TWAI_RX_GPIO, CONFIG_SLCAN_BRIDGE_BITRATE_BPS, NODE_EN_GPIO);
+             CONFIG_SLCAN_BRIDGE_TWAI_RX_GPIO, CONFIG_SLCAN_BRIDGE_BITRATE_BPS,
+             CONFIG_NODE_RESET_GPIO);
 }

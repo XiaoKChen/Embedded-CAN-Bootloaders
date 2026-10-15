@@ -16,7 +16,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -26,13 +25,13 @@
 
 #include "eth_w5500.h"
 #include "http_ota_server.h"
+#include "node_reset.h"
 #include "ota_update.h"
 
 
 /* -----------------------------------------------------------------------------
  * Constants
  * ----------------------------------------------------------------------------- */
-#define NODE_EN_GPIO             3        /* brain GPIO3 -> node EN (reset)   */
 #define SELF_TEST_IP_TIMEOUT_MS  30000u
 #define MS_PER_S                 1000u
 
@@ -42,27 +41,6 @@ static const char *TAG = "brain_ota";
 /* -----------------------------------------------------------------------------
  * Private helpers
  * ----------------------------------------------------------------------------- */
-/* GPIO3 drives the node's reset through an inverting stage: HIGH holds the
- * node in reset, LOW lets it run. A floating GPIO3 can read as HIGH, so this
- * firmware drives it LOW and never resets the node. The level is latched
- * before the output is enabled so the pin never glitches HIGH. (Same as
- * examples/slcan_bridge.) */
-static esp_err_t release_node_en(void)
-{
-    const esp_err_t err = gpio_set_level(NODE_EN_GPIO, 0);
-    if (err != ESP_OK) {
-        return err;
-    }
-    const gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << NODE_EN_GPIO,
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    return gpio_config(&cfg);
-}
-
 static void log_identity(void)
 {
     const esp_app_desc_t  *desc    = esp_app_get_description();
@@ -131,8 +109,8 @@ static void confirm_image(bool network_up)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
-    ESP_ERROR_CHECK(release_node_en());
-    ESP_LOGI(TAG, "GPIO3 (node reset) driven LOW");
+    ESP_ERROR_CHECK(node_reset_release());  /* first: GPIO3 floats until then */
+    ESP_LOGI(TAG, "GPIO%d (node reset) driven LOW", CONFIG_NODE_RESET_GPIO);
     log_identity();
     confirm_image(start_network());
     /* Returning ends only this task; Ethernet and the HTTP server keep running. */

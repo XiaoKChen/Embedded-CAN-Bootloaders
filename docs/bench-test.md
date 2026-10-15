@@ -542,6 +542,19 @@ instance) can then only be replaced over USB.
 Keep `monitor` open on COM63 through the tests. Byte counts below are for a
 449 568-byte image.
 
+**Opening COM63 can reset the brain.** Observed on hardware: a tool that
+(re)opens the port with pyserial's default DTR/RTS (a plain script, or
+`monitor` without `--no-reset`) resets the S3. During test (2) that reset
+alone triggers the rollback before you mean it to. Either keep one `monitor`
+session open the whole time, or watch the state with `curl.exe http://<ip>/`
+instead of the console.
+
+Results on the real brain (2026-10-14, 172.16.5.71): (1) 449 568 B in about
+3.3 s, `PENDING_VERIFY` → VALID; (2) bad image `PENDING_VERIFY`, a second
+upload refused with 409, reset → rolled back, VALID; (3) cable pulled mid
+upload → no reboot, still the old slot, VALID; (4) power cut mid upload →
+old slot, VALID.
+
 #### (1) Good image: reboot, self-test, VALID
 
 ```sh

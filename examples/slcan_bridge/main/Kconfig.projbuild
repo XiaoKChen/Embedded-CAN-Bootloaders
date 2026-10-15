@@ -1,0 +1,46 @@
+menu "SLCAN Bridge"
+
+    config SLCAN_BRIDGE_TWAI_TX_GPIO
+        int "TWAI TX GPIO (to transceiver TXD)"
+        range 0 48
+        default 6
+        help
+            GPIO driving the CAN transceiver's TXD (TCAN332 D) on the brain.
+            Avoid GPIO3 (the node's EN line), strapping pins (0, 45, 46),
+            USB (19, 20), the flash/PSRAM pins (26-37 on octal-PSRAM modules)
+            and UART0 (43, 44), which carries this firmware's log.
+
+    config SLCAN_BRIDGE_TWAI_RX_GPIO
+        int "TWAI RX GPIO (from transceiver RXD)"
+        range 0 48
+        default 7
+        help
+            GPIO reading the CAN transceiver's RXD (TCAN332 R). Same pin
+            constraints as the TX GPIO.
+
+    choice SLCAN_BRIDGE_BITRATE
+        prompt "CAN bitrate until the host sends Sn"
+        default SLCAN_BRIDGE_BITRATE_250K
+        help
+            The bitrate an `O` opens with when no `Sn` came first. python-can
+            sends `Sn` whenever it is given a bitrate (can-flash always passes
+            --bitrate, default 250000 = S5), which overrides this.
+
+        config SLCAN_BRIDGE_BITRATE_125K
+            bool "125 kbit/s"
+        config SLCAN_BRIDGE_BITRATE_250K
+            bool "250 kbit/s"
+        config SLCAN_BRIDGE_BITRATE_500K
+            bool "500 kbit/s"
+        config SLCAN_BRIDGE_BITRATE_1M
+            bool "1 Mbit/s"
+    endchoice
+
+    config SLCAN_BRIDGE_BITRATE_BPS
+        int
+        default 125000 if SLCAN_BRIDGE_BITRATE_125K
+        default 250000 if SLCAN_BRIDGE_BITRATE_250K
+        default 500000 if SLCAN_BRIDGE_BITRATE_500K
+        default 1000000 if SLCAN_BRIDGE_BITRATE_1M
+
+endmenu

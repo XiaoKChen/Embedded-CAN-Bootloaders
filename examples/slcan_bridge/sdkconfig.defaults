@@ -1,0 +1,8 @@
+# SLCAN bridge (brain board) — committed defaults (sdkconfig itself is generated).
+CONFIG_IDF_TARGET="esp32s3"
+
+# The USB-Serial-JTAG port carries SLCAN and nothing else. Logs and panic
+# output go to UART0 only (GPIO43 TX / GPIO44 RX, 115200 baud); the default
+# secondary console would mirror them onto the SLCAN stream.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

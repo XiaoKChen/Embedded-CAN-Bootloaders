@@ -135,8 +135,13 @@ python -m esptool --chip esp32s3 -p COM7 -b 460800 --before default_reset --afte
 ```
 
 esptool resets the S3 into download mode over USB-Serial-JTAG by itself. If
-it cannot connect, hold GPIO0 low while pulsing EN (if your board exposes
-GPIO0) and retry.
+it cannot connect (observed when the board runs firmware that does not answer
+esptool's reset), hold **BOOT** while plugging in the board's USB, release
+it, and flash again. Observed on these boards: after a flash from a
+BOOT-button download mode, esptool's "Hard resetting via RTS pin" can leave
+the chip in download mode. Unplug and re-plug the USB **without** BOOT to
+start the new firmware. Flash the brain before the node: while the brain is
+in download mode its GPIO3 floats and holds the node in reset.
 
 **Expected on the console** (the updater logs to UART0 and, as secondary
 output, to USB-Serial-JTAG):

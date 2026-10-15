@@ -37,9 +37,14 @@ add_library(boot_core STATIC
 )
 target_include_directories(boot_core PUBLIC ${BOOT_DIR})
 
+# Pure-logic SLCAN codec used by the brain's USB-CAN bridge (examples/slcan_bridge).
+set(SLCAN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../components/slcan_codec)
+add_library(slcan_codec STATIC ${SLCAN_DIR}/slcan_codec.c)
+target_include_directories(slcan_codec PUBLIC ${SLCAN_DIR}/include)
+
 function(add_host_test name)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.c)
-    target_link_libraries(${name} PRIVATE boot_core unity)
+    target_link_libraries(${name} PRIVATE boot_core slcan_codec unity)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -47,3 +52,4 @@ add_host_test(test_crc32)
 add_host_test(test_image_validate)
 add_host_test(test_can_update)
 add_host_test(test_dfu_config)
+add_host_test(test_slcan_codec)

@@ -94,8 +94,13 @@ deep Windows checkout; the build still completes.
 
 `brain/` (the brain updating itself over Ethernet, issue #5) is built and
 first flashed the same way, with its own 16 MB partition table; after that
-it takes new images over HTTP. See
-[bench-test.md, section 8](bench-test.md#8-brain-ota-over-ethernet-issue-5).
+it takes new images over HTTP. It also stages a node image in its 2 MB
+`node_fw` data partition and flashes a parked node over CAN using
+`components/can_flash_host` (pure C) and `can_link` (TX6/RX7, 250 kbit/s).
+The normal brain build includes these automatically; no extra build flags.
+See [bench-test.md, section 8](bench-test.md#8-brain-ota-over-ethernet-issue-5)
+for own OTA and [section 9](bench-test.md#9-brain-flashes-the-node-over-can-phase-2-issue-8)
+for `/node/scan`, `/node/flash`, `/node/status` and isolation/failure checks.
 
 Changing the pin in `idf-version.txt` makes the next run replace
 `.tools/esp-idf` with the new tag. CI (`.github/workflows/esp32-build.yml`)
@@ -322,4 +327,8 @@ cmake -S tests -B build-host && cmake --build build-host && ctest --test-dir bui
 on Windows) and ignored by single-config ones. They cover the shared
 pure-logic core in `src/boot/` (protocol engine, CRC32,
 config-block parser, and the RA4M1 image validator kept as prior art) and
-the SLCAN codec in `components/slcan_codec/`. No ESP-IDF needed.
+the SLCAN codec in `components/slcan_codec/`. `test_can_flash_host` compiles
+`components/can_flash_host/` against the real node engine with a simulated
+CAN bus, RAM slot and fake clock (loss/retry/wrap, CRC and discovery tests).
+No ESP-IDF or hardware needed. CI already runs all CTest suites, including
+this new host/node integration suite.

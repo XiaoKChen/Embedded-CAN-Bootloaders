@@ -8,7 +8,8 @@ flash) with a **TCAN332DR** on TWAI **TX = GPIO4, RX = GPIO5**; the brain is
 the **ESP32-S3-WROOM-1U-N16R8** board with a TCAN332DR on **TX = GPIO6,
 RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
 works in the brain's place (section 7). Section 8 tests something else: the
-brain updating itself over Ethernet (issue #5).
+brain updating itself over Ethernet (issue #5). Section 9 tests the brain
+flashing a parked node over CAN with its C host (Phase 2, issue #8).
 
 You need:
 
@@ -422,7 +423,7 @@ Partition table (`brain/partitions.csv`, 16 MB, no factory app):
 | `phy_init` | `0x10000` | 4 KB | |
 | `ota_0` | `0x20000` | 3 MB | app slot A (the USB flash lands here) |
 | `ota_1` | `0x320000` | 3 MB | app slot B |
-| `node_fw` | `0x620000` | 2 MB | reserved for staging node images (custom data subtype `0x41`); unused |
+| `node_fw` | `0x620000` | 2 MB | disposable staged node image (custom data subtype `0x41`); section 9 |
 
 `0x820000`–`0x1000000` (7.9 MB) is free.
 
@@ -532,7 +533,7 @@ boot partition unchanged:
 |---|---|
 | 411 | no `Content-Length` (e.g. a chunked upload) |
 | 413 | image larger than the 3 MB slot |
-| 409 | the running image is still `PENDING_VERIFY`: ESP-IDF refuses an update until it is confirmed |
+| 409 | the running image is still `PENDING_VERIFY`, or an OTA/node upload/node flash/scan is active |
 | 400 | not an app image, or rejected by validation (`ESP_ERR_OTA_VALIDATE_FAILED`) |
 | 408 | no data for 10 s mid-upload (the reply may not get out) |
 | 500 | flash error |
@@ -653,3 +654,160 @@ then (the bootloader plus start-up, well under a second) GPIO3 floats, so
 **every OTA reboot, rollback and reset of the brain can hold the node in
 reset briefly, and the node restarts.** That is accepted for this bench. A
 node connected over USB re-enumerates.
+
+## 9. Brain flashes the node over CAN (Phase 2, issue #8)
+
+**Bench-only, trusted LAN:** these HTTP routes have no authentication or TLS.
+The PC supplies the image over Ethernet; it is **not on the CAN bus**. The
+brain runs `brain_ota`, not the SLCAN bridge. The node must already be parked
+in its updater: use the bench app's `u` command or section 5's USB recovery.
+This phase neither remotely enters the updater nor pulses reset. **GPIO3
+stays LOW throughout staging, scanning and flashing.** Brain reboot caveats
+in section 8.5 still apply.
+
+### 9.1 Prepare and discover
+
+Build both firmwares and the node app, then flash the **brain first** over
+USB (replace COM63 with its actual port):
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
+powershell -ExecutionPolicy Bypass -File build.ps1 brain -p COM63 flash
+```
+
+If BOOT was held for download mode and it stays there after flashing,
+power-cycle without BOOT. Let the brain acquire a DHCP address as in
+section 8.2. Put the node into its updater; if it has never been installed,
+follow section 3's node USB flash, using the node's actual port. Connect
+CANH/CANL/GND and the two 120-ohm terminators as in section 1.
+
+```sh
+curl.exe http://<ip>/node/scan
+curl.exe "http://<ip>/node/scan?from=0x700&to=0x73F"
+```
+
+Default scan: sorted unique `0x700..0x71F`, plus `0x79E` and known command
+IDs `1,3,5,7,9`. Overrides replace only the range; the extra IDs are always
+probed. Each probe has a **300 ms total INFO deadline**, listens on any
+standard reply ID, and requires the header plus four name frames on the
+same ID. An empty/default scan takes about **11.4 s**. Multiple parked nodes
+need distinct command IDs and unambiguous reply IDs. With one unprovisioned
+node, expect (IDs are decimal in JSON):
+
+```json
+{"nodes":[{"cmd_id":1950,"reply_id":1951,"name":"","protocol":1}],"truncated":false}
+```
+
+The brain stores at most 64 scan results; `truncated:true` asks you to narrow
+the range. Names are JSON-escaped (including embedded control characters).
+Bad ranges/IDs return 400. Scans share the update worker, so another scan or
+either update returns 409 while one runs; status endpoints remain live.
+
+### 9.2 Stage, flash, verify and boot
+
+```sh
+curl.exe -i --data-binary "@examples/bench_app/build/bench_app.bin" "http://<ip>/node/flash?cmd=0x79E&reply=0x79F"
+curl.exe http://<ip>/node/status
+```
+
+The same IDs are defaults if the query is omitted. For a provisioned node,
+use **both IDs from scan**; the reply need not be command + 1. Decimal and
+`0x` hexadecimal are accepted. Send the app `.bin`, never a bootloader or
+merged flash image.
+
+The body must have a nonzero Content-Length. The brain erases `node_fw`
+sector by sector, writes each chunk and reads it back for byte equality.
+**202 Accepted is returned after the complete body is verified in staging,
+without waiting for CAN flashing.** A static background worker then runs
+HELLO → SIZE → ERASE → DATA → VERIFY → GO from that partition. Poll status:
+
+```json
+{"state":"flashing","percent":42,"bytes":81920,"total":191264,"status":"CAN transfer; awaiting VERIFY and GO"}
+```
+
+States: `idle`, `staging`, `flashing`, `success`, `failed`. Bytes/percent refer
+to staged bytes while staging and accepted image bytes while flashing;
+**100% is not success until VERIFY and GO are ACKed.** On success expect
+`state:success`, `percent:100`, equal `bytes`/`total`, and `status` beginning
+`GO: success`. On the node's console expect the normal bench-app boot and
+`self-test passed; image marked valid`, as in section 4(b). The brain does
+not reboot and its own running slot is unchanged. A running bench app no
+longer answers INFO; use `u` again before the next transfer.
+
+### 9.3 Failure and isolation checks (run only on an available bench)
+
+- **Conflicts, both directions:** start a slow node upload with
+  `curl.exe --limit-rate 8k --data-binary "@examples/bench_app/build/bench_app.bin" "http://<ip>/node/flash"`.
+  In another terminal POST again to `/node/flash`, then POST the brain image
+  to `/ota`; each must return **409**, during staging and during CAN flashing.
+  `/node/status` must still respond. Repeat with a slow `/ota` upload and a
+  concurrent `/node/flash`: again 409. Abort the slow self-upload before
+  completion if you do not intend to reboot the brain.
+- **Dropped upload:** cancel curl or pull Ethernet during staging. After the
+  10 s receive timeout (or immediate peer close), status is `failed`; no CAN
+  session starts, neither boot selection changes, and a fresh upload works.
+  Missing length returns 411; a body larger than the **2 MB staging partition**
+  returns 413 before erase. A staged image bigger than the node's announced
+  **1.75 MB slot** gets `SIZE rejected: size out of bounds 0x04`, before node
+  ERASE. A complete upload whose 202 response cannot be sent is not flashed.
+- **No node / CAN disconnected:** scan returns no hits on a healthy bus, or a
+  transport error if TX cannot drain. Flash ends `failed` with a HELLO timeout
+  or transport failure, never success. Disconnect CAN mid-DATA, then reconnect
+  and retry the entire HTTP upload after failure. Inspect the brain's final
+  `CAN health` log for bus state, TX/RX error counters and dropped frames.
+- **Node reset/power loss mid-transfer:** the node returns to its updater;
+  this attempt fails with a clear DATA/transport status. A fresh POST starts
+  a new HELLO session and succeeds. No automatic reset is driven by the brain.
+- **Rejected image:** upload a small non-ESP32 image. CRC may match, but VERIFY
+  must end `failed` with `VERIFY rejected: image rejected 0x06`; the node stays
+  in its updater. CRC mismatch is independently covered by host fault tests.
+- **Brain power loss during staging:** after reboot, status is `idle`. Length
+  and validity are RAM-only, so partial/stale `node_fw` contents are never
+  resumed. During CAN flashing, power loss leaves the node in its updater
+  unless GO already selected the verified app. Re-upload to start fresh.
+- **Own OTA regression:** repeat section 8.4's normal image, skip-mark-valid
+  rollback, dropped upload and power-cut checks. The self-test and A/B OTA
+  implementation are unchanged; a single async HTTP worker now keeps conflict
+  and status replies responsive while either upload is active.
+
+### 9.4 Host compatibility and known limits
+
+`components/can_flash_host/include/can_flash_host.h` documents the portable
+C API and typed diagnostics. The host tests run against the **real**
+`src/boot/can_update.c`, not a permissive Python fake. Four attempts, 2 s
+ordinary ACK, 15 s ERASE, 150 ms quiet drain, 2048-byte windows and current/
+next-window rewind resolution match the Python defaults. The ESP-IDF adapter
+rounds the 1 ms early receive poll up to one RTOS tick so it actually yields.
+A continuously busy receive drain is bounded at 2 s rather than hanging.
+
+Intentional differences / protocol limits:
+
+- The Python `_command` calls commands idempotent; the real engine accepts
+  SIZE, ERASE and VERIFY only in their exact phase. Losing those ACKs can
+  cause a retry to get STATE. Restart the full upload rather than treating
+  that NAK as success. A lost GO ACK is ambiguous: the app may already run.
+- The Python host retries a lost final DATA ACK, but the real node is already
+  TRANSFERRED and rejects DATA. The C host first probes VERIFY on a final
+  DATA timeout: ACK proves delivery and CRC; STATE safely permits DATA retry;
+  CRC/image rejection fails closed. It does not send VERIFY again after ACK.
+- SIZE is sent even if the announced slot is smaller, obtaining the node's
+  authoritative SIZE NAK rather than a Python-side size exception. No ERASE
+  follows a rejected SIZE.
+- INFO's five frames are unnumbered: an incomplete/foreign burst is retried
+  (or a scan miss), not guessed. Provisioned names are ASCII, at most 32 bytes.
+
+Host verification (no hardware):
+
+```sh
+cmake -S tests -B build-host
+cmake --build build-host --config Debug
+ctest --test-dir build-host -C Debug --output-on-failure
+```
+
+The suite includes >256 KB/wrap recovery, lost/duplicate DATA, lost intermediate
+and final ACKs, final-frame loss, node reset/restart, CRC/image rejection,
+size/timeout errors, three-node discovery and every name length 0..32. A
+5099-byte deterministic image was cross-checked against the actual Python
+`CanFlasher`: all **857 frames / 6856 payload bytes** (HELLO through GO,
+including padding and sequence bytes) matched, CRC32 `0xBBCFA65A`.

@@ -25,7 +25,10 @@ arguments without a project are refused: they could mean either board. Testing a
 node on the bench from a PC, with the brain (or any python-can adapter) as
 the USB-CAN adapter: **[docs/bench-test.md](docs/bench-test.md)**. The brain
 updating itself over Ethernet (`brain/`, issue #5): section 8 of the same
-guide.
+guide. **The brain can also flash parked nodes itself over CAN** (Phase 2,
+issue #8): upload the node `.bin` over Ethernet to `/node/flash`, then poll
+`/node/status`; `/node/scan` discovers command/reply IDs. No PC CAN adapter
+is needed. See [section 9](docs/bench-test.md#9-brain-flashes-the-node-over-can-phase-2-issue-8).
 
 ## Repository layout
 
@@ -37,10 +40,11 @@ guide.
 │                          can_updater.bin); its partitions.csv is the 4 MB
 │                          layout every node OTA app shares
 ├── brain/                 ESP-IDF project: the brain updating itself over
-│                          Ethernet (W5500 + HTTP, brain_ota.bin), 16 MB table
+│                          Ethernet and flashing nodes over CAN (brain_ota.bin), 16 MB table
 ├── components/            shared by the projects above and the examples
 │   ├── boot_core/         compiles src/boot/ into the firmware
-│   ├── can_link/          TWAI wrapper shared by the updater and the bridge
+│   ├── can_flash_host/    pure C scan/flash host (callbacks, no heap, host-tested)
+│   ├── can_link/          TWAI wrapper shared by updater, brain and bridge
 │   ├── can_updater_client/  app-side "enter the updater" call
 │   ├── node_reset/        the brain's GPIO3 reset line to the node
 │   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
@@ -49,7 +53,7 @@ guide.
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
 │                          config-block parser; image_validate/memory_map are
 │                          RA4M1 prior art, host-tested but not in the firmware)
-├── tests/                 Unity/CTest host tests for src/boot/ and slcan_codec
+├── tests/                 Unity/CTest: boot core, SLCAN, CAN host vs real node engine
 ├── tools/can-flash/       python-can host flasher / scanner / TUI
 └── docs/                  build and bench-test guides; research/ holds the
                            RA4M1 prior art
@@ -78,9 +82,9 @@ restarts into it.
   TX GPIO, RX GPIO and bitrate are menuconfig options
   (`./build.sh node_updater menuconfig` → *CAN Updater*); defaults **GPIO4 / GPIO5 /
   250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
-  #2). The brain (WROOM-1U-N16R8, TWAI on GPIO6/GPIO7, driving the node's EN
-  from GPIO3) arrives in later phases; for now it can serve as the bench
-  USB-CAN adapter (next section).
+  #2). The brain (WROOM-1U-N16R8) uses GPIO6/GPIO7 at 250 kbit/s for its
+  C CAN host, or can run the alternative USB-CAN bridge below. Its GPIO3
+  node-reset output stays LOW; reset pulses remain Phase 3.
 - **No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO
   factory-reset is off (see below).
 

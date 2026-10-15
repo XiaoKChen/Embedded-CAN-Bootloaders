@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build.sh - One-command build of the ESP32-S3 CAN updater (Linux / macOS)
+# build.sh - One-command build of the ESP32-S3 firmware, node updater + brain
+#            (Linux / macOS)
 # =============================================================================
-#   ./build.sh [project dir] [idf.py arguments]
+#   ./build.sh [project dir [idf.py arguments]]
 #
-# With no arguments it runs `idf.py build` and prints each binary and its
-# flash offset; any arguments are passed to idf.py instead, inside the same
-# repo-local environment (e.g. `menuconfig`, or `-p /dev/ttyUSB0 flash`).
+# With no arguments it builds both boards' firmware, node_updater then brain
+# (`idf.py build` each), and prints each binary and its flash offset. A
+# failure in either stops the script with an error.
 #
-# An optional first argument naming another ESP-IDF project directory,
-# relative to the repo root (e.g. `examples/bench_app`), builds that project
-# instead of the updater, with the same ESP-IDF install.
+# A first argument naming an ESP-IDF project directory, relative to the repo
+# root (`node_updater`, `brain`, `examples/bench_app`, ...), builds that
+# project only. Any further arguments are passed to idf.py instead of the
+# default build, inside the same repo-local environment (e.g.
+# `brain menuconfig`, or `node_updater -p /dev/ttyUSB0 flash`). idf.py
+# arguments without a project first are an error: they could mean either
+# board.
 #
 # First run: clones ESP-IDF (the exact tag in idf-version.txt) into
 # .tools/esp-idf, installs its esp32s3 toolchain, CMake, Ninja and Python
@@ -32,24 +37,37 @@ tools_dir="$repo_root/.tools"
 idf_path="$tools_dir/esp-idf"
 idf_tools_path="$tools_dir/espressif"
 install_stamp="$idf_tools_path/installed-$idf_version-$target"
-
-# Anything that is not a project directory goes to idf.py untouched.
-project_dir="$repo_root/node_updater"
-if [ $# -gt 0 ] && [ -f "$repo_root/$1/CMakeLists.txt" ]; then
-    project_dir="$(cd "$repo_root/$1" && pwd)"
-    shift
-fi
-build_dir="$project_dir/build"
-# An OTA application shares the updater's partition table and reaches the
-# board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
-# image flashed over USB, so it gets a full build and its flash offsets.
-is_ota_app=0
-if grep -qF '../../node_updater/partitions.csv' "$project_dir/sdkconfig.defaults" 2>/dev/null; then
-    is_ota_app=1
-fi
+node_updater_dir="$repo_root/node_updater"
 
 fail() { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 step() { printf '==> %s\n' "$*"; }
+
+# idf.py arguments always follow a project, so a `-p PORT flash` can never
+# reach the wrong board. With no arguments, both boards' firmware is built.
+if [ $# -gt 0 ]; then
+    [ -f "$repo_root/$1/CMakeLists.txt" ] \
+        || fail "'$1' is not a project directory. Name the project first, then the idf.py arguments, e.g.: ./build.sh node_updater -p /dev/ttyUSB0 flash  (projects: node_updater, brain, examples/bench_app, examples/slcan_bridge)"
+    project_dirs=("$(cd "$repo_root/$1" && pwd)")
+    shift
+else
+    project_dirs=("$node_updater_dir" "$repo_root/brain")
+fi
+
+# An OTA application uses the node updater's partition table (the one its
+# sdkconfig.defaults names) and reaches the node over CAN; any other project
+# (the updater itself, the brain, the SLCAN bridge) is a standalone image
+# flashed over USB, so it gets a full build and its flash offsets.
+is_ota_app() {
+    local dir="$1" table
+    [ "$dir" != "$node_updater_dir" ] && [ -f "$dir/sdkconfig.defaults" ] || return 1
+    table="$(sed -n '/^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=/{s/^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="\(.*\)"[[:space:]]*$/\1/p;q;}' "$dir/sdkconfig.defaults")"
+    [ -n "$table" ] || return 1
+    case "$table" in
+        /*) ;;
+        *) table="$dir/$table" ;;
+    esac
+    [ "$(cd "$(dirname "$table")" 2>/dev/null && pwd)/$(basename "$table")" = "$node_updater_dir/partitions.csv" ]
+}
 
 # -----------------------------------------------------------------------------
 # 1. Prerequisites - fail fast, naming exactly what is missing
@@ -126,59 +144,72 @@ command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1 \
     || fail "export.sh did not put the esp32s3 toolchain on PATH; delete .tools and re-run"
 
 # -----------------------------------------------------------------------------
-# 4. Build
+# 4. Build each project, then show where its binaries are (offsets straight
+#    from the build's flasher args). A subshell per project keeps its `cd`.
 # -----------------------------------------------------------------------------
-# A build dir configured from another location (e.g. the Docker build at
-# /project) cannot be reused: CMake refuses it. It is only build output.
-cache="$build_dir/CMakeCache.txt"
-if [ -f "$cache" ]; then
-    configured="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache")"
-    if [ "$configured" != "$project_dir" ]; then
-        step "Discarding build/ configured for '$configured'"
-        rm -rf "$build_dir"
+build_project() (
+    project_dir="$1"
+    shift
+    build_dir="$project_dir/build"
+    ota_app=0
+    if is_ota_app "$project_dir"; then
+        ota_app=1
     fi
-fi
+    step "Project ${project_dir#"$repo_root"/}"
 
-cd "$project_dir"
-if [ ! -f sdkconfig ]; then
-    step "idf.py set-target $target"
-    idf.py set-target "$target" || fail "idf.py set-target failed"
-fi
-if [ $# -gt 0 ]; then
-    step "idf.py $*"
-    idf.py "$@" || fail "idf.py $* failed"
-    exit 0  # custom idf.py command: its own output says what it did
-fi
-# An application needs only its OTA image: `app` skips its bootloader, which
-# is never flashed (and whose object paths overflow CMake's limit under a
-# long checkout path).
-action=build
-[ "$is_ota_app" = 0 ] || action=app
-step "idf.py $action"
-idf.py "$action" || fail "idf.py $action failed"
+    # A build dir configured from another location (e.g. the Docker build at
+    # /project) cannot be reused: CMake refuses it. It is only build output.
+    cache="$build_dir/CMakeCache.txt"
+    if [ -f "$cache" ]; then
+        configured="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache")"
+        if [ "$configured" != "$project_dir" ]; then
+            step "Discarding build/ configured for '$configured'"
+            rm -rf "$build_dir"
+        fi
+    fi
 
-# -----------------------------------------------------------------------------
-# 5. Where the binaries are (offsets straight from the build's flasher args)
-# -----------------------------------------------------------------------------
-if [ "$is_ota_app" = 1 ]; then
-    # An application reaches the board over CAN. Its flasher args would put it
-    # in the first app partition, `factory`, replacing the updater.
-    printf '\nBuilt with ESP-IDF %s for %s. OTA image to flash over CAN (tools/can-flash):\n' "$idf_version" "$target"
-    python - "$build_dir" <<'EOF'
+    cd "$project_dir"
+    if [ ! -f sdkconfig ]; then
+        step "idf.py set-target $target"
+        idf.py set-target "$target" || fail "idf.py set-target failed"
+    fi
+    if [ $# -gt 0 ]; then
+        step "idf.py $*"
+        idf.py "$@" || fail "idf.py $* failed"
+        exit 0  # custom idf.py command: its own output says what it did
+    fi
+    # An application needs only its OTA image: `app` skips its bootloader,
+    # which is never flashed (and whose object paths overflow CMake's limit
+    # under a long checkout path).
+    action=build
+    [ "$ota_app" = 0 ] || action=app
+    step "idf.py $action"
+    idf.py "$action" || fail "idf.py $action failed"
+
+    if [ "$ota_app" = 1 ]; then
+        # An application reaches the board over CAN. Its flasher args would
+        # put it in the first app partition, `factory`, replacing the updater.
+        printf '\nBuilt with ESP-IDF %s for %s. OTA image to flash over CAN (tools/can-flash):\n' "$idf_version" "$target"
+        python - "$build_dir" <<'EOF'
 import json, os, sys
 build_dir = sys.argv[1]
 print("  " + os.path.join(build_dir, json.load(open(os.path.join(build_dir, "flasher_args.json")))["app"]["file"]))
 EOF
-    printf 'Do not idf.py flash it onto an updater board. Details: docs/bench-test.md\n'
-    exit 0
-fi
-printf '\nBuilt with ESP-IDF %s for %s. Flash offsets and files:\n' "$idf_version" "$target"
-python - "$build_dir" <<'EOF'
+        printf 'Do not idf.py flash it onto an updater board. Details: docs/bench-test.md\n\n'
+        exit 0
+    fi
+    printf '\nBuilt with ESP-IDF %s for %s. Flash offsets and files:\n' "$idf_version" "$target"
+    python - "$build_dir" <<'EOF'
 import json, os, sys
 build_dir = sys.argv[1]
 files = json.load(open(os.path.join(build_dir, "flasher_args.json")))["flash_files"]
 for offset in sorted(files, key=lambda o: int(o, 16)):
     print("  %-9s %s" % (offset, os.path.join(build_dir, files[offset])))
 EOF
-printf '\nFlash all of them over USB/UART (from build/):  python -m esptool --chip esp32s3 write_flash @flash_args\n'
-printf 'Details: docs/build.md\n'
+    printf '\nFlash all of them over USB/UART (from %s):  python -m esptool --chip esp32s3 write_flash @flash_args\n' "$build_dir"
+    printf 'Details: docs/build.md\n\n'
+)
+
+for project_dir in "${project_dirs[@]}"; do
+    build_project "$project_dir" "$@"
+done

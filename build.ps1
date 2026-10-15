@@ -1,17 +1,21 @@
 <#
 .SYNOPSIS
-    One-command build of the ESP32-S3 CAN updater on Windows.
+    One-command build of the ESP32-S3 firmware (node updater + brain) on Windows.
 
 .DESCRIPTION
-    powershell -ExecutionPolicy Bypass -File build.ps1 [project dir] [idf.py arguments]
+    powershell -ExecutionPolicy Bypass -File build.ps1 [project dir [idf.py arguments]]
 
-    With no arguments it runs `idf.py build` and prints each binary and its
-    flash offset; any arguments are passed to idf.py instead, inside the same
-    repo-local environment (e.g. `menuconfig`, or `-p COM5 flash monitor`).
+    With no arguments it builds both boards' firmware, node_updater then
+    brain (`idf.py build` each), and prints each binary and its flash offset.
+    A failure in either stops the script with an error.
 
-    An optional first argument naming another ESP-IDF project directory,
-    relative to the repo root (e.g. `examples/bench_app`), builds that
-    project instead of the updater, with the same ESP-IDF install.
+    A first argument naming an ESP-IDF project directory, relative to the
+    repo root (`node_updater`, `brain`, `examples/bench_app`, ...), builds
+    that project only. Any further arguments are passed to idf.py instead of
+    the default build, inside the same repo-local environment (e.g.
+    `brain menuconfig`, or `node_updater -p COM5 flash monitor`). idf.py
+    arguments without a project first are an error: they could mean either
+    board.
 
     First run: clones ESP-IDF (the exact tag in idf-version.txt) into
     .tools\esp-idf, installs its esp32s3 toolchain, CMake, Ninja and Python
@@ -35,29 +39,8 @@ $Target       = 'esp32s3'
 $IdfRepoUrl   = 'https://github.com/espressif/esp-idf.git'
 $IdfVersion   = (Get-Content -LiteralPath (Join-Path $RepoRoot 'idf-version.txt') -TotalCount 1 -ErrorAction Stop).Trim()
 $ToolsDir     = Join-Path $RepoRoot '.tools'
-
-# Positional, not a -Project parameter: PowerShell would bind idf.py's `-p`
-# (port) to it by prefix. Anything that is not a project directory goes to
-# idf.py untouched.
-$ProjectDir = Join-Path $RepoRoot 'node_updater'
-$IdfCliArgs = @($args)
-if ($IdfCliArgs.Count -gt 0) {
-    try {
-        $candidate = [IO.Path]::GetFullPath((Join-Path $RepoRoot ([string]$IdfCliArgs[0]))).TrimEnd('\', '/')
-        if (Test-Path -LiteralPath (Join-Path $candidate 'CMakeLists.txt') -PathType Leaf) {
-            $ProjectDir = $candidate
-            $IdfCliArgs = @($IdfCliArgs | Select-Object -Skip 1)
-        }
-    } catch {
-        # Not a usable path (e.g. invalid path characters): an idf.py argument.
-    }
-}
-$BuildDir     = Join-Path $ProjectDir 'build'
-# An OTA application shares the updater's partition table and reaches the
-# board over CAN; any other project (e.g. the SLCAN bridge) is a standalone
-# image flashed over USB, so it gets a full build and its flash offsets.
-$IsOtaApp = [bool](Select-String -Quiet -SimpleMatch -Pattern '../../node_updater/partitions.csv' `
-    -LiteralPath (Join-Path $ProjectDir 'sdkconfig.defaults') -ErrorAction SilentlyContinue)
+$NodeUpdaterDir  = Join-Path $RepoRoot 'node_updater'
+$DefaultProjects = @('node_updater', 'brain')  # built, in order, with no arguments
 
 function Fail([string]$Message) {
     Write-Host "build.ps1: $Message" -ForegroundColor Red
@@ -66,6 +49,54 @@ function Fail([string]$Message) {
 
 function Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+# The full path of an ESP-IDF project directory given relative to the repo
+# root, or $null when the argument is not one.
+function Resolve-ProjectDir([string]$Relative) {
+    try {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $RepoRoot $Relative)).TrimEnd('\', '/')
+    } catch {
+        return $null  # not a usable path (e.g. invalid path characters)
+    }
+    if (Test-Path -LiteralPath (Join-Path $candidate 'CMakeLists.txt') -PathType Leaf) {
+        return $candidate
+    }
+    return $null
+}
+
+# An OTA application uses the node updater's partition table (the one its
+# sdkconfig.defaults names) and reaches the node over CAN; any other project
+# (the updater itself, the brain, the SLCAN bridge) is a standalone image
+# flashed over USB, so it gets a full build and its flash offsets.
+function Test-OtaApp([string]$ProjectDir) {
+    if ($ProjectDir -eq $NodeUpdaterDir) {
+        return $false
+    }
+    $setting = Select-String -LiteralPath (Join-Path $ProjectDir 'sdkconfig.defaults') `
+        -Pattern '^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="(.*)"' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $setting) {
+        return $false
+    }
+    $table = [IO.Path]::GetFullPath([IO.Path]::Combine($ProjectDir, $setting.Matches[0].Groups[1].Value))
+    return ($table -eq (Join-Path $NodeUpdaterDir 'partitions.csv'))
+}
+
+# Positional, not a -Project parameter: PowerShell would bind idf.py's `-p`
+# (port) to it by prefix. idf.py arguments always follow a project, so a
+# `-p COM5 flash` can never reach the wrong board.
+$IdfCliArgs  = @($args)
+$ProjectDirs = @($DefaultProjects | ForEach-Object { Join-Path $RepoRoot $_ })
+if ($IdfCliArgs.Count -gt 0) {
+    $named = Resolve-ProjectDir ([string]$IdfCliArgs[0])
+    if (-not $named) {
+        Fail ("'$($IdfCliArgs[0])' is not a project directory. Name the project first, then the idf.py " +
+              "arguments, e.g.: build.ps1 node_updater -p COM5 flash  (projects: node_updater, brain, " +
+              "examples/bench_app, examples/slcan_bridge)")
+    }
+    $ProjectDirs = @($named)
+    $IdfCliArgs  = @($IdfCliArgs | Select-Object -Skip 1)
 }
 
 # First interpreter that runs and is 3.8 <= version < 3.14 (ESP-IDF v5.3's
@@ -208,65 +239,75 @@ if (-not (Get-Command xtensa-esp32s3-elf-gcc -ErrorAction SilentlyContinue)) {
 }
 
 # -----------------------------------------------------------------------------
-# 4. Build
+# 4. Build each project, then show where its binaries are (offsets straight
+#    from the build's flasher args)
 # -----------------------------------------------------------------------------
-# A build dir configured from another location (e.g. the Docker build at
-# /project) cannot be reused: CMake refuses it. It is only build output.
-$cache = Join-Path $BuildDir 'CMakeCache.txt'
-if (Test-Path -LiteralPath $cache) {
-    $home_line = Select-String -LiteralPath $cache -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$' | Select-Object -First 1
-    $configured = if ($home_line) { $home_line.Matches[0].Groups[1].Value } else { '' }
-    if ($configured -ne ($ProjectDir -replace '\\', '/')) {
-        Step "Discarding build\ configured for '$configured'"
-        Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction Stop
-    }
-}
+function Build-Project([string]$ProjectDir, [object[]]$CliArgs) {
+    $BuildDir = Join-Path $ProjectDir 'build'
+    $IsOtaApp = Test-OtaApp $ProjectDir
+    Step "Project $($ProjectDir.Substring($RepoRoot.Length).TrimStart('\', '/'))"
 
-$IdfPy = Join-Path $IdfPath 'tools\idf.py'
-Push-Location -LiteralPath $ProjectDir
-try {
-    if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'sdkconfig'))) {
-        Step "idf.py set-target $Target"
-        & python $IdfPy set-target $Target
-        if ($LASTEXITCODE -ne 0) { Fail 'idf.py set-target failed.' }
+    # A build dir configured from another location (e.g. the Docker build at
+    # /project) cannot be reused: CMake refuses it. It is only build output.
+    $cache = Join-Path $BuildDir 'CMakeCache.txt'
+    if (Test-Path -LiteralPath $cache) {
+        $home_line = Select-String -LiteralPath $cache -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$' | Select-Object -First 1
+        $configured = if ($home_line) { $home_line.Matches[0].Groups[1].Value } else { '' }
+        if ($configured -ne ($ProjectDir -replace '\\', '/')) {
+            Step "Discarding build\ configured for '$configured'"
+            Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction Stop
+        }
     }
-    # @(...) keeps a one-element list an array: splatting a bare string would
-    # pass it to idf.py one character at a time.
-    # An application needs only its OTA image: `app` skips its bootloader,
-    # which is never flashed (and whose object paths overflow CMake's limit
-    # under a long checkout path).
-    $IdfArgs = @(if ($IdfCliArgs.Count -gt 0) { $IdfCliArgs }
-                 elseif ($IsOtaApp) { 'app' }
-                 else { 'build' })
-    Step "idf.py $($IdfArgs -join ' ')"
-    & python $IdfPy @IdfArgs
-    if ($LASTEXITCODE -ne 0) { Fail "idf.py $($IdfArgs -join ' ') failed." }
-}
-finally {
-    Pop-Location
-}
 
-# -----------------------------------------------------------------------------
-# 5. Where the binaries are (offsets straight from the build's flasher args)
-# -----------------------------------------------------------------------------
-if ($IdfCliArgs.Count -gt 0) {
-    exit 0  # custom idf.py command: its own output says what it did
-}
-$flasher = Get-Content -LiteralPath (Join-Path $BuildDir 'flasher_args.json') -Raw | ConvertFrom-Json
-if ($IsOtaApp) {
-    # An application reaches the board over CAN. Its flasher args would put it
-    # in the first app partition, `factory`, replacing the updater.
+    $IdfPy = Join-Path $IdfPath 'tools\idf.py'
+    Push-Location -LiteralPath $ProjectDir
+    try {
+        if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'sdkconfig'))) {
+            Step "idf.py set-target $Target"
+            & python $IdfPy set-target $Target
+            if ($LASTEXITCODE -ne 0) { Fail 'idf.py set-target failed.' }
+        }
+        # @(...) keeps a one-element list an array: splatting a bare string would
+        # pass it to idf.py one character at a time.
+        # An application needs only its OTA image: `app` skips its bootloader,
+        # which is never flashed (and whose object paths overflow CMake's limit
+        # under a long checkout path).
+        $IdfArgs = @(if ($CliArgs.Count -gt 0) { $CliArgs }
+                     elseif ($IsOtaApp) { 'app' }
+                     else { 'build' })
+        Step "idf.py $($IdfArgs -join ' ')"
+        & python $IdfPy @IdfArgs
+        if ($LASTEXITCODE -ne 0) { Fail "idf.py $($IdfArgs -join ' ') failed." }
+    }
+    finally {
+        Pop-Location
+    }
+
+    if ($CliArgs.Count -gt 0) {
+        return  # custom idf.py command: its own output says what it did
+    }
+    $flasher = Get-Content -LiteralPath (Join-Path $BuildDir 'flasher_args.json') -Raw | ConvertFrom-Json
+    if ($IsOtaApp) {
+        # An application reaches the board over CAN. Its flasher args would put it
+        # in the first app partition, `factory`, replacing the updater.
+        Write-Host ''
+        Write-Host "Built with ESP-IDF $IdfVersion for $Target. OTA image to flash over CAN (tools\can-flash):" -ForegroundColor Green
+        Write-Host ('  ' + (Join-Path $BuildDir ($flasher.app.file -replace '/', '\')))
+        Write-Host 'Do not idf.py flash it onto an updater board. Details: docs\bench-test.md'
+        Write-Host ''
+        return
+    }
     Write-Host ''
-    Write-Host "Built with ESP-IDF $IdfVersion for $Target. OTA image to flash over CAN (tools\can-flash):" -ForegroundColor Green
-    Write-Host ('  ' + (Join-Path $BuildDir ($flasher.app.file -replace '/', '\')))
-    Write-Host 'Do not idf.py flash it onto an updater board. Details: docs\bench-test.md'
-    exit 0
+    Write-Host "Built with ESP-IDF $IdfVersion for $Target. Flash offsets and files:" -ForegroundColor Green
+    foreach ($entry in ($flasher.flash_files.PSObject.Properties | Sort-Object { [Convert]::ToInt64($_.Name, 16) })) {
+        Write-Host ('  {0,-9} {1}' -f $entry.Name, (Join-Path $BuildDir ($entry.Value -replace '/', '\')))
+    }
+    Write-Host ''
+    Write-Host "Flash all of them over USB/UART (from $BuildDir):  python -m esptool --chip esp32s3 write_flash `"@flash_args`""
+    Write-Host 'Details: docs\build.md'
+    Write-Host ''
 }
-Write-Host ''
-Write-Host "Built with ESP-IDF $IdfVersion for $Target. Flash offsets and files:" -ForegroundColor Green
-foreach ($entry in ($flasher.flash_files.PSObject.Properties | Sort-Object { [Convert]::ToInt64($_.Name, 16) })) {
-    Write-Host ('  {0,-9} {1}' -f $entry.Name, (Join-Path $BuildDir ($entry.Value -replace '/', '\')))
+
+foreach ($projectDir in $ProjectDirs) {
+    Build-Project $projectDir $IdfCliArgs
 }
-Write-Host ''
-Write-Host 'Flash all of them over USB/UART (from build\):  python -m esptool --chip esp32s3 write_flash "@flash_args"'
-Write-Host 'Details: docs\build.md'

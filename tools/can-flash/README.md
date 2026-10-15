@@ -11,6 +11,7 @@ or bootloader image.
 
 - Python 3.9+
 - `python-can >= 4.0` (`pip install -r requirements.txt`)
+- `pyserial >= 3.0` — for serial adapters (`--interface slcan`, incl. the brain's SLCAN bridge)
 - `can-isotp >= 2.0` — for the `--enter-bootloader` pre-step
 - `textual >= 0.60` — for the interactive TUI
 - A CAN adapter supported by python-can (SocketCAN, slcan/CANable,

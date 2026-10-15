@@ -10,12 +10,12 @@ Run with no arguments to launch the interactive Textual TUI; pass any flag
 (or a firmware path) to run headless exactly as before. See README.md in this
 directory for wiring, TUI/CLI usage, and adapter-specific notes.
 
-Requires Python 3.9+, python-can >= 4.0, can-isotp >= 2.0, and textual >= 0.60.
+Requires Python 3.9+, python-can >= 4.0, pyserial >= 3.0, can-isotp >= 2.0, and textual >= 0.60.
 """
 
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["python-can>=4.0", "can-isotp>=2.0", "textual>=0.60"]
+# dependencies = ["python-can>=4.0", "pyserial>=3.0", "can-isotp>=2.0", "textual>=0.60"]
 # ///
 
 import argparse

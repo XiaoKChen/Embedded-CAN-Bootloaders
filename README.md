@@ -58,7 +58,7 @@ other CAN hardware (issue #3):
 
 ```sh
 powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8 flash   # once, over USB
-uv run --with pyserial tools/can-flash/can_flash.py app.bin --interface slcan --channel COM8 --bitrate 250000
+uv run tools/can-flash/can_flash.py app.bin --interface slcan --channel COM8 --bitrate 250000
 ```
 
 It speaks exactly the SLCAN subset python-can uses (`C`/`O`/`L`, `S0`–`S8`

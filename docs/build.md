@@ -74,6 +74,11 @@ powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge -p COM8
 Its bootloader sub-project triggers the same CMake path-length warning in a
 deep Windows checkout; the build still completes.
 
+`examples/brain_ota` (the brain updating itself over Ethernet, issue #5) is
+built and first flashed the same way, with its own 16 MB partition table;
+after that it takes new images over HTTP. See
+[bench-test.md, section 8](bench-test.md#8-brain-ota-over-ethernet-issue-5).
+
 Changing the pin in `idf-version.txt` makes the next run replace
 `.tools/esp-idf` with the new tag. CI (`.github/workflows/esp32-build.yml`)
 runs the same `build.sh`, so CI and local builds always use the same ESP-IDF.

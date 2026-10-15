@@ -19,7 +19,9 @@ A first argument naming another project builds it with the same ESP-IDF,
 e.g. the bench-test app: `./build.sh examples/bench_app`, or the brain's
 USB-CAN bridge: `./build.sh examples/slcan_bridge`. Testing a node on the
 bench from a PC, with the brain (or any python-can adapter) as the USB-CAN
-adapter: **[docs/bench-test.md](docs/bench-test.md)**.
+adapter: **[docs/bench-test.md](docs/bench-test.md)**. The brain updating
+itself over Ethernet (`examples/brain_ota`, issue #5): section 8 of the same
+guide.
 
 ---
 
@@ -165,6 +167,7 @@ git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0
 │   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
 ├── examples/bench_app/    minimal OTA app for bench tests (docs/bench-test.md)
 ├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
+├── examples/brain_ota/    the brain updating itself over Ethernet (W5500 + HTTP)
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
 │                          config-block parser; image_validate/memory_map are
 │                          RA4M1 prior art, host-tested but not in the firmware)

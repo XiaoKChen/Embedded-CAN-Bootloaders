@@ -7,7 +7,8 @@ adapter. The node is the custom **ESP32-S3FH4R2** board (4 MB in-package
 flash) with a **TCAN332DR** on TWAI **TX = GPIO4, RX = GPIO5**; the brain is
 the **ESP32-S3-WROOM-1U-N16R8** board with a TCAN332DR on **TX = GPIO6,
 RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
-works in the brain's place (section 7).
+works in the brain's place (section 7). Section 8 tests something else: the
+brain updating itself over Ethernet (issue #5).
 
 You need:
 
@@ -387,3 +388,250 @@ CAN TX queue stayed full for 2 s -- frames are not leaving the interface
 ...`, and an adapter left error-passive or bus-off may need a restart before
 the retry (SocketCAN: `ip link set can0 down && ip link set can0 up type can
 bitrate 250000`; otherwise unplug and replug it).
+
+## 8. Brain OTA over Ethernet (issue #5)
+
+`examples/brain_ota` lets the **brain** update itself over its **W5500**
+Ethernet port: an image POSTed over HTTP goes into the inactive OTA slot,
+the brain reboots into it, and a self-test marks it valid or rolls it back.
+The node, CAN and can-flash play no part here. Wi-Fi/BLE follow in issue
+#4: the OTA core (`main/ota_update.c`) takes image chunks from any
+transport, and the HTTP handler is just one caller.
+
+| Item | Value |
+|---|---|
+| W5500 | SPI2 (IOMUX): MOSI GPIO11, MISO GPIO13, SCLK GPIO12, CS GPIO10, INTn GPIO9, RSTn GPIO14; SPI at 20 MHz |
+| Network | DHCP client; MAC = the chip's Ethernet MAC (base MAC + 3) |
+| HTTP | port 80: `GET /` (plain-text status), `POST /ota` (raw `.bin` as the body, `Content-Length` required) |
+| Self-test | a fresh image (`PENDING_VERIFY`) must get an IP within **30 s**, then marks itself valid; otherwise it rolls back and reboots |
+| Console | UART0 (GPIO43/44) and, as secondary output, USB-Serial-JTAG (the brain's USB port, **COM63** below) |
+
+Partition table (`examples/brain_ota/partitions.csv`, 16 MB, no factory app):
+
+| Partition | Offset | Size | Contents |
+|---|---|---|---|
+| bootloader | `0x0` | — | stock ESP-IDF 2nd stage, app rollback enabled |
+| partition table | `0x8000` | 4 KB | |
+| `nvs` | `0x9000` | 20 KB | |
+| `otadata` | `0xe000` | 8 KB | boot-slot selection and image states |
+| `phy_init` | `0x10000` | 4 KB | |
+| `ota_0` | `0x20000` | 3 MB | app slot A (the USB flash lands here) |
+| `ota_1` | `0x320000` | 3 MB | app slot B |
+| `node_fw` | `0x620000` | 2 MB | reserved for staging node images (custom data subtype `0x41`); unused |
+
+`0x820000`–`0x1000000` (7.9 MB) is free.
+
+**While brain_ota runs, the brain is not the SLCAN bridge.** Sections 3–4
+need the bridge: re-flash it over USB to return to CAN bench work
+(`build.ps1 examples/slcan_bridge -p COM63 flash`, with the brain's port).
+
+### 8.1 Build
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota
+./build.sh examples/brain_ota
+```
+
+brain_ota has its own partition table, so the scripts run a full `build`
+and print its flash offsets (bootloader `0x0`, table `0x8000`, otadata
+`0xe000`, app `0x20000`). The OTA image is
+`examples/brain_ota/build/brain_ota.bin` (about 440 KB). In a deep Windows
+checkout CMake prints an object-path-length warning for the bootloader
+sub-project, as for the bridge; the build still completes.
+
+**The "bad" image for test (2)** skips `esp_ota_mark_app_valid_cancel_rollback()`
+(Kconfig `BRAIN_OTA_SKIP_MARK_VALID`). It is built in its own short build
+dir, as for the bench app:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
+./build.sh examples/brain_ota -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
+```
+
+Result: `examples/brain_ota/skip/brain_ota.bin`.
+
+### 8.2 First flash over USB
+
+Connect the brain's Ethernet to the same DHCP network as the PC, and its USB
+port to the PC, then:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/brain_ota -p COM63 flash monitor
+./build.sh examples/brain_ota -p /dev/ttyACM0 flash monitor
+```
+
+esptool resets the brain into download mode through USB-Serial-JTAG by
+itself. If it cannot connect, hold BOOT (GPIO0) while pressing reset and
+retry. `flash` writes the bootloader, the 16 MB table, a blank `otadata` and
+the app into `ota_0`, replacing whatever the brain held (the bridge
+included); add `erase-flash` before `flash` for a clean slate. `monitor`
+reconnects across resets (Ctrl+] quits; Ctrl+T then Ctrl+R resets the
+brain); `build.ps1 examples/brain_ota -p COM63 monitor` reopens it later.
+
+Expected on the console. The version is the repo's `git describe`; the
+2nd-stage bootloader's `boot:` lines may appear on UART0 only.
+
+```
+I (...) brain_ota: GPIO3 (node reset) driven LOW
+I (...) brain_ota: brain_ota version v1.0.2-... (ESP-IDF v5.3.6), running from ota_0 (0x20000), OTA state VALID
+I (...) eth_w5500: W5500 on SPI2 at 20 MHz (MOSI 11, MISO 13, SCLK 12, CS 10, INT 9, RST 14), MAC xx:xx:xx:xx:xx:xx
+I (...) eth_w5500: Ethernet started; waiting for link and DHCP
+I (...) http_ota: HTTP server on port 80: GET /, POST /ota
+I (...) eth_w5500: link up
+I (...) eth_w5500: ==================================================
+I (...) eth_w5500: IP acquired: 192.168.1.57   ->  http://192.168.1.57/
+I (...) eth_w5500: ==================================================
+```
+
+On the first boot after a USB flash `otadata` is blank; the bootloader
+records `ota_0` as VALID, so no self-test runs. **Note the IP** from the
+`IP acquired` line (or find the MAC from the `W5500` line in your router's
+DHCP table). Below, `<ip>` stands for it.
+
+`W5500 driver install failed`, or no `link up`, means a wiring, reset or
+cable problem. Nothing else in this section works until `IP acquired` shows.
+
+### 8.3 Status and upload
+
+```sh
+curl.exe http://<ip>/
+```
+
+```
+project:   brain_ota
+version:   v1.0.2-...
+esp-idf:   v5.3.6
+running:   ota_0 (0x20000)
+ota state: VALID
+next slot: ota_1
+ip:        192.168.1.57
+uptime:    42 s
+```
+
+Upload an image. In PowerShell write `curl.exe`: plain `curl` is an alias
+for `Invoke-WebRequest` there.
+
+```sh
+curl.exe --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+```
+
+`--data-binary` sends the file unmodified, with a `Content-Length` header.
+Expect a few seconds, not well under one: the 100 Mbit link is not the
+bottleneck. Erasing and writing the flash sector by sector is, with the
+20 MHz SPI to the W5500 after it.
+
+On success the reply is `OTA ok: N bytes; rebooting into the new image`
+(HTTP 200) and the brain restarts about 1 s later. Every error leaves the
+boot partition unchanged:
+
+| Status | Cause |
+|---|---|
+| 411 | no `Content-Length` (e.g. a chunked upload) |
+| 413 | image larger than the 3 MB slot |
+| 409 | the running image is still `PENDING_VERIFY`: ESP-IDF refuses an update until it is confirmed |
+| 400 | not an app image, or rejected by validation (`ESP_ERR_OTA_VALIDATE_FAILED`) |
+| 408 | no data for 10 s mid-upload (the reply may not get out) |
+| 500 | flash error |
+
+**Only upload brain_ota images.** Any valid ESP32-S3 app is accepted and
+booted. One that confirms itself but has no Ethernet (the bench app, for
+instance) can then only be replaced over USB.
+
+### 8.4 Tests
+
+Keep `monitor` open on COM63 through the tests. Byte counts below are for a
+449 568-byte image.
+
+#### (1) Good image: reboot, self-test, VALID
+
+```sh
+curl.exe --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+```
+
+```
+I (...) http_ota: POST /ota: 449568 bytes announced
+I (...) ota_update: OTA begin: 449568 bytes into ota_1 (offset 0x320000, 3145728 bytes)
+I (...) ota_update: OTA progress:  10 % (... / 449568 bytes)
+...
+I (...) ota_update: OTA progress: 100 % (449568 / 449568 bytes)
+I (...) ota_update: OTA result: 449568 bytes written and validated; ota_1 boots next
+I (...) http_ota: restarting in 1000 ms
+...
+I (...) brain_ota: brain_ota version ... running from ota_1 (0x320000), OTA state PENDING_VERIFY
+I (...) brain_ota: self-test: new image, waiting up to 30 s for an IP
+I (...) eth_w5500: IP acquired: ...
+I (...) brain_ota: self-test passed; image marked VALID (rollback cancelled)
+```
+
+`curl.exe http://<ip>/` now shows `running: ota_1` and `ota state: VALID`.
+Reset the brain (Ctrl+T Ctrl+R): it boots `ota_1` again, `OTA state VALID`.
+Each further upload goes to the other slot.
+
+#### (2) Bad (SKIP_MARK_VALID) image: rollback on the next reset
+
+```sh
+curl.exe --data-binary "@examples/brain_ota/skip/brain_ota.bin" http://<ip>/ota
+```
+
+It is written and booted as in (1), but stays unconfirmed:
+
+```
+I (...) brain_ota: brain_ota version ... running from ota_0 (0x20000), OTA state PENDING_VERIFY
+I (...) brain_ota: self-test: new image, waiting up to 30 s for an IP
+I (...) eth_w5500: IP acquired: ...
+W (...) brain_ota: self-test passed, but this SKIP_MARK_VALID build leaves the image unconfirmed; the next reset rolls back to the previous slot
+```
+
+`GET /` shows `ota state: PENDING_VERIFY`, and an upload now gets `409`.
+Reset the brain (Ctrl+T Ctrl+R, the reset button, or a power cycle). The
+bootloader marks the unconfirmed slot `ABORTED` and boots the previous one:
+
+```
+I (...) brain_ota: brain_ota version ... running from ota_1 (0x320000), OTA state VALID
+```
+
+A fresh image that gets no IP within 30 s (booted with the cable out, say)
+rolls back by itself, without a reset:
+
+```
+E (...) brain_ota: self-test failed (no network within 30 s); rolling back and rebooting
+```
+
+#### (3) Ethernet cable pulled mid-upload: abort, old image still boots
+
+Slow the upload down so there is time to act. At 8 KB/s the image takes
+about 55 s; `--limit-rate 20k` (about 22 s) also works if you are quick.
+
+```sh
+curl.exe --limit-rate 8k --data-binary "@examples/brain_ota/build/brain_ota.bin" http://<ip>/ota
+```
+
+Pull the brain's Ethernet cable at around 50 %:
+
+```
+I (...) ota_update: OTA progress:  50 % (... / 449568 bytes)
+W (...) eth_w5500: link down
+E (...) http_ota: no data for 10 s after ... of 449568 bytes (cable pulled?)
+W (...) ota_update: OTA result: aborted after ... of 449568 bytes; boot partition unchanged
+```
+
+curl does not notice at once (TCP keeps retrying); stop it with Ctrl+C.
+Plug the cable back in (`link up`, then `IP acquired` again). `GET /` shows
+the same running slot, `VALID`; a reset boots that same slot; a new upload
+succeeds.
+
+#### (4) Power cut mid-upload: old image still boots
+
+Start the slowed upload as in (3) and cut the brain's power (unplug its USB)
+at around 50 %. curl fails. Restore power: `otadata` was never touched, so
+the brain boots the slot it ran before, `OTA state VALID`, and gets its IP
+again. The half-written slot is overwritten by the next upload.
+
+### 8.5 GPIO3 and the node during brain reboots
+
+brain_ota drives GPIO3 (the node's reset; HIGH holds the node in reset) LOW
+first thing in `app_main`, as the bridge does. From each brain reset until
+then (the bootloader plus start-up, well under a second) GPIO3 floats, so
+**every OTA reboot, rollback and reset of the brain can hold the node in
+reset briefly, and the node restarts.** That is accepted for this bench. A
+node connected over USB re-enumerates.

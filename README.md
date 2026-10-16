@@ -39,6 +39,13 @@ Build with the stdlib-only `tools/pkg/ecb_pkg.py`; install the new brain partiti
 table over USB once. See [section 11](docs/bench-test.md#11-update-package-phase-5-issue-10)
 and the [package format](docs/package-format.md). HTTP remains trusted-LAN-only,
 without authentication or signing.
+**Phase 6 (#11)** adds **`examples/node_app`**, the reference app for real node
+firmware: it answers **APP_INFO** and **ENTER_UPDATER** on the node's own update
+IDs, so the brain's package relay (and `POST /node/flash`) parks a running node
+over CAN first and pulses GPIO3 only when that fails; each node result says
+which path was used. `GET /node/app_info` and `can_flash.py --app-info` /
+`--enter-updater` identify or park a running app. See
+[section 12](docs/bench-test.md#12-example-node-app-phase-6-issue-11).
 
 ## Repository layout
 
@@ -58,6 +65,7 @@ without authentication or signing.
 │   ├── can_updater_client/  app-side updater entry + 10 s recovery health tracking
 │   ├── node_reset/        the brain's GPIO3 reset line to the node
 │   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
+├── examples/node_app/     reference node app: health, self-test, APP_INFO/ENTER_UPDATER
 ├── examples/bench_app/    minimal node OTA app for bench tests (docs/bench-test.md)
 ├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
@@ -154,6 +162,7 @@ results even when the package says `done`.
 
 | Path | Mechanism |
 |---|---|
+| **CAN request** (Phase 6, #11) | ENTER_UPDATER (`0x09`) on the node's own IDs, from the brain's relay, `/node/flash` or `can_flash.py --enter-updater`: an app with `examples/node_app`'s CAN service ACKs, then calls `can_updater_client_enter_updater()` |
 | **App request** (`can_flash.py --enter-bootloader`) | the app calls `can_updater_client_enter_updater()` (`components/can_updater_client`), which selects `factory` and restarts — the ESP32 twin of the RA4M1 app writing the handoff magic and resetting |
 | **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
 | **Software recovery** (Phase 3, #9) | three unclean SW/panic/WDT resets in RTC, or three power-on/EN boots in a flash bit log, force `factory` without changing `otadata`. Trips remain latched until 10 s of updater uptime or a verified GO. Normal `esp_restart()` is marked clean by the client shutdown handler |
@@ -189,7 +198,9 @@ from the `cancfg` block (same 80-byte v2 format the RA4M1 parses,
 `src/boot/dfu_config.h`). 8-byte frames,
 `HELLO → SIZE → ERASE → DATA windows → VERIFY → GO`, 2 KB ACK-paced windows,
 CRC32 (IEEE/zlib) over the image, plus `INFO (0x07)` for discovery
-(`--scan`). The engine (`src/boot/can_update.c`) is shared, host-tested pure C
+(`--scan`). A running app (`examples/node_app`) answers `APP_INFO (0x08)` and
+`ENTER_UPDATER (0x09)` instead; the updater NAKs those as unknown commands, so a
+host tells app from updater (`src/boot/app_control.h`). The engine (`src/boot/can_update.c`) is shared, host-tested pure C
 behind a slot HAL.
 
 ESP32 deltas, all handled by `tools/can-flash` on this branch:
@@ -207,6 +218,10 @@ ESP32 deltas, all handled by `tools/can-flash` on this branch:
 # Reboot a running app into the updater, then flash its OTA image
 uv run tools/can-flash/can_flash.py path/to/app/build/my_app.bin \
     --interface socketcan --channel can0 --enter-bootloader
+
+# Park a running node app (examples/node_app) over CAN, then flash
+uv run tools/can-flash/can_flash.py path/to/app/build/my_app.bin \
+    --interface socketcan --channel can0 --enter-updater
 
 uv run tools/can-flash/can_flash.py --scan      # find parked boards
 uv run tools/can-flash/can_flash.py             # interactive TUI

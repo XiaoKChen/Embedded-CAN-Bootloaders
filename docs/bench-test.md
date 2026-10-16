@@ -12,6 +12,8 @@ brain updating itself over Ethernet (issue #5). Section 9 tests the brain
 flashing a parked node over CAN with its C host (Phase 2, issue #8). Section 10
 tests node crash-loop and brain-forced recovery (Phase 3, issue #9). Section 11
 covers the brain-first update package and resumable node relay (Phase 5, issue #10).
+Section 12 covers the reference node app that the brain parks over CAN, without
+GPIO3 (Phase 6, issue #11).
 
 You need:
 
@@ -1064,10 +1066,15 @@ package/brain failure is `failed`. Node failures do **not** stop later entries:
 All text is JSON-escaped. Names containing quotes/backslashes must still parse.
 
 INFO uses four 2 s attempts; an absent node can take over 8 s before recovery,
-then another INFO retry period. A timeout or failed transport triggers the existing
-four-pulse Phase 3 train and a 1 s boot wait. **Only the node physically wired to
-GPIO3 can be recovered**. Other addressed nodes must already be parked. A failed
-probe of an unwired node can reset the wired one; choose test order accordingly.
+then another INFO retry period. A timeout or failed transport first sends
+ENTER_UPDATER on the entry's IDs (Phase 6, section 12: up to three 0.5 s attempts;
+an app with the CAN service ACKs and restarts into its updater). Only when that
+gets no ACK, or no INFO follows, does the existing four-pulse Phase 3 train and
+1 s boot wait run. **Only the node physically wired to GPIO3 can be recovered
+by pulses**; unwired nodes must already be parked or run an app with the CAN
+service. A failed probe of an unwired node can reset the wired one; choose test
+order accordingly. Each node `result` names its path: `updater already parked`,
+`entered updater via CAN` or `recovered via GPIO3 pulses`.
 
 ### 11.3 Acceptance and fault tests
 
@@ -1158,3 +1165,137 @@ prevent **all** relay; a node failure must leave the old app/updater bootable an
 allow subsequent entries to run. Monitor HTTP task stack headroom, watchdogs,
 NVS interruption behavior and real GPIO/CAN timing on hardware; host tests and
 cross-builds do not prove those properties.
+
+## 12. Example node app (Phase 6, issue #11)
+
+**Run these hardware steps only when the bench is available.** Building this
+change does not flash boards or open serial ports. HTTP stays trusted-LAN-only.
+
+`examples/node_app` is the reference for real node firmware: an OTA app on the
+node's 4 MB table that calls `can_updater_client_start_health()`, loads the
+node's update IDs from `cancfg` (else `0x79E`/`0x79F`), starts TWAI at 250 kbit/s
+on GPIO4/GPIO5, self-tests, marks itself valid, and runs a CAN task
+(`main/can_service.c`) answering two native single-frame commands on those
+IDs (frame layouts: `src/boot/can_update.h`):
+
+- **APP_INFO (`0x08`)**: a 9-frame reply with the app's project name and
+  version (ESP app descriptor);
+- **ENTER_UPDATER (`0x09`, key `0xB007CAFE`)**: ACK, then a clean restart into
+  the updater (`can_updater_client_enter_updater()`; not a Phase 3 crash).
+
+It never answers HELLO/INFO/... (it is not an updater). The updater NAKs both
+new opcodes as unknown (`err 0x05, arg 0x00`), so hosts tell "app", "updater"
+and "nothing" apart. The node updater and bootloader are **unchanged**: nodes
+with the section 10 install need no USB reflash. The brain needs this Phase 6
+firmware (section 11.1 flow, or `/ota` when its table is already current).
+
+### 12.1 Build
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/node_app
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
+./build.sh examples/node_app          # Linux / macOS
+```
+
+The OTA image is `examples/node_app/build/node_app.bin`. Like `bench_app`, never
+`idf.py flash` it onto a node: it would replace the updater in `factory`. A
+second, distinguishable version for 12.3 (separate build directory):
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/node_app -B p6b -D SDKCONFIG=p6b/sdkconfig -D PROJECT_VER=p6-next app
+```
+
+Real firmware starts by replacing `app_run()` in `main/node_app.c` (marked
+**YOUR APPLICATION HERE**) and extending `self_test_passed()`.
+
+### 12.2 First package while bench_app runs: GPIO3 path expected
+
+Start with `bench_app` running on the node for more than 10 s (section 4(b) or
+11). Upload a node-only package with the node app:
+
+```sh
+uv run tools/pkg/ecb_pkg.py build --node examples/node_app/build/node_app.bin -o node_app.ecbpkg
+curl.exe -i --data-binary "@node_app.ecbpkg" http://<ip>/package
+curl.exe http://<ip>/package/status
+```
+
+`bench_app` has no CAN service, so expect `probing` (INFO, about 8.6 s), then
+`recovering` with `No INFO; sending ENTER_UPDATER over CAN` (about 1.5 s of
+silence), then `No CAN entry; pulsing GPIO3 ...`, `flashing`, and finally node
+`state:ok`, `result:"ok; recovered via GPIO3 pulses"`. The node console then
+shows the node app:
+
+```
+I (...) node_app: node_app version <git describe> (ESP-IDF v5.3.6), running from ota_0, PENDING_VERIFY
+I (...) can_service: listening: cmd ID 0x79E, reply ID 0x79F (defaults), TWAI TX GPIO 4 / RX GPIO 5, 250000 bit/s
+I (...) node_app: self-test passed; image marked valid (rollback cancelled)
+I (...) node_app: application running (placeholder: replace app_run() in node_app.c)
+```
+
+### 12.3 Second package while node_app runs: CAN path, no GPIO3 pulse
+
+With the node app from 12.2 running, upload the second version:
+
+```sh
+uv run tools/pkg/ecb_pkg.py build --node examples/node_app/p6b/node_app.bin -o node_app_next.ecbpkg
+curl.exe -i --data-binary "@node_app_next.ecbpkg" http://<ip>/package
+curl.exe http://<ip>/package/status
+```
+
+Expect `probing` (INFO times out: the node console logs
+`updater command 0x07 ignored: this node is running its app`), then
+`recovering` with `No INFO; sending ENTER_UPDATER over CAN`, and on the node:
+
+```
+W (...) can_service: ENTER_UPDATER: acknowledging, then restarting into the CAN updater
+...
+I (...) can_updater: parked: cmd ID 0x79E, reply ID 0x79F, 250000 bit/s, slot ota_0 (1835008 bytes)
+```
+
+The brain waits 1.5 s, INFO answers, the transfer runs, and the node result is
+`"ok; entered updater via CAN"`. **No GPIO3 pulse may occur**: GPIO3 stays LOW
+(scope/LED), the status never shows `pulsing GPIO3`, and the brain log has
+`ENTER_UPDATER cmd 0x79E reply 0x79F: ENTER_UPDATER: success (attempts 1)`.
+The new image boots, confirms itself, and APP_INFO reports `p6-next`. Repeat
+this package a few times back to back: the ENTER restart is clean, so Phase 3
+recovery must never trip.
+
+A provisioned node works the same with its own pair: package it with
+`--node "...node_app.bin,cmd=0x701,reply=0x702,name=<product>"`; the node app
+logs `(per-device, cancfg)` and answers only on `0x701`.
+
+### 12.4 APP_INFO and `/node/flash`
+
+```sh
+curl.exe "http://<ip>/node/app_info?cmd=0x79E&reply=0x79F"
+```
+
+| Node state | Response |
+|---|---|
+| node app running | `200 {"cmd_id":1950,"reply_id":1951,"mode":"app","protocol":1,"project":"node_app","version":"p6-next"}` |
+| parked in the updater | `200 {"cmd_id":1950,"reply_id":1951,"mode":"updater"}` |
+| bench_app, or no node | `504` (`APP_INFO: timeout (attempts 3)`) after about 1.5 s |
+
+Strings are JSON-escaped. The route shares the update worker: 409 while a
+scan, flash or package runs. The APP_INFO probe of a parked updater leaves its
+session untouched; a following `/node/flash` must still succeed.
+
+`POST /node/flash` also parks a running node app: HELLO times out (about 8 s),
+the brain sends ENTER_UPDATER once, waits 1.5 s and retries the whole flash.
+The final `/node/status` text ends with `(entered updater via CAN)`. Against
+`bench_app` it still fails with the HELLO timeout (use `u` or `/node/recover`).
+
+From a PC, with the brain running the SLCAN bridge (section 3) or another
+adapter (section 7):
+
+```sh
+uv run tools/can-flash/can_flash.py --app-info --interface slcan --channel COM8
+uv run tools/can-flash/can_flash.py examples/node_app/build/node_app.bin --enter-updater --interface slcan --channel COM8
+```
+
+### 12.5 bench_app is unchanged
+
+Flash `bench_app` again (package or section 4(b)) and repeat section 4(c):
+`u` + Enter still enters the updater. `bench_app` sends no CAN traffic and
+ignores APP_INFO/ENTER_UPDATER, which is why 12.2 takes the GPIO3 path.

@@ -28,3 +28,6 @@ managed_components/
 /brain/skip/
 # brain "next version" build dir (docs/bench-test.md, section 11: -B p5b)
 /brain/p5b/
+# node app "next version" build dir (docs/bench-test.md, section 12: -B p6b)
+/examples/node_app/p6b/
+/build-host-p6/

@@ -1,6 +1,7 @@
 # Build outputs
 /build-host/
 /build-host-p3/
+/build-host-p5/
 /examples/bench_app/crash/
 build/
 _build/
@@ -25,3 +26,5 @@ managed_components/
 /examples/bench_app/skip/
 # brain OTA's SKIP_MARK_VALID build dir (docs/bench-test.md, section 8)
 /brain/skip/
+# brain "next version" build dir (docs/bench-test.md, section 11: -B p5b)
+/brain/p5b/

@@ -543,10 +543,22 @@ esp_err_t package_update_stage(httpd_req_t *req, bool *ready)
 static void escape(const char *text, char *out, size_t capacity)
 {
     size_t written = 0u;
-    while (*text != '\0' && written + 6u < capacity) {
-        const uint8_t c = (uint8_t)*text++;
-        (void)snprintf(out + written, capacity - written, "\\u%04x", c < 0x80u ? c : 0xFFFDu);
-        written += 6u;
+    while (*text != '\0') {
+        const uint8_t c = (uint8_t)*text;
+        const bool special = c == '"' || c == '\\';
+        const bool printable = c >= 0x20u && c < 0x7Fu;
+        const size_t needed = (printable && !special) ? 1u : (special ? 2u : 6u);
+        if (written + needed >= capacity) { break; }  /* keep room for the NUL */
+        if (printable && !special) {
+            out[written] = (char)c;
+        } else if (special) {
+            out[written] = '\\';
+            out[written + 1u] = (char)c;
+        } else {
+            (void)snprintf(out + written, capacity - written, "\\u%04x", c < 0x80u ? c : 0xFFFDu);
+        }
+        written += needed;
+        text++;
     }
     out[written] = '\0';
 }

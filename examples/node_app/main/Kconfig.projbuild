@@ -1,0 +1,25 @@
+menu "Node app CAN"
+
+    config NODE_APP_TWAI_TX_GPIO
+        int "TWAI TX GPIO (to transceiver TXD)"
+        range 0 48
+        default 4
+        help
+            Must match the node updater (CONFIG_CAN_UPDATER_TWAI_TX_GPIO): the
+            app and the updater share one transceiver.
+
+    config NODE_APP_TWAI_RX_GPIO
+        int "TWAI RX GPIO (from transceiver RXD)"
+        range 0 48
+        default 5
+        help
+            Must match the node updater (CONFIG_CAN_UPDATER_TWAI_RX_GPIO).
+
+    config NODE_APP_CAN_BITRATE_BPS
+        int "CAN bitrate (bit/s)"
+        default 250000
+        help
+            Must match the node updater and the brain (250000 on the bench).
+            can_link accepts 10k, 20k, 50k, 100k, 125k, 250k, 500k and 1M.
+
+endmenu

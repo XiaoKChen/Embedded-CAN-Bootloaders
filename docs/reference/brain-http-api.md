@@ -194,9 +194,8 @@ waits 1 s, then probes INFO; no ENTER_UPDATER is sent. An absent node can
 take over 8 s to fail INFO because the host retries internally (four 2 s
 attempts). `success` means the brain reached the updater.
 
-Note: the success text embeds the node's name in literal double quotes,
-which `/node/status` does not escape, so that one response is not valid JSON
-when it appears (see `node_flash_recover_run`).
+The success text quotes the node's INFO name; `/node/status` JSON-escapes the
+quotes (`"`), like every status string.
 
 ## `GET /node/app_info`
 

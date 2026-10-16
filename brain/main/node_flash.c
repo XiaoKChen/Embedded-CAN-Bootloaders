@@ -34,6 +34,7 @@
 #define STAGE_CHUNK_BYTES   4096u
 #define NODE_STATUS_BYTES   192u
 #define NODE_JSON_BYTES     384u
+#define NODE_STATUS_JSON_BYTES 256u  /* escaped status text; fits NODE_JSON_BYTES */
 #define SCAN_MAX_NODES      64u
 #define QUERY_BYTES         96u
 #define ID_TEXT_BYTES       16u
@@ -432,13 +433,14 @@ esp_err_t node_flash_status(httpd_req_t *req)
     portENTER_CRITICAL(&s_status_lock);
     status = s_status;
     portEXIT_CRITICAL(&s_status_lock);
+    /* The recovery result quotes the node's INFO name, so escape the text. */
+    char text[NODE_STATUS_JSON_BYTES];
+    json_escape(status.text, text, sizeof(text));
     char json[NODE_JSON_BYTES];
-    /* text is exclusively internal fixed/protocol diagnostic text, never an
-     * HTTP input or device name, so it cannot inject JSON quotes. */
     (void)snprintf(json, sizeof(json), "{\"state\":\"%s\",\"percent\":%" PRIu32 ",\"bytes\":%" PRIu32
                    ",\"total\":%" PRIu32 ",\"status\":\"%s\"}\n", names[status.state],
                    status.total == 0u ? 0u : status.bytes * PERCENT_MAX / status.total,
-                   status.bytes, status.total, status.text);
+                   status.bytes, status.total, text);
     esp_err_t err = httpd_resp_set_type(req, "application/json");
     if (err == ESP_OK) { err = httpd_resp_sendstr(req, json); }
     return err;

@@ -6,6 +6,10 @@ Streams a .bin application image to the bootloader over classic CAN 2.0B
 
     HELLO -> SIZE -> ERASE -> DATA windows -> VERIFY -> GO
 
+On the ESP32-S3 nodes it also speaks the app-control extension to a RUNNING
+app (examples/node_app): --app-info identifies it, --enter-updater parks it
+in the CAN updater on the same IDs.
+
 Run with no arguments to launch the interactive Textual TUI; pass any flag
 (or a firmware path) to run headless exactly as before. See README.md in this
 directory for wiring, TUI/CLI usage, and adapter-specific notes.
@@ -65,6 +69,17 @@ CMD_SIZE = 0x04
 CMD_VERIFY = 0x05
 CMD_GO = 0x06
 CMD_INFO = 0x07                # identify a parked bootloader (5-frame reply)
+
+# App-control extension (src/boot/can_update.h, app_control.h): answered only
+# by a RUNNING app; the updater NAKs both as unknown commands (err 0x05, arg 0).
+CMD_APP_INFO = 0x08            # identify a running app (9-frame reply)
+CMD_ENTER_UPDATER = 0x09       # running app ACKs, then restarts into its updater
+APP_MARKER = 0xA5              # byte3 (arg) of every app reply
+ENTER_KEY = 0xB007CAFE         # ENTER_UPDATER bytes2..5, uint32 LE
+APP_INFO_FIELD = 32            # esp_app_desc_t version / project_name
+APP_INFO_BYTES = 8 + 2 * APP_INFO_FIELD   # header + both fields = 9 frames
+APP_TIMEOUT_S = 0.5            # a running app answers from a task within ms
+UPDATER_BOOT_WAIT_S = 1.5      # ENTER_UPDATER ACK -> updater answering INFO
 
 # INFO reply: 1 header frame + the 32-byte product-name field, 8 bytes/frame.
 INFO_NAME_FIELD = 32
@@ -238,6 +253,63 @@ def encode_uart_packet(path, body=b""):
             + struct.pack(">H", len(address)) + address
             + struct.pack(">H", body_size) + body
             + bytes([crc]))
+
+
+# ---------------------------------------------------------------------------
+# App-control codec (byte-identical to src/boot/app_control.c)
+# ---------------------------------------------------------------------------
+def encode_app_request(cmd):
+    """APP_INFO {0x08, 0x01, FF...} or ENTER_UPDATER {0x09, 0x01, key LE, FF, FF}."""
+    tail = struct.pack("<I", ENTER_KEY) if cmd == CMD_ENTER_UPDATER else b""
+    return _pad_frame(bytes([cmd, PROTOCOL_VERSION]) + tail)
+
+
+def classify_app_reply(cmd, data):
+    """'app_ack' / 'app_nak' / 'updater_nak' for a reply to `cmd`, else None."""
+    if len(data) != FRAME_DLC or data[0] != REPLY_MAGIC or data[1] != cmd:
+        return None
+    if data[3] == APP_MARKER:
+        return "app_ack" if data[2] == ACK else "app_nak"
+    if data[2] == ERR_BAD_STATE and data[3] == 0x00:
+        return "updater_nak"
+    return None
+
+
+def _app_info_check(frames):
+    """Low byte of CRC32 over header bytes 4..6 plus both 32-byte fields."""
+    return zlib.crc32(bytes(frames[4:7]) + bytes(frames[8:])) & 0xFF
+
+
+def encode_app_info(version, project):
+    """The 72-byte (9-frame) APP_INFO reply a running app sends."""
+    version = version.encode("ascii")[:APP_INFO_FIELD]
+    project = project.encode("ascii")[:APP_INFO_FIELD]
+    frames = bytearray([REPLY_MAGIC, CMD_APP_INFO, ACK, APP_MARKER,
+                        PROTOCOL_VERSION, len(version), len(project), 0])
+    frames += version.ljust(APP_INFO_FIELD, b"\0") + project.ljust(APP_INFO_FIELD, b"\0")
+    frames[7] = _app_info_check(frames)
+    return bytes(frames)
+
+
+def _app_info_field(field, length):
+    """The string of a 0x00-padded field, or None when it is malformed."""
+    if length > APP_INFO_FIELD or 0 in field[:length] or any(field[length:]):
+        return None
+    return field[:length].decode("ascii", "replace")
+
+
+def decode_app_info(frames):
+    """(protocol, version, project) from a complete 72-byte burst, or None for
+    a partial/foreign one (bad header, lengths, padding or check byte)."""
+    if (len(frames) != APP_INFO_BYTES
+            or classify_app_reply(CMD_APP_INFO, frames[:FRAME_DLC]) != "app_ack"
+            or frames[7] != _app_info_check(frames)):
+        return None
+    version = _app_info_field(frames[8:8 + APP_INFO_FIELD], frames[5])
+    project = _app_info_field(frames[8 + APP_INFO_FIELD:], frames[6])
+    if version is None or project is None:
+        return None
+    return frames[4], version, project
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +493,72 @@ class CanFlasher:
                 continue  # short/corrupt burst -- retry the whole INFO exchange
             return name[:name_len].decode("ascii", "replace"), name_len, proto
         raise FlashError("no INFO reply after %d attempts" % (self.retries + 1))
+
+    def query_app_info(self):
+        """APP_INFO to a node that may be running its app. Returns
+        ('app', (protocol, version, project)) or ('updater', None) when the
+        updater NAKed it (the node is already parked)."""
+        return self._app_request(CMD_APP_INFO, "APP_INFO")
+
+    def enter_updater(self):
+        """ENTER_UPDATER: ('app', None) once a running app ACKed (it restarts
+        into its updater), ('updater', None) when the updater answered instead
+        (already parked, or a retry after a lost ACK)."""
+        return self._app_request(CMD_ENTER_UPDATER, "ENTER_UPDATER")
+
+    def _app_request(self, cmd, name):
+        answered = False  # something spoke on id_rx, never validly
+        for _ in range(self.retries + 1):
+            while self.bus.recv(0.0) is not None:
+                pass  # stale frames; no quiet-bus wait (running apps keep it busy)
+            self._send(encode_app_request(cmd))
+            deadline = time.monotonic() + APP_TIMEOUT_S
+            kind = data = None
+            while kind is None:
+                msg = self._recv_reply_frame(deadline)
+                if msg is None:
+                    break
+                data = bytes(msg.data)
+                kind = classify_app_reply(cmd, data)
+                if kind is None and (msg.dlc != FRAME_DLC
+                                     or (data[:2] == bytes([REPLY_MAGIC, cmd]))):
+                    answered = True
+            if kind is None:
+                continue
+            if kind == "updater_nak":
+                return "updater", None
+            if kind == "app_nak":
+                raise FlashError("%s rejected by the running app: %s"
+                                 % (name, _err_name(data[2])))
+            if cmd == CMD_ENTER_UPDATER:
+                return "app", None
+            frames = bytearray(data)
+            while len(frames) < APP_INFO_BYTES:
+                msg = self._recv_reply_frame(deadline)
+                if msg is None or msg.dlc != FRAME_DLC:
+                    break
+                frames.extend(bytes(msg.data))
+            info = decode_app_info(bytes(frames))
+            if info is not None:
+                return "app", info
+            answered = True  # partial or check-failing burst: ask again
+        if answered:
+            raise FlashError("invalid %s reply after %d attempts" % (name, self.retries + 1))
+        raise FlashError("no %s reply after %d attempts (node absent, or its app has "
+                         "no CAN service)" % (name, self.retries + 1))
+
+    def _recv_reply_frame(self, deadline):
+        """Next standard data frame on id_rx before `deadline`, else None."""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            msg = self.bus.recv(remaining)
+            if msg is None:
+                return None
+            if (msg.arbitration_id == self.id_rx and not msg.is_extended_id
+                    and not msg.is_error_frame and not msg.is_remote_frame):
+                return msg
 
     # -- helpers -------------------------------------------------------------
     def _send_window(self, image, window):
@@ -753,6 +891,10 @@ class FakeBootloader(threading.Thread):
             self._reply(CMD_GO, ACK)
         elif cmd == CMD_INFO:
             self._reply_info()
+        else:
+            # Like the real engine: unknown commands (APP_INFO, ENTER_UPDATER)
+            # are NAKed err 0x05 with arg 0x00 and change nothing.
+            self._reply(cmd, ERR_BAD_STATE, bytes([0x00]))
 
     def _reply_info(self):
         """INFO reply: header frame {0x79, 0x07, name_len, proto, FF...} then the
@@ -796,6 +938,118 @@ class FakeBootloader(threading.Thread):
         if self._window == window_count(self.image_size):
             self._state = "flashed"
         self._reply(CMD_DATA, ACK, bytes([last_seq]))
+
+
+class FakeApp(threading.Thread):
+    """A running node app with the CAN service (examples/node_app): answers
+    APP_INFO and ENTER_UPDATER on its cmd id and nothing else."""
+
+    def __init__(self, channel, id_host, id_reply, version, project):
+        super().__init__(name="fake-app", daemon=True)
+        self.bus = can.Bus(interface="virtual", channel=channel)
+        self.bus.set_filters([{"can_id": id_host, "can_mask": 0x7FF, "extended": False}])
+        self.id_reply = id_reply
+        self.version = version
+        self.project = project
+        self.entered = False
+        self.ignored = 0
+        self._stop_requested = threading.Event()
+
+    def stop(self):
+        self._stop_requested.set()
+        self.join(timeout=2.0)
+        self.bus.shutdown()
+
+    def _send(self, data):
+        self.bus.send(can.Message(arbitration_id=self.id_reply,
+                                  is_extended_id=False, data=data))
+
+    def run(self):
+        while not self._stop_requested.is_set():
+            msg = self.bus.recv(0.1)
+            if msg is None or self.entered:
+                continue
+            data = bytes(msg.data)
+            if msg.dlc == FRAME_DLC and data[0] == CMD_APP_INFO:
+                frames = encode_app_info(self.version, self.project)
+                for i in range(0, APP_INFO_BYTES, FRAME_DLC):
+                    self._send(frames[i:i + FRAME_DLC])
+            elif msg.dlc == FRAME_DLC and data == encode_app_request(CMD_ENTER_UPDATER):
+                self._send(_pad_frame(bytes([REPLY_MAGIC, CMD_ENTER_UPDATER, ACK, APP_MARKER])))
+                self.entered = True  # restarted: silent from now on
+            else:
+                self.ignored += 1    # HELLO/INFO/...: an app never answers them
+
+
+def check_app_control_vector():
+    """Golden vectors shared with tests/test_app_control.c (C codec)."""
+    expected_info = bytes.fromhex(
+        "790800a50105086a" "312e322e33000000" + "00" * 16 + "0000000000000000"
+        "6e6f64655f617070" + "00" * 24)
+    checks = [
+        (encode_app_request(CMD_ENTER_UPDATER), bytes.fromhex("0901feca07b0ffff")),
+        (encode_app_request(CMD_APP_INFO), bytes.fromhex("0801ffffffffffff")),
+        (encode_app_info("1.2.3", "node_app"), expected_info),
+    ]
+    for actual, expected in checks:
+        if actual != expected:
+            raise FlashError("selftest FAILED: app-control encoding mismatch\n"
+                             "  expected %s\n  actual   %s" % (expected.hex(" "), actual.hex(" ")))
+    if decode_app_info(expected_info) != (PROTOCOL_VERSION, "1.2.3", "node_app"):
+        raise FlashError("selftest FAILED: APP_INFO golden vector does not decode")
+    corrupt = bytearray(expected_info)
+    corrupt[16:24] = corrupt[8:16]  # a repeated frame in place of a lost one
+    if decode_app_info(bytes(corrupt)) is not None:
+        raise FlashError("selftest FAILED: a shifted APP_INFO burst was accepted")
+    updater_nak = bytes([REPLY_MAGIC, CMD_ENTER_UPDATER, ERR_BAD_STATE, 0x00]) + b"\xff" * 4
+    if classify_app_reply(CMD_ENTER_UPDATER, updater_nak) != "updater_nak":
+        raise FlashError("selftest FAILED: updater NAK not recognised")
+    print("selftest: APP_INFO / ENTER_UPDATER golden vectors OK")
+
+
+def run_app_control_selftest(retries):
+    """--app-info / --enter-updater against a fake running app, then against a
+    fake parked updater (which must be told apart by its NAK)."""
+    check_app_control_vector()
+
+    def check(condition, message):
+        if not condition:
+            raise FlashError("selftest FAILED: " + message)
+
+    app = FakeApp(SELFTEST_CHANNEL, DEFAULT_ID_TX, DEFAULT_ID_RX, "v6.0.0-test", "node_app")
+    app.start()
+    bus = can.Bus(interface="virtual", channel=SELFTEST_CHANNEL)
+    bus.set_filters([{"can_id": DEFAULT_ID_RX, "can_mask": 0x7FF, "extended": False}])
+    try:
+        flasher = CanFlasher(bus, DEFAULT_ID_TX, DEFAULT_ID_RX, retries)
+        mode, info = flasher.query_app_info()
+        check(mode == "app" and info == (PROTOCOL_VERSION, "v6.0.0-test", "node_app"),
+              "APP_INFO from the running app: %r %r" % (mode, info))
+        try:
+            flasher.query_info(timeout=0.2)
+            check(False, "a running app answered INFO")
+        except FlashError:
+            pass
+        check(app.ignored >= 1, "the fake app never saw INFO")
+        check(flasher.enter_updater() == ("app", None), "ENTER_UPDATER not ACKed by the app")
+        check(app.entered, "the app did not restart")
+    finally:
+        app.stop()
+        bus.shutdown()
+
+    fake = FakeBootloader(SELFTEST_CHANNEL, DEFAULT_ID_TX, DEFAULT_ID_RX)
+    fake.start()
+    bus = can.Bus(interface="virtual", channel=SELFTEST_CHANNEL)
+    bus.set_filters([{"can_id": DEFAULT_ID_RX, "can_mask": 0x7FF, "extended": False}])
+    try:
+        flasher = CanFlasher(bus, DEFAULT_ID_TX, DEFAULT_ID_RX, retries)
+        check(flasher.query_app_info() == ("updater", None), "updater NAK to APP_INFO not detected")
+        check(flasher.enter_updater() == ("updater", None), "updater NAK to ENTER_UPDATER not detected")
+    finally:
+        fake.stop()
+        bus.shutdown()
+    print("selftest PASS: app answers APP_INFO/ENTER_UPDATER, ignores INFO; "
+          "the updater's NAK is told apart")
 
 
 def check_enter_bootloader_vector():
@@ -876,6 +1130,7 @@ def run_selftest(retries):
     print("selftest PASS: image verified in fake flash, rewind path exercised")
 
     run_scan_selftest()
+    run_app_control_selftest(retries)
     run_tui_smoke_test()
 
 
@@ -1407,6 +1662,17 @@ def parse_args(argv):
     parser.add_argument("--board-tx", type=_int_any_base, default=DEFAULT_BOARD_TX,
                         help="target board Airform TX CAN ID (board->host Flow "
                              "Control, default 0x%02X)" % DEFAULT_BOARD_TX)
+    parser.add_argument("--app-info", action="store_true",
+                        help="identify a RUNNING node app (APP_INFO, CMD 0x08, "
+                             "on --id-tx/--id-rx): project name and version; "
+                             "reports when the node is parked in its updater "
+                             "instead; no firmware needed")
+    parser.add_argument("--enter-updater", action="store_true",
+                        help="first ask a RUNNING node app to restart into its "
+                             "CAN updater (ENTER_UPDATER, CMD 0x09, native "
+                             "frames on --id-tx/--id-rx), wait %.1f s, then "
+                             "flash; with no firmware, just park it and exit"
+                             % UPDATER_BOOT_WAIT_S)
     parser.add_argument("--selftest", action="store_true",
                         help="run the full flow against an in-process fake "
                              "bootloader on a virtual bus (no hardware)")
@@ -1415,9 +1681,16 @@ def parse_args(argv):
                              "default when the tool is run with no arguments)")
     args = parser.parse_args(argv)
     if (not args.selftest and not args.info and not args.scan
-            and not args.enter_bootloader and not args.tui and not args.firmware):
+            and not args.enter_bootloader and not args.app_info
+            and not args.enter_updater and not args.tui and not args.firmware):
         parser.error("firmware image is required unless --selftest, --info, "
-                     "--scan, --enter-bootloader, or --tui is given")
+                     "--scan, --app-info, --enter-bootloader, --enter-updater, "
+                     "or --tui is given")
+    if args.app_info and (args.info or args.scan or args.firmware
+                          or args.enter_bootloader or args.enter_updater):
+        parser.error("--app-info identifies a running app and exits; run it alone")
+    if args.enter_updater and (args.enter_bootloader or args.info or args.scan):
+        parser.error("--enter-updater combines only with a firmware image")
     if args.info and args.enter_bootloader:
         parser.error("--info and --enter-bootloader cannot be combined")
     if args.scan and (args.info or args.enter_bootloader or args.firmware):
@@ -1489,6 +1762,34 @@ def main(argv=None):
             time.sleep(REBOOT_WAIT_S)
             if image is None:
                 print("Bootloader entry requested; no firmware to flash.")
+                return 0
+
+        if args.app_info or args.enter_updater:
+            bus = can.Bus(**bus_kwargs)
+            bus.set_filters([{"can_id": args.id_rx, "can_mask": 0x7FF, "extended": False}])
+            try:
+                flasher = CanFlasher(bus, args.id_tx, args.id_rx, args.retries)
+                if args.app_info:
+                    mode, info = flasher.query_app_info()
+                else:
+                    mode, info = flasher.enter_updater()
+            finally:
+                bus.shutdown()
+            if args.app_info:
+                if mode == "app":
+                    print("APP_INFO: running app %r, version %r, protocol v%d"
+                          % (info[2], info[1], info[0]))
+                else:
+                    print("APP_INFO: the node is parked in its CAN updater "
+                          "(it NAKed APP_INFO); use --info")
+                return 0
+            if mode == "app":
+                print("ENTER_UPDATER acknowledged; waiting %.1f s for the updater..."
+                      % UPDATER_BOOT_WAIT_S)
+                time.sleep(UPDATER_BOOT_WAIT_S)
+            else:
+                print("ENTER_UPDATER: the node is already in its CAN updater")
+            if image is None:
                 return 0
 
         started = time.monotonic()

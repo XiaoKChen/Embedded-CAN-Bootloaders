@@ -31,6 +31,14 @@ issue #8): upload the node `.bin` over Ethernet to `/node/flash`, then poll
 is needed. See [section 9](docs/bench-test.md#9-brain-flashes-the-node-over-can-phase-2-issue-8).
 **Phase 3 recovery (#9)** also catches confirmed-app crash loops and lets the
 brain force the updater with `POST /node/recover`; see section 10 of that guide.
+**Phase 5 packages (#10)** add `POST /package` and `GET /package/status`: one
+checksummed file contains an optional brain image and up to eight node images.
+The brain updates/confirms itself first, then relays nodes in order, with INFO
+name checks, automatic GPIO3 recovery and a power-loss-resumable NVS record.
+Build with the stdlib-only `tools/pkg/ecb_pkg.py`; install the new brain partition
+table over USB once. See [section 11](docs/bench-test.md#11-update-package-phase-5-issue-10)
+and the [package format](docs/package-format.md). HTTP remains trusted-LAN-only,
+without authentication or signing.
 
 ## Repository layout
 
@@ -53,10 +61,11 @@ brain force the updater with `POST /node/recover`; see section 10 of that guide.
 ├── examples/bench_app/    minimal node OTA app for bench tests (docs/bench-test.md)
 ├── examples/slcan_bridge/ the brain as an SLCAN USB-CAN adapter (flashed over USB)
 ├── src/boot/              shared pure-logic core (protocol engine, CRC32,
-│                          config-block parser; image_validate/memory_map are
+│                          config/package parsers; image_validate/memory_map are
 │                          RA4M1 prior art, host-tested but not in the firmware)
 ├── tests/                 Unity/CTest: boot core, SLCAN, CAN host vs real node engine
 ├── tools/can-flash/       python-can host flasher / scanner / TUI
+├── tools/pkg/             stdlib-only package builder and integrity inspector
 └── docs/                  build and bench-test guides; research/ holds the
                            RA4M1 prior art
 ```
@@ -86,8 +95,9 @@ restarts into it.
   250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
   #2). The brain (WROOM-1U-N16R8) uses GPIO6/GPIO7 at 250 kbit/s for its
   C CAN host, or can run the alternative USB-CAN bridge below. Its GPIO3
-  node-reset output stays LOW except for an explicit `/node/recover` request
-  (four 100 ms HIGH / 400 ms LOW pulses through the inverting stage).
+  node-reset output stays LOW except for `/node/recover` or a package's automatic
+  recovery after no INFO answer (four 100 ms HIGH / 400 ms LOW pulses through
+  the inverting stage). Only the physically wired node can be recovered.
 - **No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO
   factory-reset is off (see below).
 
@@ -121,6 +131,24 @@ shared with `brain/`). Setup and tests: [docs/bench-test.md](docs/bench-test.md)
 | `bootcnt` | `0x12000` | 4 KB | recovery bit log (data subtype `0x42`); no existing offset moves |
 | `factory` | `0x20000` | 384 KB | **this CAN updater** (~50 % free) |
 | `ota_0` / `ota_1` | `0x80000` / `0x240000` | 1.75 MB each | the application |
+
+## Brain partitions and package limits (16 MB)
+
+`brain/partitions.csv` retains `nvs` at `0x9000`/`0x5000`, `otadata` at
+`0xE000`/`0x2000`, `phy_init` at `0x10000`/`0x1000`, 3 MiB `ota_0` at `0x20000`,
+3 MiB `ota_1` at `0x320000`, and 2 MiB `node_fw` at `0x620000`.
+The new **`pkg`** partition (data subtype `0x43`) uses the formerly free range
+`0x820000..0x1000000`, size **`0x7E0000` / 8,257,536 bytes**. Nothing moves.
+The complete package must fit; per-image limits are 3,145,728 bytes for BRAIN and
+1,835,008 bytes for each NODE. Eight maximum-size nodes plus a maximum-size brain
+cannot fit. Packages do not update the bootloader or partition table.
+
+All `/ota`, `/node/scan`, `/node/flash`, `/node/recover` and `/package` jobs share
+one worker (409 when busy). Both `/node/status` and `/package/status` remain
+responsive. A changed brain must reboot and confirm VALID before node relay;
+rollback aborts relay. After a power cut mid-relay the NVS record restarts from
+the first node, so earlier successes may be reflashed. Inspect individual node
+results even when the package says `done`.
 
 ## How a board gets into the updater
 

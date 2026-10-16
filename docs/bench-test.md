@@ -10,7 +10,8 @@ RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
 works in the brain's place (section 7). Section 8 tests something else: the
 brain updating itself over Ethernet (issue #5). Section 9 tests the brain
 flashing a parked node over CAN with its C host (Phase 2, issue #8). Section 10
-tests node crash-loop and brain-forced recovery (Phase 3, issue #9).
+tests node crash-loop and brain-forced recovery (Phase 3, issue #9). Section 11
+covers the brain-first update package and resumable node relay (Phase 5, issue #10).
 
 You need:
 
@@ -426,8 +427,10 @@ Partition table (`brain/partitions.csv`, 16 MB, no factory app):
 | `ota_0` | `0x20000` | 3 MB | app slot A (the USB flash lands here) |
 | `ota_1` | `0x320000` | 3 MB | app slot B |
 | `node_fw` | `0x620000` | 2 MB | disposable staged node image (custom data subtype `0x41`); section 9 |
+| `pkg` | `0x820000` | `0x7E0000` (7.875 MiB) | retained package staging, custom data subtype `0x43`; section 11 |
 
-`0x820000`–`0x1000000` (7.9 MB) is free.
+The new package partition ends at `0x1000000`; all pre-existing offsets/sizes
+remain unchanged. USB-install the new table once before using `/package`.
 
 **While brain_ota runs, the brain is not the SLCAN bridge.** Sections 3–4
 need the bridge: re-flash it over USB to return to CAN bench work
@@ -986,3 +989,172 @@ Host tests cover threshold, sticky trip, clear, one-use clean marks, RTC
 garbage, every single weak programmed bit, erased/garbage logs, and full-log
 wrap. Builds do not prove real EN timing, RTC retention, or brownout flash
 behavior: run the hardware checks above before deployment.
+
+## 11. Update package (Phase 5, issue #10)
+
+**Run these hardware steps only when the bench is available.** Building/testing
+this change does not itself flash boards, open serial ports, or run these tests.
+Packages are unsigned and HTTP has no authentication: trusted bench LAN only.
+The brain runs `brain_ota`, not the USB-CAN bridge. See
+[package-format.md](package-format.md) for the wire format, limits, NVS record,
+status schema and power-loss table; [the builder guide](../tools/pkg/README.md)
+for node option syntax.
+
+### 11.1 One-time partition-table installation and package build
+
+The brain now has `pkg` (data subtype `0x43`) at `0x820000`, size `0x7E0000`:
+**8,257,536 bytes total**, including header, manifest, gaps and all payloads.
+Existing partitions are unchanged. A BRAIN payload is at most 3 MiB and each
+NODE at most 1,835,008 bytes. One maximum-size brain plus eight maximum-size
+nodes does **not** fit. The host tool and brain reject overflow.
+
+Build normally, then **USB-reflash the brain once** with its new table. A normal
+`/ota` upload alone cannot install that table. Use the actual brain USB port,
+and do not flash a node while another task is using it:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
+powershell -ExecutionPolicy Bypass -File build.ps1 brain -p COM63 flash
+```
+
+This is the same full brain flash as section 8.2: bootloader, table, blank
+otadata, brain app. It resets brain OTA selection; it does not erase NVS or the
+node. Start with no pending package from an earlier test. Do not add
+`erase-flash` unless intentionally discarding board data. Use this Phase-5-capable
+brain firmware as **both the baseline and rollback candidate**; pre-Phase-5
+firmware has no pending-record handler. Nodes need the Phase 3 updater/bootloader
+already installed (section 10). Keep the existing CANH/CANL/GND and GPIO3-to-EN
+wiring, 250 kbit/s, termination, and DHCP Ethernet setup.
+
+Build a package from exact unsigned application `.bin` files (no merged images):
+
+```sh
+uv run tools/pkg/ecb_pkg.py build --brain brain/build/brain_ota.bin --node examples/bench_app/build/bench_app.bin -o update.ecbpkg
+uv run tools/pkg/ecb_pkg.py info update.ecbpkg
+```
+
+For a provisioned node, replace its argument with
+`--node "examples/bench_app/build/bench_app.bin,cmd=0x701,reply=0x702,name=axis-left"`.
+Get **both IDs and the actual product name** from `/node/scan` while parked.
+Repeat `--node` for up to eight entries; omit `--brain` for node-only updates.
+Empty/omitted `name` disables the check. Brain-only packages are valid too.
+
+### 11.2 Upload and observe
+
+```sh
+curl.exe -i --data-binary "@update.ecbpkg" http://<ip>/package
+curl.exe http://<ip>/package/status
+curl.exe http://<ip>/node/status
+```
+
+202 is sent only after staging/read-back, manifest validation, every payload SHA,
+image-envelope check and slot-size check. Large packages take time to validate;
+status must stay responsive. No nodes are touched during upload/validation.
+After 202 the worker updates/reboots the brain first if needed, then relays NODE
+entries in table order. Expect a temporary network interruption during reboot;
+poll again after DHCP. `/node/status` remains the status of standalone node jobs;
+package progress lives in `/package/status`.
+
+State sequence: `receiving → validating → updating_brain` (if needed), reboot,
+`validating → relaying → done`; without a changed brain, skip reboot. A fatal
+package/brain failure is `failed`. Node failures do **not** stop later entries:
+`done` can contain failed/skipped nodes. Check `brain`, each node's `state` and
+`result`, not just `percent:100`. `index` is the zero-based manifest index.
+All text is JSON-escaped. Names containing quotes/backslashes must still parse.
+
+INFO uses four 2 s attempts; an absent node can take over 8 s before recovery,
+then another INFO retry period. A timeout or failed transport triggers the existing
+four-pulse Phase 3 train and a 1 s boot wait. **Only the node physically wired to
+GPIO3 can be recovered**. Other addressed nodes must already be parked. A failed
+probe of an unwired node can reset the wired one; choose test order accordingly.
+
+### 11.3 Acceptance and fault tests
+
+1. **Same brain skipped.** Use the exact `.bin` just installed over USB (do not
+   rebuild it between installation and packaging). Upload with a node entry.
+   Expect `brain:skipped_same`, no brain reboot, node `ok` after VERIFY/GO. Compare
+   `/` uptime/running slot before/after. Raw SHA includes the ESP appended digest;
+   matching version strings alone do not cause a skip.
+2. **Changed brain first, then relay.** Build a different normal Phase-5 brain
+   image (e.g. a different `PROJECT_VER` using a separate short build directory),
+   package it with a node image and upload. Observe `updating_brain`, reboot,
+   self-test VALID, then automatic `relaying` with `brain:updated`. The node must
+   see no package CAN transfer before the new brain is VALID. GPIO3 can briefly
+   float during the brain reboot (section 8.5); that electrical reset is distinct
+   from a CAN update. Example separate image build:
+
+   ```sh
+   powershell -ExecutionPolicy Bypass -File build.ps1 brain -B p5b -D SDKCONFIG=p5b/sdkconfig -D PROJECT_VER=p5-next app
+   uv run tools/pkg/ecb_pkg.py build --brain brain/p5b/brain_ota.bin --node examples/bench_app/build/bench_app.bin -o next.ecbpkg
+   curl.exe -i --data-binary "@next.ecbpkg" http://<ip>/package
+   ```
+
+3. **Node not parked, automatic recovery.** Let the normal node app run more than
+   10 s, without `u` or `/node/recover`. Submit a node-only package. Expect
+   `probing → recovering → flashing → ok`; check the existing pulse timings and
+   that GPIO3 returns LOW. The new node app should boot and confirm itself. No
+   manual serial-port reset is required. Try an absent/unwired ID too: failure
+   must be recorded, never success; later entries must still be attempted.
+4. **Name mismatch and continuation.** Package the correct IDs with
+   `name=definitely-not-this-node`. INFO may recover the node first, but the
+   result must be `skipped`, `product name mismatch; node not flashed`, with no
+   HELLO/ERASE for it. Follow with an entry with the correct name (or empty name)
+   to demonstrate that relay continues. Pre-existing node app contents remain
+   unchanged by the mismatched entry.
+5. **Corrupt package rejected before changes.** Make a copy and flip the **last
+   payload byte**, leaving the manifest/hash unchanged (not an alignment gap):
+
+   ```powershell
+   $b = [IO.File]::ReadAllBytes("$PWD\update.ecbpkg")
+   $b[$b.Length - 1] = $b[$b.Length - 1] -bxor 1
+   [IO.File]::WriteAllBytes("$PWD\corrupt.ecbpkg", $b)
+   uv run tools/pkg/ecb_pkg.py info corrupt.ecbpkg
+   curl.exe -i --data-binary "@corrupt.ecbpkg" http://<ip>/package
+   ```
+
+   Tool exits 2; brain responds 422 with a SHA mismatch. No OTA boot selection,
+   node flash, recovery pulse or pending-record update occurs. `pkg` staging
+   itself is overwritten. Repeat with a header/table corruption (CRC failure),
+   bad version, and an empty body (411). A Content-Length exceeding `pkg` gets
+   413 before erase. Also cancel a slow upload: timeout/peer-close must never
+   start a relay; reboot returns idle with no retained incomplete upload.
+6. **Brain rollback aborts all nodes.** Build the existing skip-mark-valid
+   variant from this Phase-5 source, not an older image:
+
+   ```sh
+   powershell -ExecutionPolicy Bypass -File build.ps1 brain -B skip -D SDKCONFIG=skip/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.skip_mark_valid" app
+   uv run tools/pkg/ecb_pkg.py build --brain brain/skip/brain_ota.bin --node examples/bench_app/build/bench_app.bin -o rollback.ecbpkg
+   curl.exe -i --data-binary "@rollback.ecbpkg" http://<ip>/package
+   ```
+
+   The new brain boots but stays PENDING_VERIFY. Status says the brain is not
+   confirmed; no relay or pulses run and mutating jobs stay blocked. Deliberately
+   reset/power-cycle the brain (do not accidentally reset it by opening serial).
+   The old Phase-5 brain boots VALID, detects a different raw image length/SHA,
+   reports `failed`, `brain:rolled_back`, and
+   **`brain update rolled back; node relay aborted`**; clears the pending key and
+   relays nothing. A new request can then run. A later ordinary reboot resets
+   this RAM-only terminal status to idle.
+7. **Brain power cut mid-relay.** Start a multi-entry package and cut only brain
+   power while a node is flashing. Restore power. The pending key survives;
+   after self-test/package revalidation, relay restarts from the **first** node.
+   Earlier successful entries may be reflashed. Verify no package resumes from
+   an unchecked flash offset; all hashes are rechecked. If a previously flashed
+   unwired node now runs an app, it needs manual parking: GPIO3 cannot recover it.
+   Also cut before the pending-record commit: no automatic relay is expected.
+8. **Shared worker and responsive status.** During slow `/package` receive,
+   validation, brain write and node relay, try `/ota`, `/node/scan`,
+   `/node/flash`, `/node/recover` and a second `/package`: all must get 409.
+   Reverse the conflict with standalone jobs active. `/package/status`,
+   `/node/status` and `/` stay responsive (except the actual reboot). Windows
+   curl may lose an early reject while uploading a large body; see section 9.3.
+
+A package's payload SHA is an integrity check, not a firmware signature. Tests
+must still include bad *internal* ESP image checksum/hash with a recomputed
+package SHA: envelope validation can accept it, but brain OTA finalization or
+node VERIFY must reject it without selecting that image. A brain failure must
+prevent **all** relay; a node failure must leave the old app/updater bootable and
+allow subsequent entries to run. Monitor HTTP task stack headroom, watchdogs,
+NVS interruption behavior and real GPIO/CAN timing on hardware; host tests and
+cross-builds do not prove those properties.

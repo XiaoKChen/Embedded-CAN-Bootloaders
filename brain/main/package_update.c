@@ -306,9 +306,9 @@ static bool no_answer(can_flash_host_status_t status)
     return status == CAN_FLASH_HOST_STATUS_TIMEOUT || status == CAN_FLASH_HOST_STATUS_TRANSPORT;
 }
 
-/* Per node: INFO; if silent, ENTER_UPDATER over CAN (+ boot wait) and INFO
- * again; if still silent, the GPIO3 pulse train and INFO a last time. Each
- * result names the path that reached the updater (entry_path_t). */
+/* Per node: ENTER_UPDATER over CAN (+ boot wait on an app ACK) and INFO; if
+ * nothing answered, the GPIO3 pulse train and INFO. Each result names the
+ * path that reached the updater (entry_path_t). */
 static void relay(void)
 {
     status_set(PKG_RELAYING, "Relaying node entries in manifest order");
@@ -327,22 +327,20 @@ static void relay(void)
             ++s_node_index;
             continue;
         }
-        node_set(NODE_PROBING, 0u, "INFO probe");
+        /* ENTER_UPDATER first: it answers fast in every case (an app ACKs and
+         * parks itself; the updater NAKs it, i.e. already parked), so only a
+         * node with no CAN-aware app pays for the slow INFO timeout. */
+        node_set(NODE_PROBING, 0u, "Sending ENTER_UPDATER over CAN");
+        const can_flash_host_status_t entry = node_flash_enter_updater(&s_host, e->cmd_id, e->reply_id);
+        entry_path_t path = entry == CAN_FLASH_HOST_STATUS_OK ? ENTRY_CAN : ENTRY_PARKED;
         can_flash_host_info_t info;
-        entry_path_t path = ENTRY_PARKED;
-        can_flash_host_status_t result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
-        /* No INFO: a running app (or an app with CAN stopped, which can also
-         * fill the TX queue without ACKs: a transport failure) or no node.
-         * Ask over CAN first; an app with the CAN service parks itself. */
-        if (no_answer(result)) {
-            node_set(NODE_RECOVERING, 0u, "No INFO; sending ENTER_UPDATER over CAN");
-            const can_flash_host_status_t entry = node_flash_enter_updater(&s_host, e->cmd_id, e->reply_id);
-            if (entry == CAN_FLASH_HOST_STATUS_OK || entry == CAN_FLASH_HOST_STATUS_IN_UPDATER) {
-                path = entry == CAN_FLASH_HOST_STATUS_OK ? ENTRY_CAN : ENTRY_PARKED;
-                result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
-            }
+        can_flash_host_status_t result = CAN_FLASH_HOST_STATUS_TIMEOUT;
+        if (entry == CAN_FLASH_HOST_STATUS_OK || entry == CAN_FLASH_HOST_STATUS_IN_UPDATER) {
+            node_set(NODE_PROBING, 0u, "INFO probe");
+            result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
         }
-        /* Still silent (no ACK, or no updater after it): the electrical way. */
+        /* No CAN entry (no app CAN service, or no updater after the ACK): the
+         * electrical way. */
         if (no_answer(result)) {
             node_set(NODE_RECOVERING, 0u, "No CAN entry; pulsing GPIO3 (only the wired node can recover)");
             const esp_err_t err = node_reset_pulse_train(NODE_RESET_RECOVERY_PULSES,

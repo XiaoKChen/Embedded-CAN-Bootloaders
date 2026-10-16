@@ -6,8 +6,8 @@
  * POST /node/recover: 202 accepted, 400 invalid IDs, 503 CAN unavailable.
  * GET /node/status: includes recovering, success and failed states.
  * GET /node/app_info: identifies a running node app (see node_flash.h).
- * A /node/flash whose HELLO times out sends ENTER_UPDATER once and, on an app
- * ACK, retries the whole flash after the updater has booted.
+ * /node/flash sends ENTER_UPDATER before HELLO: a running app parks itself
+ * (then the updater gets its boot time), the updater NAKs it at once.
  * INFO has four built-in 2 s retries; an absent node can take over 8 s to fail.
  * ============================================================================= */
 #include "node_flash.h"
@@ -300,19 +300,14 @@ can_flash_host_status_t node_flash_enter_updater(can_flash_host_t *host, uint16_
 
 void node_flash_run(void)
 {
-    set_status(NODE_FLASHING, 0u, s_image_size, "CAN handshake");
+    /* ENTER_UPDATER first: a running app parks itself, the updater NAKs it at
+     * once, and silence costs only its short retries before HELLO. */
+    set_status(NODE_FLASHING, 0u, s_image_size, "Sending ENTER_UPDATER over CAN");
+    const bool entered = node_flash_enter_updater(&s_host, s_cmd_id, s_reply_id) == CAN_FLASH_HOST_STATUS_OK;
+    const char *path = entered ? " (entered updater via CAN)" : "";
+    set_status(NODE_FLASHING, 0u, s_image_size, entered ? "CAN handshake (entered updater via CAN)" : "CAN handshake");
     can_flash_host_result_t result;
-    can_flash_host_status_t status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
-    const char *path = "";
-    /* Silent HELLO: maybe a running app rather than an absent node. */
-    if (status == CAN_FLASH_HOST_STATUS_TIMEOUT && result.step == CAN_FLASH_HOST_STEP_HELLO) {
-        set_status(NODE_FLASHING, 0u, s_image_size, "No HELLO answer; sending ENTER_UPDATER over CAN");
-        if (node_flash_enter_updater(&s_host, s_cmd_id, s_reply_id) == CAN_FLASH_HOST_STATUS_OK) {
-            path = " (entered updater via CAN)";
-            set_status(NODE_FLASHING, 0u, s_image_size, "CAN handshake (entered updater via CAN)");
-            status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
-        }
-    }
+    const can_flash_host_status_t status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
     char diagnostic[NODE_STATUS_BYTES - sizeof(" (entered updater via CAN)")];
     can_flash_host_result_text(&result, diagnostic, sizeof(diagnostic));
     char text[NODE_STATUS_BYTES];

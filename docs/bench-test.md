@@ -1220,9 +1220,9 @@ curl.exe -i --data-binary "@node_app.ecbpkg" http://<ip>/package
 curl.exe http://<ip>/package/status
 ```
 
-`bench_app` has no CAN service, so expect `probing` (INFO, about 8.6 s), then
-`recovering` with `No INFO; sending ENTER_UPDATER over CAN` (about 1.5 s of
-silence), then `No CAN entry; pulsing GPIO3 ...`, `flashing`, and finally node
+`bench_app` has no CAN service, so expect `probing` with `Sending
+ENTER_UPDATER over CAN` (about 1.5 s of silence), then `No CAN entry; pulsing
+GPIO3 ...`, `flashing`, and finally node
 `state:ok`, `result:"ok; recovered via GPIO3 pulses"`. The node console then
 shows the node app:
 
@@ -1243,9 +1243,9 @@ curl.exe -i --data-binary "@node_app_next.ecbpkg" http://<ip>/package
 curl.exe http://<ip>/package/status
 ```
 
-Expect `probing` (INFO times out: the node console logs
-`updater command 0x07 ignored: this node is running its app`), then
-`recovering` with `No INFO; sending ENTER_UPDATER over CAN`, and on the node:
+Expect `probing` with `Sending ENTER_UPDATER over CAN` (the brain sends it
+first, before any INFO), then `INFO probe` once the updater has booted, and on
+the node:
 
 ```
 W (...) can_service: ENTER_UPDATER: acknowledging, then restarting into the CAN updater
@@ -1281,10 +1281,11 @@ Strings are JSON-escaped. The route shares the update worker: 409 while a
 scan, flash or package runs. The APP_INFO probe of a parked updater leaves its
 session untouched; a following `/node/flash` must still succeed.
 
-`POST /node/flash` also parks a running node app: HELLO times out (about 8 s),
-the brain sends ENTER_UPDATER once, waits 1.5 s and retries the whole flash.
-The final `/node/status` text ends with `(entered updater via CAN)`. Against
-`bench_app` it still fails with the HELLO timeout (use `u` or `/node/recover`).
+`POST /node/flash` also parks a running node app: it sends ENTER_UPDATER before
+HELLO and, on an app ACK, waits 1.5 s for the updater. The final `/node/status`
+text ends with `(entered updater via CAN)`. A parked updater NAKs ENTER_UPDATER
+at once; against `bench_app` it is silent for about 1.5 s and the flash still
+fails with the HELLO timeout (use `u` or `/node/recover`).
 
 From a PC, with the brain running the SLCAN bridge (section 3) or another
 adapter (section 7):

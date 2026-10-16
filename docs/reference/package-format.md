@@ -1,6 +1,6 @@
 # Update package format
 
-Version 1, ESP32 Phase 5 / issue #10. File extension: `.ecbpkg`.
+Version 1. File extension: `.ecbpkg`. History: #10.
 All integers are **unsigned little endian**. No packed C structs are cast onto
 input bytes. This format provides corruption detection, **not authentication**:
 there are no signatures, credentials or anti-rollback versions. Use a trusted LAN.
@@ -82,7 +82,7 @@ validation in the destination slot before boot selection. A structurally plausib
 but internally invalid image can therefore still fail the brain step or a node's
 VERIFY after the package has been accepted. No node relay follows a brain failure.
 
-Use **Phase-5-capable `brain_ota`** for BRAIN and the intended node app for NODE.
+Use a **package-capable `brain_ota`** (Phase-5-capable or later) for BRAIN and the intended node app for NODE.
 A valid S3 app cannot be identified as the right board firmware from its chip ID.
 A BRAIN image without this package-resume code cannot continue the pending relay;
 a self-confirming app without Ethernet can require USB recovery.
@@ -158,9 +158,13 @@ On boot, after the existing self-test, the worker reads the record:
   all payload hashes and limits, rebuild node status, relay from the first NODE.
   Corrupt/stale package contents fail closed and clear the pending record.
 
-Each node is probed with INFO on its own IDs. If INFO times out or transport
-cannot send (e.g. the app has CAN stopped and cannot ACK), run the existing Phase 3
-pulse train, wait 1 s, then retry INFO. **Only the node wired to GPIO3 can be
+Each node is first sent ENTER_UPDATER on its own IDs (up to three 0.5 s
+attempts): a running app with the CAN service ACKs and restarts into its updater
+(the brain then waits 1.5 s), and an updater NAKs it at once. After either reply
+the node is probed with INFO. If ENTER_UPDATER gets no answer, or INFO then times
+out or transport cannot send (e.g. the app has CAN stopped and cannot ACK), run
+the recovery pulse train ([recovery.md](../concepts/recovery.md)), wait 1 s, then
+retry INFO. **Only the node wired to GPIO3 can be
 recovered this way.** Looking for an absent/unwired node can therefore reset the
 wired node; plan the bus and manifest order accordingly. Other nodes must already
 be parked. A name mismatch skips flashing. Otherwise `can_flash_host_flash` reads
@@ -182,24 +186,9 @@ report a service/reboot-required failure. Status stays readable. Do not replace
 
 ## HTTP status
 
-`GET /package/status` returns JSON, with all text/name/result strings escaped:
-
-```json
-{"state":"relaying","status":"Relaying node entries in manifest order","bytes":686208,"total":686208,"brain":"skipped_same","nodes":[{"index":1,"cmd_id":1950,"reply_id":1951,"name":"","state":"flashing","percent":42,"result":"CAN transfer; awaiting VERIFY and GO"}]}
-```
-
-- Package state: `idle`, `receiving`, `validating`, `updating_brain`, `relaying`,
-  `done`, `failed`.
-- `bytes`/`total`: received package bytes, retained through validation/relay.
-- `brain`: `none`, `skipped_same`, `updated`, `rolled_back`; during
-  `updating_brain`, `updated` describes the intended step, not completed self-test.
-- Node `index`: zero-based **manifest** index, not node-array position.
-- Node state: `pending`, `probing`, `recovering`, `flashing`, `ok`, `failed`, `skipped`.
-  Percent is accepted transfer bytes; 100 alone is not success.
-- Receive failures: 411 missing/zero length, 413 partition overflow, 408 timeout,
-  422 manifest/hash/envelope/slot errors, 500 flash errors, 503 unavailable storage.
-  All update/scan/recovery conflicts return 409. Accepted asynchronous failures
-  appear in status rather than changing the already-sent 202 response.
+Routes, status codes and the `GET /package/status` JSON schema (states,
+`brain` outcomes, node states and result texts):
+[brain-http-api.md](brain-http-api.md#post-package).
 
 ## Power-loss table
 
@@ -214,4 +203,4 @@ report a service/reboot-required failure. Status stays readable. Do not replace
 | Node erase/write/VERIFY/GO | Existing node A/B/updater guarantees apply. On brain reboot, revalidate and restart from NODE 1; GO may already have succeeded. |
 | Pending-key erase/commit after relay | Key absent: no replay, status idle after next boot. Key retained: safe but potentially duplicate full relay. |
 
-Tests and exact bench procedures are in [bench-test.md, section 11](bench-test.md#11-update-package-phase-5-issue-10).
+Tests and exact bench procedures: [bench/update-package.md](../testing/bench/update-package.md).

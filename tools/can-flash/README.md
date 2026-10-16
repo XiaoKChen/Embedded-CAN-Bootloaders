@@ -74,7 +74,7 @@ The updater accepts an update whenever it is running, which is when:
 - the **application requests it**: it calls
   `can_updater_client_enter_updater()` (component
   `components/can_updater_client`), which selects the `factory` partition and
-  restarts — see `docs/build.md`, or
+  restarts — see [writing-a-node-app.md](../../docs/guides/writing-a-node-app.md), or
 - **no valid application** is selected (fresh board, or a rolled-back app) —
   the board then stays in the updater waiting for an upload.
 
@@ -269,6 +269,8 @@ argument routing picks the TUI for bare/`--tui` invocations. No hardware
 required.
 
 ## Protocol summary (CAN Update Protocol v1)
+
+Full reference: [docs/reference/can-protocol.md](../../docs/reference/can-protocol.md).
 
 Classic CAN 2.0B, 11-bit IDs, every frame DLC 8, unused bytes `0xFF`.
 Host transmits on `0x79E`, bootloader replies on `0x79F`.

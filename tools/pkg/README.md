@@ -3,7 +3,7 @@
 Python 3 standard library only: no installation or third-party packages.
 Run `uv run tools/pkg/ecb_pkg.py ...` or `python tools/pkg/ecb_pkg.py ...` with
 an installed Python 3 interpreter. Wire specification and failure/reboot behavior:
-[docs/package-format.md](../../docs/package-format.md).
+[docs/reference/package-format.md](../../docs/reference/package-format.md).
 
 ## Build and inspect
 
@@ -43,7 +43,8 @@ then prints entry metadata as JSON. Errors print `ecb_pkg: ...` to stderr and ex
 
 ## Upload
 
-Install the brain's new partition table over USB once (bench guide section 11),
+Install the brain's new partition table over USB once
+([bench guide](../../docs/testing/bench/update-package.md#one-time-partition-table-installation-and-package-build)),
 then use Ethernet:
 
 ```sh

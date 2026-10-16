@@ -14,12 +14,16 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "esp_http_server.h"
+#include "can_flash_host.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 esp_err_t node_flash_init(void);
+/* Initialize another worker-owned host with the existing CAN transport only;
+ * caller supplies read/progress/user. Does not reinitialize the peripheral. */
+bool node_flash_transport(can_flash_host_t *host);
 esp_err_t node_flash_scan(httpd_req_t *req);
 /* Sends 202 only after the complete body is staged and read-back verified.
  * ready is true only if that response was sent; caller completes/releases the

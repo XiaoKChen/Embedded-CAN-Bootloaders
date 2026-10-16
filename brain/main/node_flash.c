@@ -176,6 +176,13 @@ esp_err_t node_flash_init(void)
     return s_partition == NULL ? ESP_ERR_NOT_FOUND : ESP_OK;
 }
 
+bool node_flash_transport(can_flash_host_t *host)
+{
+    if (!s_link_ready || host == NULL) { return false; }
+    *host = (can_flash_host_t){ .send = send_frame, .receive = receive_frame, .clock_ms = clock_ms };
+    return true;
+}
+
 esp_err_t node_flash_scan(httpd_req_t *req)
 {
     if (!s_link_ready) { return respond(req, "503 Service Unavailable", "CAN link unavailable\n"); }

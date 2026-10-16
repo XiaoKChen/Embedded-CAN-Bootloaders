@@ -38,6 +38,7 @@
 #include "eth_w5500.h"
 #include "ota_update.h"
 #include "node_flash.h"
+#include "package_update.h"
 
 
 /* -----------------------------------------------------------------------------
@@ -75,7 +76,7 @@ static StackType_t s_worker_stack[WORKER_STACK_BYTES / sizeof(StackType_t)];
 static TaskHandle_t s_worker;
 static portMUX_TYPE s_job_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_busy;
-typedef enum { JOB_OTA, JOB_SCAN, JOB_NODE_FLASH, JOB_NODE_RECOVER } job_type_t;
+typedef enum { JOB_OTA, JOB_SCAN, JOB_NODE_FLASH, JOB_NODE_RECOVER, JOB_PACKAGE, JOB_RESUME_PACKAGE } job_type_t;
 static job_type_t s_job;
 static httpd_req_t *s_request;
 
@@ -222,10 +223,13 @@ static esp_err_t submit_job(httpd_req_t *req, job_type_t job)
     const bool busy = s_busy;
     if (!busy) { s_busy = true; }
     portEXIT_CRITICAL(&s_job_lock);
-    if (busy) {
+    /* Reserve ownership before reading the retained-record gate. Otherwise a
+     * worker could fail its NVS commit and release between the two snapshots. */
+    if (busy || package_update_blocked()) {
+        if (!busy) { release_job(); }
         /* Close instead of draining a rejected multi-MB upload on the HTTP
          * task, so status and further conflict replies remain responsive. */
-        (void)send_text(req, STATUS_409, "An OTA, node upload/flash/recovery, or scan is active\n"); /* best effort */
+        (void)send_text(req, STATUS_409, "An update/scan/recovery, startup self-test, or retained package job is active; poll status\n"); /* best effort */
         return ESP_FAIL;
     }
     httpd_req_t *copy = NULL;
@@ -243,6 +247,7 @@ static esp_err_t submit_job(httpd_req_t *req, job_type_t job)
     return ESP_OK;
 }
 
+static esp_err_t submit_package(httpd_req_t *req) { return submit_job(req, JOB_PACKAGE); }
 static esp_err_t submit_ota(httpd_req_t *req) { return submit_job(req, JOB_OTA); }
 static esp_err_t submit_scan(httpd_req_t *req) { return submit_job(req, JOB_SCAN); }
 static esp_err_t submit_node_flash(httpd_req_t *req) { return submit_job(req, JOB_NODE_FLASH); }
@@ -252,17 +257,23 @@ static void request_worker(void *arg)
 {
     (void)arg;
     for (;;) {
-        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); /* only the HTTP task wakes us */
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); /* HTTP jobs or startup resume */
         portENTER_CRITICAL(&s_job_lock);
         httpd_req_t *req = s_request;
         const job_type_t job = s_job;
         portEXIT_CRITICAL(&s_job_lock);
+        if (job == JOB_RESUME_PACKAGE) {
+            package_update_resume();
+            release_job();
+            continue;
+        }
         bool ready = false;
         esp_err_t err = httpd_resp_set_hdr(req, "Connection", "close");
         if (err == ESP_OK) {
             if (job == JOB_OTA) { err = handle_ota(req); }
             else if (job == JOB_SCAN) { err = node_flash_scan(req); }
             else if (job == JOB_NODE_FLASH) { err = node_flash_stage(req, &ready); }
+            else if (job == JOB_PACKAGE) { err = package_update_stage(req, &ready); }
             else { err = node_flash_recover(req, &ready); }
         }
         if (err != ESP_OK) { ESP_LOGW(TAG, "request ended: %s", esp_err_to_name(err)); }
@@ -276,6 +287,7 @@ static void request_worker(void *arg)
         if (close != ESP_OK && close != ESP_ERR_NOT_FOUND) {
             ESP_LOGW(TAG, "session close: %s", esp_err_to_name(close));
         }
+        if (ready && job == JOB_PACKAGE) { package_update_run(); }
         if (ready && job == JOB_NODE_FLASH) { node_flash_run(); }
         if (ready && job == JOB_NODE_RECOVER) { node_flash_recover_run(); }
         release_job();
@@ -285,9 +297,21 @@ static void request_worker(void *arg)
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
+void http_ota_server_resume_packages(void)
+{
+    if (s_worker == NULL) { return; }
+    /* Startup owns the reserved worker until confirm_image has finished. */
+    portENTER_CRITICAL(&s_job_lock);
+    s_job = JOB_RESUME_PACKAGE;
+    s_request = NULL;
+    portEXIT_CRITICAL(&s_job_lock);
+    xTaskNotifyGive(s_worker);
+}
+
 esp_err_t http_ota_server_start(void)
 {
     if (s_worker != NULL) { return ESP_ERR_INVALID_STATE; }
+    s_busy = true;
     s_worker = xTaskCreateStatic(request_worker, "update_worker", WORKER_STACK_BYTES,
                                  NULL, WORKER_PRIORITY, s_worker_stack, &s_worker_tcb);
     if (s_worker == NULL) { return ESP_ERR_NO_MEM; }
@@ -321,6 +345,12 @@ esp_err_t http_ota_server_start(void)
     static const httpd_uri_t node_status_uri = {
         .uri = "/node/status", .method = HTTP_GET, .handler = node_flash_status,
     };
+    static const httpd_uri_t package_uri = {
+        .uri = "/package", .method = HTTP_POST, .handler = submit_package,
+    };
+    static const httpd_uri_t package_status_uri = {
+        .uri = "/package/status", .method = HTTP_GET, .handler = package_update_status,
+    };
     err = httpd_register_uri_handler(server, &status_uri);
     if (err == ESP_OK) {
         err = httpd_register_uri_handler(server, &ota_uri);
@@ -329,13 +359,15 @@ esp_err_t http_ota_server_start(void)
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &flash_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &recover_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &node_status_uri); }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &package_uri); }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &package_status_uri); }
     if (err != ESP_OK) {
         (void)httpd_stop(server);  /* reporting err, not the cleanup result */
         vTaskDelete(s_worker);
         s_worker = NULL;
         return err;
     }
-    ESP_LOGI(TAG, "HTTP port %u: GET /, POST /ota, GET /node/scan, POST /node/flash, POST /node/recover, GET /node/status",
+    ESP_LOGI(TAG, "HTTP port %u: GET /, POST /ota, GET /node/scan, POST /node/flash, POST /node/recover, GET /node/status, POST /package, GET /package/status",
              (unsigned)config.server_port);
     return ESP_OK;
 }

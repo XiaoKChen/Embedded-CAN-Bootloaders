@@ -8,7 +8,8 @@
 #          Length/validity live only in RAM; never resumed after reset.
 #          Subtype 0x41 is custom (0x40 is the node's cancfg in
 #          ../node_updater/partitions.csv).
-# 0x820000-0x1000000 (7.9 MB) is left free.
+# pkg: retained package staging. Total file (manifest + all payloads) must fit.
+#      Pending relay identity lives in NVS; no existing partition is moved.
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x5000
 otadata,    data, ota,     0xe000,   0x2000
@@ -16,3 +17,4 @@ phy_init,   data, phy,     0x10000,  0x1000
 ota_0,      app,  ota_0,   0x20000,  0x300000
 ota_1,      app,  ota_1,   0x320000, 0x300000
 node_fw,    data, 0x41,    0x620000, 0x200000
+pkg,        data, 0x43,    0x820000, 0x7E0000

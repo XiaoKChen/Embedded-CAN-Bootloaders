@@ -10,8 +10,10 @@
  *   POST /node/recover?cmd=0x79E&reply=0x79F  pulse node EN, then probe INFO;
  *              202 accepted, 400 invalid IDs, 409 busy, 503 CAN unavailable
  *   GET  /node/status  idle/staging/flashing/recovering/success/failed with bytes and %
+ *   POST /package  stage/check a v1 package, then 202; brain first, nodes next
+ *   GET  /package/status  receive/validation/brain/relay status and node results
  *
- * One static worker owns OTA, scan, node staging/flashing and recovery;
+ * One static worker owns OTA, scan, node staging/flashing/recovery and packages;
  * overlapping requests get 409. Status routes stay responsive. No
  * authentication: bench trusted LAN only. GPIO3 is pulsed HIGH then returned
  * LOW; absent-node INFO can take over 8 s due to built-in retries.
@@ -40,6 +42,9 @@ extern "C" {
  * @return ESP_OK, or the error from httpd_start / handler registration.
  */
 esp_err_t http_ota_server_start(void);
+/* Call exactly once after the existing startup self-test. Schedules NVS/package
+ * recovery on the same worker before accepting any new mutating HTTP job. */
+void http_ota_server_resume_packages(void);
 
 
 #ifdef __cplusplus

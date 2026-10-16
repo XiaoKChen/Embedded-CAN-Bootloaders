@@ -118,5 +118,6 @@ void app_main(void)
         ESP_LOGE(TAG, "node CAN host unavailable: %s; own OTA remains available", esp_err_to_name(can_err));
     }
     confirm_image(start_network());
+    http_ota_server_resume_packages();
     /* Returning ends only this task; Ethernet and the HTTP server keep running. */
 }

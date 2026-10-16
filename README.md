@@ -16,7 +16,7 @@ Branch names follow `version/<language>/<target>`.
 |---|---|---|---|
 | [`version/c-cpp/ra4m1`](../../tree/version/c-cpp/ra4m1) | C11 (TinyUSB + Renesas FSP, GNU Make) | Arduino UNO R4 Minima — Renesas RA4M1, Cortex-M4F | Stable — CI builds + tagged releases |
 | [`version/embassy/ra4m1`](../../tree/version/embassy/ra4m1) | Rust, [Embassy](https://github.com/embassy-rs/embassy) async | Arduino UNO R4 Minima — Renesas RA4M1, Cortex-M4F | Rewrite at parity (M0–M3 done) |
-| [`version/c-cpp/esp32`](../../tree/version/c-cpp/esp32) | C (ESP-IDF, CMake) | Custom ESP32-S3 boards (e.g. ESP32-S3-WROOM-1U-N16R8, ESP32-S3FH4R2) | In development |
+| [`version/c-cpp/esp32`](../../tree/version/c-cpp/esp32) | C (ESP-IDF, CMake) | Custom ESP32-S3 boards: brain (ESP32-S3-WROOM-1U-N16R8) + CAN nodes (ESP32-S3FH4R2) | Hardware-verified (phases 0–6); Wi-Fi/BLE pending |
 
 ```sh
 git clone https://github.com/XiaoKChen/Embedded-CAN-Bootloaders.git
@@ -45,21 +45,30 @@ protocol, behavior, and host tests.
 
 The ESP32's ROM bootloader can't be replaced and ESP-IDF owns the second stage, so
 the CAN updater is built around the chip's partition table instead of a custom
-stage-0 bootloader:
+stage-0 bootloader. The branch targets a two-board system: a **brain** reached
+over Ethernet that updates one or more **nodes** over CAN (250 kbit/s, TWAI).
 
-- A **CAN updater app in the `factory` partition** speaks Protocol v1 over the
-  ESP32-S3's TWAI (CAN 2.0) controller and writes the received image into the
-  inactive `ota_0` / `ota_1` slot, with ESP-IDF app rollback enabled.
-- A small **second-stage bootloader hook** forces a boot into `factory` on request
-  (the ESP32 equivalent of the RA4M1 "enter bootloader" path).
-- **TWAI TX/RX pins are configurable** — TWAI is routed through the GPIO matrix,
-  so any suitable GPIO works on custom boards. An external 3.3 V CAN transceiver
-  (e.g. SN65HVD230, TJA1051T/3) is required.
+- **Node CAN updater** — an app in the node's `factory` partition speaks
+  Protocol v1 over TWAI and writes the received image into the inactive
+  `ota_0` / `ota_1` slot, with ESP-IDF app rollback enabled.
+- **Node recovery without buttons** — a second-stage bootloader override falls
+  back to the updater after 3 crashes in a row (RTC counter), or after 3 quick
+  resets on its reset line (flash counter), which the brain can trigger.
+- **Brain** — Ethernet HTTP (W5500) with its own A/B OTA and self-test rollback;
+  it scans for, recovers and flashes nodes over CAN from a C port of the host
+  tool, and can act as a USB-SLCAN adapter for the PC.
+- **Update packages** — one file built by `tools/pkg` carries a brain image and
+  up to 8 node images; the brain updates itself first, then relays each node
+  image, waking running nodes with a CAN `ENTER_UPDATER` command.
+- **Reference node app** (`examples/node_app`) — answers `APP_INFO` /
+  `ENTER_UPDATER`, marks itself valid after a self-test.
+- **One-command build** — `build.ps1` / `build.sh` install a pinned ESP-IDF into
+  the repo and build everything from a fresh clone.
 
 ## Shared pieces
 
 - **CAN Update Protocol v1** — HELLO / ERASE / SIZE / DATA / VERIFY / GO / INFO
-  commands, 6 data bytes per frame, CRC32-verified. Specified and host-tested in
+  commands (the ESP32 branch adds APP_INFO / ENTER_UPDATER for running apps), 6 data bytes per frame, CRC32-verified. Specified and host-tested in
   each branch (`src/boot/can_update.{c,h}` in the C branches, the `boot-logic`
   crate in the Embassy branch).
 - **`can-flash`** — the python-can / Textual host tool (`tools/can-flash/` on the C

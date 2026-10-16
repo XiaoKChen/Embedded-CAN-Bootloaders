@@ -47,6 +47,11 @@ static uint32_t s_node_index;
 typedef enum { PKG_IDLE, PKG_RECEIVING, PKG_VALIDATING, PKG_UPDATING_BRAIN,
                PKG_RELAYING, PKG_DONE, PKG_FAILED } pkg_state_t;
 typedef enum { BRAIN_NONE, BRAIN_SAME, BRAIN_UPDATED, BRAIN_ROLLED_BACK } brain_state_t;
+/* How a node reached its updater; named in its result text (s_entry_paths). */
+typedef enum { ENTRY_PARKED, ENTRY_CAN, ENTRY_PULSES } entry_path_t;
+static const char *const s_entry_paths[] = {
+    "updater already parked", "entered updater via CAN", "recovered via GPIO3 pulses",
+};
 typedef enum { NODE_PENDING, NODE_PROBING, NODE_RECOVERING, NODE_FLASHING,
                NODE_OK, NODE_FAILED, NODE_SKIPPED } relay_state_t;
 typedef struct {
@@ -296,6 +301,14 @@ static void progress(void *user, uint32_t bytes, uint32_t total)
              "CAN transfer; awaiting VERIFY and GO");
 }
 
+static bool no_answer(can_flash_host_status_t status)
+{
+    return status == CAN_FLASH_HOST_STATUS_TIMEOUT || status == CAN_FLASH_HOST_STATUS_TRANSPORT;
+}
+
+/* Per node: INFO; if silent, ENTER_UPDATER over CAN (+ boot wait) and INFO
+ * again; if still silent, the GPIO3 pulse train and INFO a last time. Each
+ * result names the path that reached the updater (entry_path_t). */
 static void relay(void)
 {
     status_set(PKG_RELAYING, "Relaying node entries in manifest order");
@@ -316,11 +329,22 @@ static void relay(void)
         }
         node_set(NODE_PROBING, 0u, "INFO probe");
         can_flash_host_info_t info;
+        entry_path_t path = ENTRY_PARKED;
         can_flash_host_status_t result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
-        /* An app with CAN stopped can also fill the TX queue without ACKs;
-         * a transport failure is therefore another no-answer recovery case. */
-        if (result == CAN_FLASH_HOST_STATUS_TIMEOUT || result == CAN_FLASH_HOST_STATUS_TRANSPORT) {
-            node_set(NODE_RECOVERING, 0u, "No INFO; pulsing GPIO3 (only the wired node can recover)");
+        /* No INFO: a running app (or an app with CAN stopped, which can also
+         * fill the TX queue without ACKs: a transport failure) or no node.
+         * Ask over CAN first; an app with the CAN service parks itself. */
+        if (no_answer(result)) {
+            node_set(NODE_RECOVERING, 0u, "No INFO; sending ENTER_UPDATER over CAN");
+            const can_flash_host_status_t entry = node_flash_enter_updater(&s_host, e->cmd_id, e->reply_id);
+            if (entry == CAN_FLASH_HOST_STATUS_OK || entry == CAN_FLASH_HOST_STATUS_IN_UPDATER) {
+                path = entry == CAN_FLASH_HOST_STATUS_OK ? ENTRY_CAN : ENTRY_PARKED;
+                result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
+            }
+        }
+        /* Still silent (no ACK, or no updater after it): the electrical way. */
+        if (no_answer(result)) {
+            node_set(NODE_RECOVERING, 0u, "No CAN entry; pulsing GPIO3 (only the wired node can recover)");
             const esp_err_t err = node_reset_pulse_train(NODE_RESET_RECOVERY_PULSES,
                 NODE_RESET_RECOVERY_HIGH_MS, NODE_RESET_RECOVERY_LOW_MS);
             if (err != ESP_OK) {
@@ -332,25 +356,36 @@ static void relay(void)
                 continue;
             }
             vTaskDelay(pdMS_TO_TICKS(BOOT_WAIT_MS));
+            path = ENTRY_PULSES;
             result = can_flash_host_info(&s_host, e->cmd_id, e->reply_id, &info);
         }
         char text[TEXT_SIZE];
+        char diagnostic[TEXT_SIZE / 2u];
         if (result != CAN_FLASH_HOST_STATUS_OK) {
-            can_flash_host_result_text(&s_host.result, text, sizeof(text));
+            can_flash_host_result_text(&s_host.result, diagnostic, sizeof(diagnostic));
+            (void)snprintf(text, sizeof(text), "%s (%s)", diagnostic,
+                           path == ENTRY_PULSES ? "no updater even after ENTER_UPDATER and GPIO3 pulses" :
+                           s_entry_paths[path]);
             node_set(NODE_FAILED, 0u, text);
             failed = true;
         } else if (e->name_len != 0u && (e->name_len != info.name_len ||
                    memcmp(e->name, info.name, e->name_len) != 0)) {
-            node_set(NODE_SKIPPED, 0u, "product name mismatch; node not flashed");
+            (void)snprintf(text, sizeof(text), "product name mismatch; node not flashed (%s)", s_entry_paths[path]);
+            node_set(NODE_SKIPPED, 0u, text);
             failed = true;
         } else {
-            node_set(NODE_FLASHING, 0u, "CAN handshake");
+            (void)snprintf(text, sizeof(text), "CAN handshake (%s)", s_entry_paths[path]);
+            node_set(NODE_FLASHING, 0u, text);
             can_flash_host_result_t flash_result;
             result = can_flash_host_flash(&s_host, e->cmd_id, e->reply_id, e->size, &flash_result);
-            can_flash_host_result_text(&flash_result, text, sizeof(text));
             const bool ok = result == CAN_FLASH_HOST_STATUS_OK;
-            node_set(ok ? NODE_OK : NODE_FAILED, ok ? PERCENT_MAX : flash_result.bytes * PERCENT_MAX / e->size,
-                     ok ? "ok" : text);
+            if (ok) {
+                (void)snprintf(text, sizeof(text), "ok; %s", s_entry_paths[path]);
+            } else {
+                can_flash_host_result_text(&flash_result, diagnostic, sizeof(diagnostic));
+                (void)snprintf(text, sizeof(text), "%s (%s)", diagnostic, s_entry_paths[path]);
+            }
+            node_set(ok ? NODE_OK : NODE_FAILED, ok ? PERCENT_MAX : flash_result.bytes * PERCENT_MAX / e->size, text);
             failed |= !ok;
         }
         ++s_node_index;

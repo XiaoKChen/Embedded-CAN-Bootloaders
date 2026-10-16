@@ -5,6 +5,9 @@
  *                   408 timeout, 500 flash failure, 503 unavailable.
  * POST /node/recover: 202 accepted, 400 invalid IDs, 503 CAN unavailable.
  * GET /node/status: includes recovering, success and failed states.
+ * GET /node/app_info: identifies a running node app (see node_flash.h).
+ * A /node/flash whose HELLO times out sends ENTER_UPDATER once and, on an app
+ * ACK, retries the whole flash after the updater has booted.
  * INFO has four built-in 2 s retries; an absent node can take over 8 s to fail.
  * ============================================================================= */
 #include "node_flash.h"
@@ -38,6 +41,8 @@
 #define PERCENT_MAX         100u
 #define JSON_ESCAPE_BYTES   6u
 #define RECOVERY_BOOT_MS    1000u
+#define APP_TEXT_BYTES      (APP_CONTROL_STR_MAX * JSON_ESCAPE_BYTES + 1u)
+#define APP_JSON_BYTES      (2u * APP_TEXT_BYTES + 128u)  /* both strings fully escaped */
 
 static const char *TAG = "node_flash";
 static const esp_partition_t *s_partition;
@@ -281,13 +286,37 @@ esp_err_t node_flash_stage(httpd_req_t *req, bool *ready)
     return ESP_OK;
 }
 
+can_flash_host_status_t node_flash_enter_updater(can_flash_host_t *host, uint16_t cmd_id, uint16_t reply_id)
+{
+    const can_flash_host_status_t status = can_flash_host_enter_updater(host, cmd_id, reply_id);
+    char text[NODE_STATUS_BYTES];
+    can_flash_host_result_text(&host->result, text, sizeof(text));
+    ESP_LOGI(TAG, "ENTER_UPDATER cmd 0x%03X reply 0x%03X: %s", cmd_id, reply_id, text);
+    if (status == CAN_FLASH_HOST_STATUS_OK) {
+        vTaskDelay(pdMS_TO_TICKS(NODE_FLASH_UPDATER_BOOT_MS));
+    }
+    return status;
+}
+
 void node_flash_run(void)
 {
     set_status(NODE_FLASHING, 0u, s_image_size, "CAN handshake");
     can_flash_host_result_t result;
-    const can_flash_host_status_t status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
+    can_flash_host_status_t status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
+    const char *path = "";
+    /* Silent HELLO: maybe a running app rather than an absent node. */
+    if (status == CAN_FLASH_HOST_STATUS_TIMEOUT && result.step == CAN_FLASH_HOST_STEP_HELLO) {
+        set_status(NODE_FLASHING, 0u, s_image_size, "No HELLO answer; sending ENTER_UPDATER over CAN");
+        if (node_flash_enter_updater(&s_host, s_cmd_id, s_reply_id) == CAN_FLASH_HOST_STATUS_OK) {
+            path = " (entered updater via CAN)";
+            set_status(NODE_FLASHING, 0u, s_image_size, "CAN handshake (entered updater via CAN)");
+            status = can_flash_host_flash(&s_host, s_cmd_id, s_reply_id, s_image_size, &result);
+        }
+    }
+    char diagnostic[NODE_STATUS_BYTES - sizeof(" (entered updater via CAN)")];
+    can_flash_host_result_text(&result, diagnostic, sizeof(diagnostic));
     char text[NODE_STATUS_BYTES];
-    can_flash_host_result_text(&result, text, sizeof(text));
+    (void)snprintf(text, sizeof(text), "%s%s", diagnostic, path);
     set_status(status == CAN_FLASH_HOST_STATUS_OK ? NODE_SUCCESS : NODE_FAILED, result.bytes, s_image_size, text);
     ESP_LOGI(TAG, "node cmd 0x%03X reply 0x%03X: %s", s_cmd_id, s_reply_id, text);
     can_link_health_t health;
@@ -348,6 +377,57 @@ void node_flash_recover_run(void)
         set_status(NODE_FAILED, 0u, 0u, text);
     }
     ESP_LOGI(TAG, "node recovery cmd 0x%03X reply 0x%03X: %s", s_cmd_id, s_reply_id, text);
+}
+
+/* JSON string body: printable ASCII except quote/backslash as is, every other
+ * byte as a JSON unicode escape (non-ASCII as U+FFFD, like scan names). */
+static void json_escape(const char *text, char *out, size_t capacity)
+{
+    size_t written = 0u;
+    for (; *text != '\0'; ++text) {
+        const uint8_t c = (uint8_t)*text;
+        const bool plain = c >= 0x20u && c < 0x7Fu && c != '"' && c != '\\';
+        const size_t needed = plain ? 1u : JSON_ESCAPE_BYTES;
+        if (written + needed >= capacity) { break; }
+        if (plain) {
+            out[written] = (char)c;
+        } else {
+            (void)snprintf(&out[written], capacity - written, "\\u%04x", c < 0x80u ? c : 0xFFFDu);
+        }
+        written += needed;
+    }
+    out[written] = '\0';
+}
+
+esp_err_t node_flash_app_info(httpd_req_t *req)
+{
+    if (!s_link_ready) { return respond(req, "503 Service Unavailable", "CAN link unavailable\n"); }
+    uint16_t cmd_id = CAN_ID_HOST_TO_BOOT, reply_id = CAN_ID_BOOT_TO_HOST;
+    if (!get_ids(req, "cmd", &cmd_id, "reply", &reply_id)) {
+        return respond(req, "400 Bad Request", "cmd/reply must be standard CAN IDs (0..0x7FF)\n");
+    }
+    app_control_info_t info;
+    const can_flash_host_status_t status = can_flash_host_app_info(&s_host, cmd_id, reply_id, &info);
+    char json[APP_JSON_BYTES];
+    if (status == CAN_FLASH_HOST_STATUS_OK) {
+        char project[APP_TEXT_BYTES], version[APP_TEXT_BYTES];
+        json_escape(info.project_name, project, sizeof(project));
+        json_escape(info.version, version, sizeof(version));
+        (void)snprintf(json, sizeof(json), "{\"cmd_id\":%u,\"reply_id\":%u,\"mode\":\"app\",\"protocol\":%u,"
+                       "\"project\":\"%s\",\"version\":\"%s\"}\n", cmd_id, reply_id,
+                       (unsigned)info.protocol_version, project, version);
+    } else if (status == CAN_FLASH_HOST_STATUS_IN_UPDATER) {
+        (void)snprintf(json, sizeof(json), "{\"cmd_id\":%u,\"reply_id\":%u,\"mode\":\"updater\"}\n",
+                       cmd_id, reply_id);
+    } else {
+        char text[NODE_STATUS_BYTES];
+        can_flash_host_result_text(&s_host.result, text, sizeof(text));
+        ESP_LOGI(TAG, "APP_INFO cmd 0x%03X reply 0x%03X: %s", cmd_id, reply_id, text);
+        return respond(req, status == CAN_FLASH_HOST_STATUS_TIMEOUT ? "504 Gateway Timeout" : "502 Bad Gateway", text);
+    }
+    esp_err_t err = httpd_resp_set_type(req, "application/json");
+    if (err == ESP_OK) { err = httpd_resp_sendstr(req, json); }
+    return err;
 }
 
 esp_err_t node_flash_status(httpd_req_t *req)

@@ -7,6 +7,8 @@
  * Power loss during erase/write/readback: only node_fw is affected; its length
  * lives in RAM, so a partial/stale upload is never resumed after reset.
  * During CAN DATA/VERIFY the node stays in its updater; GO selects its app.
+ * A node running an app with the CAN service (examples/node_app) is parked
+ * with ENTER_UPDATER instead of a GPIO3 pulse (can_update.h, app-control).
  * ============================================================================= */
 #ifndef NODE_FLASH_H
 #define NODE_FLASH_H
@@ -20,7 +22,15 @@
 extern "C" {
 #endif
 
+/* Boot time granted to the updater after an app ACKed ENTER_UPDATER (restart,
+ * 2nd-stage bootloader, updater TWAI bring-up) before INFO/HELLO is retried. */
+#define NODE_FLASH_UPDATER_BOOT_MS 1500u
+
 esp_err_t node_flash_init(void);
+/* ENTER_UPDATER on the node's own IDs (worker only). On an app ACK (OK) it
+ * waits NODE_FLASH_UPDATER_BOOT_MS so the caller can probe the updater next;
+ * IN_UPDATER means the updater itself answered. Anything else: no CAN entry. */
+can_flash_host_status_t node_flash_enter_updater(can_flash_host_t *host, uint16_t cmd_id, uint16_t reply_id);
 /* Initialize another worker-owned host with the existing CAN transport only;
  * caller supplies read/progress/user. Does not reinitialize the peripheral. */
 bool node_flash_transport(can_flash_host_t *host);
@@ -34,6 +44,10 @@ void node_flash_run(void);
  * pulsing the node and probing INFO. Invalid IDs return 400. */
 esp_err_t node_flash_recover(httpd_req_t *req, bool *ready);
 void node_flash_recover_run(void);
+/* GET /node/app_info?cmd=&reply=: APP_INFO on the worker. 200 JSON with mode
+ * "app" (project/version) or "updater" (parked), 400 invalid IDs, 502 invalid
+ * reply, 504 no answer, 503 CAN unavailable. */
+esp_err_t node_flash_app_info(httpd_req_t *req);
 esp_err_t node_flash_status(httpd_req_t *req);
 
 #ifdef __cplusplus

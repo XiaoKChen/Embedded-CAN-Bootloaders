@@ -4,6 +4,7 @@
  * See http_ota_server.h for the routes. The upload handler is only a
  * transport: it moves the request body into ota_update in fixed chunks
  * (never the whole image in RAM) and maps the outcome to an HTTP status.
+ * GET /node/app_info also runs on the worker (APP_INFO on the node's IDs).
  * Node recovery uses this same worker: 202 accepted, 400 invalid IDs,
  * 409 busy, 503 CAN unavailable; /node/status stays responsive. An absent
  * node can take over 8 s to fail INFO because the host retries internally.
@@ -53,6 +54,7 @@
 #define REPLY_TEXT_BYTES     160u
 #define RESTART_DELAY_MS     1000u  /* lets the 200 reply leave before reset  */
 #define US_PER_S             1000000
+#define URI_HANDLER_COUNT    9u     /* routes registered below (default 8)    */
 
 #define STATUS_200           "200 OK"
 #define STATUS_400           "400 Bad Request"
@@ -76,7 +78,8 @@ static StackType_t s_worker_stack[WORKER_STACK_BYTES / sizeof(StackType_t)];
 static TaskHandle_t s_worker;
 static portMUX_TYPE s_job_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_busy;
-typedef enum { JOB_OTA, JOB_SCAN, JOB_NODE_FLASH, JOB_NODE_RECOVER, JOB_PACKAGE, JOB_RESUME_PACKAGE } job_type_t;
+typedef enum { JOB_OTA, JOB_SCAN, JOB_NODE_FLASH, JOB_NODE_RECOVER, JOB_NODE_APP_INFO, JOB_PACKAGE,
+               JOB_RESUME_PACKAGE } job_type_t;
 static job_type_t s_job;
 static httpd_req_t *s_request;
 
@@ -252,6 +255,7 @@ static esp_err_t submit_ota(httpd_req_t *req) { return submit_job(req, JOB_OTA);
 static esp_err_t submit_scan(httpd_req_t *req) { return submit_job(req, JOB_SCAN); }
 static esp_err_t submit_node_flash(httpd_req_t *req) { return submit_job(req, JOB_NODE_FLASH); }
 static esp_err_t submit_node_recover(httpd_req_t *req) { return submit_job(req, JOB_NODE_RECOVER); }
+static esp_err_t submit_node_app_info(httpd_req_t *req) { return submit_job(req, JOB_NODE_APP_INFO); }
 
 static void request_worker(void *arg)
 {
@@ -274,6 +278,7 @@ static void request_worker(void *arg)
             else if (job == JOB_SCAN) { err = node_flash_scan(req); }
             else if (job == JOB_NODE_FLASH) { err = node_flash_stage(req, &ready); }
             else if (job == JOB_PACKAGE) { err = package_update_stage(req, &ready); }
+            else if (job == JOB_NODE_APP_INFO) { err = node_flash_app_info(req); }
             else { err = node_flash_recover(req, &ready); }
         }
         if (err != ESP_OK) { ESP_LOGW(TAG, "request ended: %s", esp_err_to_name(err)); }
@@ -318,6 +323,7 @@ esp_err_t http_ota_server_start(void)
     httpd_config_t config    = HTTPD_DEFAULT_CONFIG();
     config.stack_size        = SERVER_STACK_BYTES;
     config.recv_wait_timeout = RECV_TIMEOUT_S;
+    config.max_uri_handlers  = URI_HANDLER_COUNT;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
@@ -342,6 +348,9 @@ esp_err_t http_ota_server_start(void)
     static const httpd_uri_t recover_uri = {
         .uri = "/node/recover", .method = HTTP_POST, .handler = submit_node_recover,
     };
+    static const httpd_uri_t app_info_uri = {
+        .uri = "/node/app_info", .method = HTTP_GET, .handler = submit_node_app_info,
+    };
     static const httpd_uri_t node_status_uri = {
         .uri = "/node/status", .method = HTTP_GET, .handler = node_flash_status,
     };
@@ -358,6 +367,7 @@ esp_err_t http_ota_server_start(void)
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &scan_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &flash_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &recover_uri); }
+    if (err == ESP_OK) { err = httpd_register_uri_handler(server, &app_info_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &node_status_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &package_uri); }
     if (err == ESP_OK) { err = httpd_register_uri_handler(server, &package_status_uri); }
@@ -367,7 +377,7 @@ esp_err_t http_ota_server_start(void)
         s_worker = NULL;
         return err;
     }
-    ESP_LOGI(TAG, "HTTP port %u: GET /, POST /ota, GET /node/scan, POST /node/flash, POST /node/recover, GET /node/status, POST /package, GET /package/status",
+    ESP_LOGI(TAG, "HTTP port %u: GET /, POST /ota, GET /node/scan, POST /node/flash, POST /node/recover, GET /node/app_info, GET /node/status, POST /package, GET /package/status",
              (unsigned)config.server_port);
     return ESP_OK;
 }

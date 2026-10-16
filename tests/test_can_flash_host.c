@@ -1,5 +1,10 @@
 /* =============================================================================
  * test_can_flash_host.c — Host vs real node engine, RAM slot and fake clock
+ * =============================================================================
+ * A node is either parked (the real can_update engine, plus INFO) or running
+ * its app (s_app_mode: answers only APP_INFO / ENTER_UPDATER through the same
+ * app_control codec as examples/node_app; ENTER "restarts" it into the
+ * updater).
  * ============================================================================= */
 #include <stdio.h>
 #include <string.h>
@@ -24,9 +29,14 @@ static uint8_t s_name_len[NODES];
 static can_flash_host_frame_t s_queue[QUEUE_FRAMES];
 static uint32_t s_head, s_tail, s_now, s_node_count, s_data_count, s_progress;
 static uint32_t s_drop_data, s_drop_ack_window, s_duplicate_data, s_reset_data;
-static uint32_t s_fail_programs, s_verify_count, s_commands[CAN_UPDATE_CMD_INFO + 1u];
+static uint32_t s_fail_programs, s_verify_count, s_commands[UINT8_MAX + 1u];
 static uint8_t s_drop_command_ack;
 static bool s_corrupt, s_reject, s_activated, s_fail_send, s_bad_dlc;
+static bool s_app_mode[NODES], s_app_noise, s_app_corrupt, s_drop_enter_ack, s_app_refuse;
+static uint32_t s_app_drop_frame, s_app_restarts;
+#define NOISE_ID 0x123u
+#define APP_VERSION "v2.4.1-node"
+#define APP_PROJECT "node_app"
 static can_flash_host_t s_host;
 static can_flash_host_result_t s_result;
 static FILE *s_trace;
@@ -62,8 +72,53 @@ static void enqueue(uint16_t id, const uint8_t data[8])
     memcpy(f->data, data, sizeof(f->data));
 }
 
+/* examples/node_app's CAN service in miniature. */
+static void dispatch_app(uint32_t node, const can_flash_host_frame_t *frame)
+{
+    uint8_t reply[8];
+    switch (app_control_parse_request(frame->dlc, frame->data)) {
+    case APP_CONTROL_REQ_APP_INFO: {
+        uint8_t frames[APP_CONTROL_INFO_BYTES];
+        app_control_encode_info(APP_VERSION, APP_PROJECT, frames);
+        if (s_app_corrupt) { frames[10] ^= 1u; }
+        for (uint32_t i = 0u; i < APP_CONTROL_INFO_FRAMES; ++i) {
+            if (s_app_noise) {
+                const uint8_t noise[8] = { CAN_UPDATE_REPLY_MARKER, CAN_UPDATE_CMD_APP_INFO, 0, 0, 0, 0, 0, 0 };
+                enqueue(NOISE_ID, noise);
+            }
+            if (i == s_app_drop_frame) { s_app_drop_frame = NO_FAULT; continue; }
+            enqueue(s_reply[node], &frames[i * 8u]);
+        }
+        return;
+    }
+    case APP_CONTROL_REQ_ENTER_UPDATER:
+        if (s_app_refuse) {
+            app_control_encode_reply(CAN_UPDATE_CMD_ENTER_UPDATER, CAN_UPDATE_ERR_FLASH, reply);
+            enqueue(s_reply[node], reply);
+            return;
+        }
+        app_control_encode_reply(CAN_UPDATE_CMD_ENTER_UPDATER, CAN_UPDATE_OK, reply);
+        if (!s_drop_enter_ack) { enqueue(s_reply[node], reply); }
+        s_drop_enter_ack = false;
+        s_app_mode[node] = false;  /* clean restart into the updater */
+        can_update_init(&s_nodes[node], &s_hal, s_cmd[node]);
+        ++s_app_restarts;
+        return;
+    case APP_CONTROL_REQ_MALFORMED:
+        app_control_encode_reply(frame->data[0], CAN_UPDATE_ERR_STATE, reply);
+        enqueue(s_reply[node], reply);
+        return;
+    default:
+        return;  /* HELLO, INFO, ...: an app never answers updater commands */
+    }
+}
+
 static void dispatch(uint32_t node, const can_flash_host_frame_t *frame)
 {
+    if (s_app_mode[node]) {
+        dispatch_app(node, frame);
+        return;
+    }
     if (frame->data[0] == CAN_UPDATE_CMD_INFO) {
         uint8_t header[8] = { CAN_UPDATE_REPLY_MARKER, CAN_UPDATE_CMD_INFO, 0u,
                              CAN_UPDATE_PROTOCOL_VERSION, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
@@ -148,6 +203,10 @@ void setUp(void)
     s_drop_data = s_drop_ack_window = s_duplicate_data = s_reset_data = NO_FAULT;
     s_drop_command_ack = 0u;
     s_corrupt = s_reject = s_activated = s_fail_send = s_bad_dlc = false;
+    memset(s_app_mode, 0, sizeof(s_app_mode));
+    s_app_noise = s_app_corrupt = s_drop_enter_ack = s_app_refuse = false;
+    s_app_drop_frame = NO_FAULT;
+    s_app_restarts = 0u;
     memset(s_commands, 0, sizeof(s_commands));
     memset(s_names, 0, sizeof(s_names));
     memset(s_name_len, 0, sizeof(s_name_len));
@@ -324,6 +383,128 @@ static void test_malformed_reply(void)
 }
 static void test_clock_wrap(void) { s_now = UINT32_MAX - 10u; assert_clean(IMAGE_BYTES); }
 
+static can_flash_host_status_t app_info(app_control_info_t *info)
+{
+    return can_flash_host_app_info(&s_host, s_cmd[0], s_reply[0], info);
+}
+static can_flash_host_status_t enter_updater(void)
+{
+    return can_flash_host_enter_updater(&s_host, s_cmd[0], s_reply[0]);
+}
+static void test_app_info_running_app(void)
+{
+    s_app_mode[0] = true;
+    s_app_noise = true;  /* other traffic interleaved on a live bus */
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, app_info(&info));
+    TEST_ASSERT_EQUAL_STRING(APP_VERSION, info.version);
+    TEST_ASSERT_EQUAL_STRING(APP_PROJECT, info.project_name);
+    TEST_ASSERT_EQUAL_UINT8(CAN_UPDATE_PROTOCOL_VERSION, info.protocol_version);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_host.result.attempts);
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STEP_APP_INFO, s_host.result.step);
+}
+static void test_app_ignores_updater_commands(void)
+{
+    s_app_mode[0] = true;
+    can_flash_host_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, can_flash_host_info(&s_host, s_cmd[0], s_reply[0], &info));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, flash(IMAGE_BYTES));
+    TEST_ASSERT_EQUAL_UINT32(0u, s_tail);  /* the app never transmitted */
+}
+static void test_app_info_updater_nak(void)
+{
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_IN_UPDATER, app_info(&info));
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ERR_STATE, s_host.result.nak);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_nodes[0].phase);
+    char text[160];
+    can_flash_host_result_text(&s_host.result, text, sizeof(text));
+    TEST_ASSERT_NOT_NULL(strstr(text, "APP_INFO: node is in its updater"));
+    assert_clean(IMAGE_BYTES);  /* the probe left the updater fully usable */
+}
+static void test_app_info_timeout(void)
+{
+    s_node_count = 0u;
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, app_info(&info));
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS * CAN_FLASH_HOST_APP_MS, s_now);
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS, s_commands[CAN_UPDATE_CMD_APP_INFO]);
+}
+static void test_app_info_malformed(void)
+{
+    s_app_mode[0] = true;
+    s_app_corrupt = true;
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_PROTOCOL, app_info(&info));
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS, s_host.result.attempts);
+    TEST_ASSERT_EQUAL_STRING("", info.version);
+}
+static void test_app_info_partial_burst_retried(void)
+{
+    s_app_mode[0] = true;
+    s_app_drop_frame = 4u;
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, app_info(&info));
+    TEST_ASSERT_EQUAL_UINT32(2u, s_host.result.attempts);
+    TEST_ASSERT_EQUAL_STRING(APP_PROJECT, info.project_name);
+}
+static void test_enter_updater_then_flash(void)
+{
+    s_app_mode[0] = true;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, enter_updater());
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STEP_ENTER_UPDATER, s_host.result.step);
+    TEST_ASSERT_EQUAL_HEX8(CAN_UPDATE_APP_MARKER, s_host.result.arg);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_app_restarts);
+    can_flash_host_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, can_flash_host_info(&s_host, s_cmd[0], s_reply[0], &info));
+    assert_clean(IMAGE_BYTES);
+}
+static void test_enter_updater_lost_ack(void)
+{
+    s_app_mode[0] = true;
+    s_drop_enter_ack = true;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_IN_UPDATER, enter_updater());
+    TEST_ASSERT_EQUAL_UINT32(2u, s_host.result.attempts);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_app_restarts);
+}
+static void test_enter_updater_already_parked(void)
+{
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_IN_UPDATER, enter_updater());
+    TEST_ASSERT_EQUAL_UINT32(1u, s_host.result.attempts);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_app_restarts);
+}
+static void test_enter_updater_refused(void)
+{
+    s_app_mode[0] = true;
+    s_app_refuse = true;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_NAK, enter_updater());
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ERR_FLASH, s_host.result.nak);
+    TEST_ASSERT_TRUE(s_app_mode[0]);
+}
+static void test_enter_updater_timeout(void)
+{
+    s_node_count = 0u;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, enter_updater());
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS * CAN_FLASH_HOST_APP_MS, s_now);
+}
+static void test_enter_updater_malformed(void)
+{
+    s_app_mode[0] = true;
+    s_app_refuse = true;
+    s_bad_dlc = true;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_PROTOCOL, enter_updater());
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS, s_host.result.attempts);
+}
+static void test_app_control_invalid_args(void)
+{
+    app_control_info_t info;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_app_info(&s_host, 0x800u, 1u, &info));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_app_info(&s_host, 1u, 1u, NULL));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_enter_updater(NULL, 1u, 1u));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_enter_updater(&s_host, 1u, 0x800u));
+    TEST_ASSERT_EQUAL_UINT32(0u, s_commands[CAN_UPDATE_CMD_APP_INFO] + s_commands[CAN_UPDATE_CMD_ENTER_UPDATER]);
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -361,5 +542,18 @@ int main(int argc, char **argv)
     RUN_TEST(test_transport_error);
     RUN_TEST(test_malformed_reply);
     RUN_TEST(test_clock_wrap);
+    RUN_TEST(test_app_info_running_app);
+    RUN_TEST(test_app_ignores_updater_commands);
+    RUN_TEST(test_app_info_updater_nak);
+    RUN_TEST(test_app_info_timeout);
+    RUN_TEST(test_app_info_malformed);
+    RUN_TEST(test_app_info_partial_burst_retried);
+    RUN_TEST(test_enter_updater_then_flash);
+    RUN_TEST(test_enter_updater_lost_ack);
+    RUN_TEST(test_enter_updater_already_parked);
+    RUN_TEST(test_enter_updater_refused);
+    RUN_TEST(test_enter_updater_timeout);
+    RUN_TEST(test_enter_updater_malformed);
+    RUN_TEST(test_app_control_invalid_args);
     return UNITY_END();
 }

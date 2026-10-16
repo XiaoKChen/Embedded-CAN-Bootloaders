@@ -554,6 +554,40 @@ static void test_custom_cmd_id_is_matched_and_default_ignored(void)
     TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_RESET, s_action);
 }
 
+/* App-control opcodes (answered only by a running app) are unknown to the
+ * engine in every phase: NAK err 0x05 arg 0x00, and the session continues as
+ * if they never arrived. Hosts rely on this to tell "already in the updater"
+ * from an app reply (can_update.h). */
+static void assert_app_control_naked(void)
+{
+    const uint8_t cmds[] = { CAN_UPDATE_CMD_APP_INFO, CAN_UPDATE_CMD_ENTER_UPDATER };
+    for (uint32_t i = 0u; i < sizeof(cmds); i++) {
+        const can_update_phase_t phase = s_state.phase;
+        TEST_ASSERT_TRUE(send_cmd(cmds[i], CAN_UPDATE_PROTOCOL_VERSION, true, CAN_UPDATE_ENTER_KEY));
+        assert_reply(cmds[i], CAN_UPDATE_ERR_STATE, 0u);
+        TEST_ASSERT_EQUAL(phase, s_state.phase);
+        TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_NONE, s_action);
+    }
+}
+
+static void test_app_control_opcodes_naked_in_every_phase(void)
+{
+    assert_app_control_naked();                                  /* IDLE        */
+    enter_transfer_phase();
+    assert_app_control_naked();                                  /* TRANSFER    */
+    stream_block(0u);
+    assert_app_control_naked();                                  /* mid-image   */
+    stream_block(CAN_UPDATE_WINDOW_SIZE);
+    stream_block(2u * CAN_UPDATE_WINDOW_SIZE);
+    assert_app_control_naked();                                  /* TRANSFERRED */
+    verify_good_crc();
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    assert_app_control_naked();                                  /* VERIFIED    */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, s_slot, TEST_IMAGE_SIZE);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -574,5 +608,6 @@ int main(void)
     RUN_TEST(test_hello_restarts_session_mid_transfer);
     RUN_TEST(test_malformed_dlc_naks_state);
     RUN_TEST(test_custom_cmd_id_is_matched_and_default_ignored);
+    RUN_TEST(test_app_control_opcodes_naked_in_every_phase);
     return UNITY_END();
 }

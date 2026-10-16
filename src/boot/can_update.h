@@ -43,6 +43,26 @@
  *   seqs repeat every 128 windows, so a host resolves a rewind against its
  *   current window and the next one only (a slot > 256 KB spans > 128).
  *
+ * App-control extension (answered by a RUNNING app, never by this engine;
+ * codec in app_control.h). Same IDs, DLC 8, 0xFF fill:
+ *     0x08 APP_INFO       byte1 = protocol version
+ *     0x09 ENTER_UPDATER  byte1 = protocol version, bytes2..5 =
+ *                         CAN_UPDATE_ENTER_KEY uint32 LE (guards against a
+ *                         stray frame parking a running node)
+ *   App replies keep the ACK/NAK layout with arg = CAN_UPDATE_APP_MARKER:
+ *     ACK  {0x79, cmd_echo, 0x00, 0xA5, 0xFF, 0xFF, 0xFF, 0xFF}
+ *     NAK  {0x79, cmd_echo, err,  0xA5, 0xFF, 0xFF, 0xFF, 0xFF}
+ *     APP_INFO ACK = 9 frames: header {0x79, 0x08, 0x00, 0xA5, proto,
+ *     version_len, project_len, check}, then the 32-byte app version field
+ *     (4 frames) and the 32-byte project name field (4 frames), each 0x00-
+ *     padded past its length. check = low byte of CRC32 over bytes4..6 of the
+ *     header plus both 32-byte fields.
+ *   ENTER_UPDATER ACK goes out BEFORE the app restarts (clean esp_restart)
+ *   into the updater. This engine treats 0x08/0x09 as unknown commands in
+ *   every phase: NAK {0x79, cmd, 0x05, 0x00, 0xFF x4}, session untouched. So
+ *   arg 0xA5 means "a running app answered", arg 0x00 with err 0x05 means "the
+ *   node is already in its updater", and silence means neither.
+ *
  * Session restart: HELLO is additionally accepted in ANY phase and resets the
  * session (documented deviation for host-retry robustness; every other
  * command is strictly ordered and NAKs err 0x05 out of order).
@@ -86,6 +106,15 @@ extern "C" {
  * on 0x07; if a frame with this command ever reaches the engine it falls
  * through to the default case and is NAKed as an unknown command. */
 #define CAN_UPDATE_CMD_INFO          0x07u
+/* App-control extension (see the header comment and app_control.h): answered
+ * only by a running app. The engine NAKs both as unknown commands. */
+#define CAN_UPDATE_CMD_APP_INFO      0x08u
+#define CAN_UPDATE_CMD_ENTER_UPDATER 0x09u
+#define CAN_UPDATE_APP_MARKER        0xA5u  /* byte3 of every app reply; the
+                                               engine's NAK arg is 0x00 here */
+#define CAN_UPDATE_ENTER_KEY         CAN_UPDATE_MAGIC  /* ENTER_UPDATER bytes2..5:
+                                               the same "enter CAN update"
+                                               magic the RA4M1 app hands off */
 
 #define CAN_UPDATE_REPLY_MARKER      0x79u  /* byte0 of every ACK/NAK          */
 #define CAN_UPDATE_OK                0x00u  /* byte2 of an ACK                 */

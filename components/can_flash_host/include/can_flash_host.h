@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "app_control.h"
 #include "can_update.h"
 #include "dfu_config.h"
 
@@ -29,6 +30,11 @@ extern "C" {
 #define CAN_FLASH_HOST_EARLY_FRAMES 32u
 #define CAN_FLASH_HOST_EARLY_MS 1u
 #define CAN_FLASH_HOST_DLC 8u
+/* App-control requests (APP_INFO / ENTER_UPDATER): a running app answers from
+ * a task within milliseconds, so fewer, shorter attempts than the updater's. */
+#define CAN_FLASH_HOST_APP_ATTEMPTS 3u
+#define CAN_FLASH_HOST_APP_MS 500u
+#define CAN_FLASH_HOST_FLUSH_FRAMES 64u /* stale frames discarded per request */
 #define CAN_FLASH_HOST_FRAMES_PER_WINDOW \
     ((CAN_UPDATE_WINDOW_SIZE + CAN_UPDATE_DATA_BYTES_PER_FRAME - 1u) / CAN_UPDATE_DATA_BYTES_PER_FRAME)
 
@@ -41,6 +47,7 @@ typedef enum {
     CAN_FLASH_HOST_STATUS_PROTOCOL,
     CAN_FLASH_HOST_STATUS_READ,
     CAN_FLASH_HOST_STATUS_CAPACITY,
+    CAN_FLASH_HOST_STATUS_IN_UPDATER, /* the updater NAKed an app-control request */
 } can_flash_host_status_t;
 
 typedef enum {
@@ -58,6 +65,8 @@ typedef enum {
     CAN_FLASH_HOST_STEP_VERIFY = CAN_UPDATE_CMD_VERIFY,
     CAN_FLASH_HOST_STEP_GO = CAN_UPDATE_CMD_GO,
     CAN_FLASH_HOST_STEP_INFO = CAN_UPDATE_CMD_INFO,
+    CAN_FLASH_HOST_STEP_APP_INFO = CAN_UPDATE_CMD_APP_INFO,
+    CAN_FLASH_HOST_STEP_ENTER_UPDATER = CAN_UPDATE_CMD_ENTER_UPDATER,
 } can_flash_host_step_t;
 
 typedef struct {
@@ -127,6 +136,23 @@ can_flash_host_status_t can_flash_host_scan(can_flash_host_t *host, uint16_t fro
 can_flash_host_status_t can_flash_host_flash(can_flash_host_t *host, uint16_t cmd_id,
                                             uint16_t reply_id, uint32_t image_size,
                                             can_flash_host_result_t *result);
+/* App-control requests to a node that may be running its app (can_update.h).
+ * Up to CAN_FLASH_HOST_APP_ATTEMPTS sends, CAN_FLASH_HOST_APP_MS each; frames
+ * already queued are discarded first (no quiet-bus wait: running apps keep the
+ * bus busy) and frames on other IDs are ignored. Results:
+ *   OK          a running app answered (app_info: decoded and filled in;
+ *               enter_updater: ACK received, the app restarts into its updater)
+ *   IN_UPDATER  the updater NAKed the opcode: the node is already parked
+ *   NAK         the app refused (result.nak; e.g. no updater partition)
+ *   PROTOCOL    something answered on reply_id, but never a valid reply
+ *               (including a partial or check-failing APP_INFO burst)
+ *   TIMEOUT     nothing answered; TRANSPORT and INVALID_ARG as elsewhere
+ * enter_updater is safe to retry: after a lost ACK the restarted node's
+ * updater NAKs the retry, so IN_UPDATER also means "entered". */
+can_flash_host_status_t can_flash_host_app_info(can_flash_host_t *host, uint16_t cmd_id,
+                                               uint16_t reply_id, app_control_info_t *info);
+can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *host, uint16_t cmd_id,
+                                                    uint16_t reply_id);
 /* Bounded diagnostic, including step, DATA window/attempts and NAK code/name. */
 void can_flash_host_result_text(const can_flash_host_result_t *result, char *buf, size_t len);
 

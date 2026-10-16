@@ -307,11 +307,124 @@ done:
     return result->status;
 }
 
+/* Discard frames already queued (stale replies) without waiting for a quiet
+ * bus, which a bus full of running apps may never offer. */
+static can_flash_host_status_t flush_queued(can_flash_host_t *h)
+{
+    can_flash_host_frame_t f;
+    for (uint32_t i = 0u; i < CAN_FLASH_HOST_FLUSH_FRAMES; ++i) {
+        const can_flash_host_io_t io = h->receive(h->user, &f, 0u);
+        if (io == CAN_FLASH_HOST_IO_TIMEOUT) { return CAN_FLASH_HOST_STATUS_OK; }
+        if (io != CAN_FLASH_HOST_IO_OK) { return outcome(h, CAN_FLASH_HOST_STATUS_TRANSPORT); }
+    }
+    return CAN_FLASH_HOST_STATUS_OK;
+}
+
+/* Next standard data frame on reply_id before the attempt deadline. Frames on
+ * other IDs belong to other traffic and are skipped. */
+static can_flash_host_status_t app_frame(can_flash_host_t *h, uint16_t reply_id, uint32_t start,
+                                         can_flash_host_frame_t *f)
+{
+    for (;;) {
+        const uint32_t left = remaining(h, start, CAN_FLASH_HOST_APP_MS);
+        if (left == 0u) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
+        const can_flash_host_io_t io = h->receive(h->user, f, left);
+        if (io == CAN_FLASH_HOST_IO_TIMEOUT) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
+        if (io != CAN_FLASH_HOST_IO_OK) { return outcome(h, CAN_FLASH_HOST_STATUS_TRANSPORT); }
+        if (f->id == reply_id && !f->extended && !f->remote && !f->error) {
+            return f->dlc == CAN_FLASH_HOST_DLC ? CAN_FLASH_HOST_STATUS_OK : CAN_FLASH_HOST_STATUS_PROTOCOL;
+        }
+    }
+}
+
+/* The 8 APP_INFO body frames after an accepted header, then the codec's
+ * complete-burst checks. */
+static can_flash_host_status_t app_info_body(can_flash_host_t *h, uint16_t reply_id, uint32_t start,
+                                             const can_flash_host_frame_t *header, app_control_info_t *info)
+{
+    uint8_t frames[APP_CONTROL_INFO_BYTES];
+    memcpy(frames, header->data, CAN_FLASH_HOST_DLC);
+    for (uint32_t off = CAN_FLASH_HOST_DLC; off < sizeof(frames); off += CAN_FLASH_HOST_DLC) {
+        can_flash_host_frame_t f;
+        const can_flash_host_status_t status = app_frame(h, reply_id, start, &f);
+        if (status != CAN_FLASH_HOST_STATUS_OK) { return status; }
+        memcpy(&frames[off], f.data, CAN_FLASH_HOST_DLC);
+    }
+    return app_control_decode_info(frames, info) ? CAN_FLASH_HOST_STATUS_OK : CAN_FLASH_HOST_STATUS_PROTOCOL;
+}
+
+/* One app-control request with bounded retries; info is NULL for ENTER. */
+static can_flash_host_status_t app_request(can_flash_host_t *h, uint16_t cmd_id, uint16_t reply_id,
+                                           uint8_t cmd, app_control_info_t *info)
+{
+    uint8_t request[CAN_FLASH_HOST_DLC];
+    app_control_encode_request(cmd, request);
+    h->result.step = (can_flash_host_step_t)cmd;
+    bool answered = false;  /* something spoke on reply_id, never validly */
+    for (uint32_t attempt = 1u; attempt <= CAN_FLASH_HOST_APP_ATTEMPTS; ++attempt) {
+        h->result.attempts = attempt;
+        if (flush_queued(h) != CAN_FLASH_HOST_STATUS_OK ||
+            send_frame(h, cmd_id, request) != CAN_FLASH_HOST_STATUS_OK) { return h->result.status; }
+        const uint32_t start = h->clock_ms(h->user);
+        can_flash_host_frame_t f;
+        app_control_reply_t kind = APP_CONTROL_REPLY_FOREIGN;
+        can_flash_host_status_t status;
+        do {
+            status = app_frame(h, reply_id, start, &f);
+            if (status == CAN_FLASH_HOST_STATUS_OK) {
+                kind = app_control_classify_reply(cmd, f.data);
+                /* Our echo with nonsense is malformed; other replies on the
+                 * ID (stale HELLO/INFO answers) are just skipped. */
+                if (kind == APP_CONTROL_REPLY_FOREIGN && f.data[0] == CAN_UPDATE_REPLY_MARKER &&
+                    f.data[1] == cmd) { answered = true; }
+            } else if (status == CAN_FLASH_HOST_STATUS_PROTOCOL) {
+                answered = true;
+            }
+        } while (kind == APP_CONTROL_REPLY_FOREIGN &&
+                 (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_PROTOCOL));
+        if (status == CAN_FLASH_HOST_STATUS_TRANSPORT) { return status; }
+        if (status == CAN_FLASH_HOST_STATUS_TIMEOUT) { continue; }
+        h->result.nak = f.data[2];
+        h->result.arg = f.data[3];
+        if (kind == APP_CONTROL_REPLY_UPDATER_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_IN_UPDATER); }
+        if (kind == APP_CONTROL_REPLY_APP_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_NAK); }
+        if (info == NULL) { return outcome(h, CAN_FLASH_HOST_STATUS_OK); }
+        status = app_info_body(h, reply_id, start, &f, info);
+        if (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_TRANSPORT) {
+            return outcome(h, status);
+        }
+        answered = true;  /* header without a complete, valid burst */
+    }
+    return outcome(h, answered ? CAN_FLASH_HOST_STATUS_PROTOCOL : CAN_FLASH_HOST_STATUS_TIMEOUT);
+}
+
+static bool valid_ids(const can_flash_host_t *h, uint16_t cmd_id, uint16_t reply_id)
+{
+    return valid_host(h) && cmd_id <= DFU_CONFIG_CAN_ID_MAX && reply_id <= DFU_CONFIG_CAN_ID_MAX;
+}
+
+can_flash_host_status_t can_flash_host_app_info(can_flash_host_t *h, uint16_t cmd_id,
+                                               uint16_t reply_id, app_control_info_t *info)
+{
+    if (info == NULL || !valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
+    memset(&h->result, 0, sizeof(h->result));
+    memset(info, 0, sizeof(*info));
+    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_APP_INFO, info);
+}
+
+can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *h, uint16_t cmd_id,
+                                                    uint16_t reply_id)
+{
+    if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
+    memset(&h->result, 0, sizeof(h->result));
+    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_ENTER_UPDATER, NULL);
+}
+
 void can_flash_host_result_text(const can_flash_host_result_t *r, char *buf, size_t len)
 {
-    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO" };
+    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO", "APP_INFO", "ENTER_UPDATER" };
     static const char *const errors[] = { "OK", "unexpected sequence", "flash failure", "CRC mismatch", "size out of bounds", "bad state", "image rejected" };
-    static const char *const statuses[] = { "success", "invalid argument", "transport failure", "timeout", "rejected", "invalid reply", "image read failed", "scan capacity exceeded" };
+    static const char *const statuses[] = { "success", "invalid argument", "transport failure", "timeout", "rejected", "invalid reply", "image read failed", "scan capacity exceeded", "node is in its updater" };
     if (r == NULL || buf == NULL || len == 0u) { return; }
     const char *step = (unsigned)r->step < sizeof(steps) / sizeof(steps[0]) ? steps[r->step] : "?";
     const char *status = (unsigned)r->status < sizeof(statuses) / sizeof(statuses[0]) ? statuses[r->status] : "?";

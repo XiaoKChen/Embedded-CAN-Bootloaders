@@ -30,6 +30,7 @@ target_include_directories(unity PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/unity)
 
 # Pure-logic bootloader core under test — zero hardware includes by contract.
 add_library(boot_core STATIC
+    ${BOOT_DIR}/update_pkg.c
     ${BOOT_DIR}/boot_counter.c
     ${BOOT_DIR}/crc32.c
     ${BOOT_DIR}/image_validate.c
@@ -49,6 +50,9 @@ function(add_host_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+add_host_test(test_update_pkg)
+target_compile_definitions(test_update_pkg PRIVATE
+    UPDATE_PKG_VECTOR="${CMAKE_CURRENT_SOURCE_DIR}/vectors/sample.ecbpkg")
 add_host_test(test_boot_counter)
 add_host_test(test_crc32)
 add_host_test(test_image_validate)

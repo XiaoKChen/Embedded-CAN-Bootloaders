@@ -737,6 +737,10 @@ longer answers INFO; use `u` again before the next transfer.
 
 ### 9.3 Failure and isolation checks (run only on an available bench)
 
+- **Early replies on Windows:** the brain answers 409/411/413 as soon as it
+  reads the headers, then closes. With a large body still being sent, Windows
+  curl may report `000` / "Connection was reset" and drop the reply; `-v`
+  shows the status line, or send a small body to see it cleanly.
 - **Conflicts, both directions:** start a slow node upload with
   `curl.exe --limit-rate 8k --data-binary "@examples/bench_app/build/bench_app.bin" "http://<ip>/node/flash"`.
   In another terminal POST again to `/node/flash`, then POST the brain image
@@ -759,9 +763,13 @@ longer answers INFO; use `u` again before the next transfer.
 - **Node reset/power loss mid-transfer:** the node returns to its updater;
   this attempt fails with a clear DATA/transport status. A fresh POST starts
   a new HELLO session and succeeds. No automatic reset is driven by the brain.
-- **Rejected image:** upload a small non-ESP32 image. CRC may match, but VERIFY
-  must end `failed` with `VERIFY rejected: image rejected 0x06`; the node stays
-  in its updater. CRC mismatch is independently covered by host fault tests.
+- **Rejected image:** a body whose first byte is not the ESP image magic `0xE9`
+  is refused by the node's first `esp_ota_write`, so it ends `failed` with
+  `DATA window 0 not accepted after 4 attempts`. To reach the VERIFY check,
+  upload garbage that starts with `0xE9` (e.g. 4 KB random with the first byte
+  replaced): it ends `failed` with `VERIFY rejected: image rejected 0x06`.
+  Either way the node stays in its updater. CRC mismatch is independently
+  covered by host fault tests.
 - **Brain power loss during staging:** after reboot, status is `idle`. Length
   and validity are RAM-only, so partial/stale `node_fw` contents are never
   resumed. During CAN flashing, power loss leaves the node in its updater

@@ -1,12 +1,15 @@
 /* =============================================================================
  * node_reset.c — the brain's reset line to the node
  * =============================================================================
- * See node_reset.h for the public interface.
+ * See node_reset.h for the public interface. Recovery pulses HIGH to reset,
+ * LOW to run, and the final GPIO operation releases the node.
  * ============================================================================= */
 
 #include "node_reset.h"
 
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 
@@ -32,4 +35,23 @@ esp_err_t node_reset_release(void)
         .intr_type    = GPIO_INTR_DISABLE,
     };
     return gpio_config(&cfg);
+}
+
+esp_err_t node_reset_pulse_train(uint32_t pulses, uint32_t high_ms, uint32_t low_ms)
+{
+    esp_err_t err = node_reset_release();
+    if (err == ESP_OK && (pulses == 0u || high_ms == 0u || low_ms == 0u)) {
+        err = ESP_ERR_INVALID_ARG;
+    }
+    for (uint32_t i = 0u; i < pulses && err == ESP_OK; ++i) {
+        err = gpio_set_level(CONFIG_NODE_RESET_GPIO, 1);
+        if (err != ESP_OK) { break; }
+        vTaskDelay(pdMS_TO_TICKS(high_ms));
+        err = gpio_set_level(CONFIG_NODE_RESET_GPIO, 0);
+        if (err != ESP_OK) { break; }
+        vTaskDelay(pdMS_TO_TICKS(low_ms));
+    }
+    /* Retry a LOW latch even when a preceding GPIO call failed. */
+    const esp_err_t release_err = node_reset_release();
+    return err != ESP_OK ? err : release_err;
 }

@@ -1,5 +1,11 @@
 /* =============================================================================
- * node_flash.c — Brain staging partition and TWAI adapter for the pure C host
+ * node_flash.c — Brain staging, CAN host, and node recovery
+ * =============================================================================
+ * POST /node/flash: 202 after staging, 400 invalid IDs, 411 empty, 413 oversized,
+ *                   408 timeout, 500 flash failure, 503 unavailable.
+ * POST /node/recover: 202 accepted, 400 invalid IDs, 503 CAN unavailable.
+ * GET /node/status: includes recovering, success and failed states.
+ * INFO has four built-in 2 s retries; an absent node can take over 8 s to fail.
  * ============================================================================= */
 #include "node_flash.h"
 
@@ -14,6 +20,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "node_reset.h"
 
 #define NODE_FW_LABEL       "node_fw"
 #define NODE_FW_SUBTYPE     ((esp_partition_subtype_t)0x41)
@@ -30,6 +37,7 @@
 #define US_PER_MS           1000u
 #define PERCENT_MAX         100u
 #define JSON_ESCAPE_BYTES   6u
+#define RECOVERY_BOOT_MS    1000u
 
 static const char *TAG = "node_flash";
 static const esp_partition_t *s_partition;
@@ -42,7 +50,7 @@ static uint16_t s_cmd_id, s_reply_id;
 static uint32_t s_image_size;
 
 typedef enum {
-    NODE_IDLE = 0, NODE_STAGING, NODE_FLASHING, NODE_SUCCESS, NODE_FAILED,
+    NODE_IDLE = 0, NODE_STAGING, NODE_FLASHING, NODE_RECOVERING, NODE_SUCCESS, NODE_FAILED,
 } node_state_t;
 
 typedef struct {
@@ -282,9 +290,62 @@ void node_flash_run(void)
     }
 }
 
+esp_err_t node_flash_recover(httpd_req_t *req, bool *ready)
+{
+    *ready = false;
+    if (!s_link_ready) { return respond(req, "503 Service Unavailable", "CAN link unavailable\n"); }
+    s_cmd_id = CAN_ID_HOST_TO_BOOT;
+    s_reply_id = CAN_ID_BOOT_TO_HOST;
+    if (!get_ids(req, "cmd", &s_cmd_id, "reply", &s_reply_id)) {
+        return respond(req, "400 Bad Request", "cmd/reply must be standard CAN IDs (0..0x7FF)\n");
+    }
+    const esp_err_t err = respond(req, "202 Accepted", "Recovery started; poll /node/status\n");
+    if (err == ESP_OK) {
+        set_status(NODE_RECOVERING, 0u, 0u, "Recovery pulses; awaiting INFO");
+        *ready = true;
+    }
+    return err;
+}
+
+void node_flash_recover_run(void)
+{
+    const esp_err_t err = node_reset_pulse_train(NODE_RESET_RECOVERY_PULSES,
+        NODE_RESET_RECOVERY_HIGH_MS, NODE_RESET_RECOVERY_LOW_MS);
+    if (err != ESP_OK) {
+        char text[NODE_STATUS_BYTES];
+        (void)snprintf(text, sizeof(text), "recovery pulses failed: %s", esp_err_to_name(err));
+        set_status(NODE_FAILED, 0u, 0u, text);
+        ESP_LOGE(TAG, "%s", text);
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(RECOVERY_BOOT_MS));
+    can_flash_host_info_t info;
+    const can_flash_host_status_t status = can_flash_host_info(&s_host, s_cmd_id, s_reply_id, &info);
+    char text[NODE_STATUS_BYTES];
+    if (status == CAN_FLASH_HOST_STATUS_OK) {
+        /* Provisioned names are ASCII, but keep quotes/control bytes from
+         * breaking the status JSON if a node sends malformed INFO data. */
+        char name[DFU_CONFIG_STR_MAX + 1u];
+        for (uint32_t i = 0u; i < info.name_len; ++i) {
+            const unsigned char c = (unsigned char)info.name[i];
+            name[i] = c >= 0x20u && c <= 0x7Eu && c != '"' && c != '\\' ? (char)c : '?';
+        }
+        name[info.name_len] = '\0';
+        (void)snprintf(text, sizeof(text), "recovered: node answers INFO (name \"%s\", protocol %u)",
+                       name, (unsigned)info.protocol_version);
+        set_status(NODE_SUCCESS, 0u, 0u, text);
+    } else {
+        char diagnostic[NODE_STATUS_BYTES / 2u];
+        can_flash_host_result_text(&s_host.result, diagnostic, sizeof(diagnostic));
+        (void)snprintf(text, sizeof(text), "no INFO after recovery pulses (%s)", diagnostic);
+        set_status(NODE_FAILED, 0u, 0u, text);
+    }
+    ESP_LOGI(TAG, "node recovery cmd 0x%03X reply 0x%03X: %s", s_cmd_id, s_reply_id, text);
+}
+
 esp_err_t node_flash_status(httpd_req_t *req)
 {
-    static const char *const names[] = { "idle", "staging", "flashing", "success", "failed" };
+    static const char *const names[] = { "idle", "staging", "flashing", "recovering", "success", "failed" };
     node_status_t status;
     portENTER_CRITICAL(&s_status_lock);
     status = s_status;

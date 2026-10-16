@@ -7,11 +7,14 @@
  *              about a second after the reply.
  *   GET  /node/scan?from=0x700&to=0x71F  discover parked nodes (JSON)
  *   POST /node/flash?cmd=0x79E&reply=0x79F  stage a raw node .bin, then 202
- *   GET  /node/status  idle/staging/flashing/success/failed with bytes and %
+ *   POST /node/recover?cmd=0x79E&reply=0x79F  pulse node EN, then probe INFO;
+ *              202 accepted, 400 invalid IDs, 409 busy, 503 CAN unavailable
+ *   GET  /node/status  idle/staging/flashing/recovering/success/failed with bytes and %
  *
- * One static worker owns OTA, scan and node staging/flashing; overlapping
- * requests get 409. Status routes stay responsive. No authentication: bench
- * trusted LAN only. GPIO3 is not pulsed. See docs/bench-test.md section 9.
+ * One static worker owns OTA, scan, node staging/flashing and recovery;
+ * overlapping requests get 409. Status routes stay responsive. No
+ * authentication: bench trusted LAN only. GPIO3 is pulsed HIGH then returned
+ * LOW; absent-node INFO can take over 8 s due to built-in retries.
  *
  *   curl.exe --data-binary "@build/brain_ota.bin" http://<ip>/ota
  * ============================================================================= */

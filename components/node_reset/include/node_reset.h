@@ -4,12 +4,19 @@
  * The brain drives the node's EN (reset) from CONFIG_NODE_RESET_GPIO (GPIO3)
  * through an inverting stage: HIGH holds the node in reset, LOW lets it run.
  * Shared by every firmware that runs on the brain (brain/, the SLCAN bridge).
+ * A pulse train forces the node into recovery and always finishes LOW.
  * ============================================================================= */
 
 #ifndef NODE_RESET_H
 #define NODE_RESET_H
 
+#include <stdint.h>
+
 #include "esp_err.h"
+
+#define NODE_RESET_RECOVERY_PULSES  4u
+#define NODE_RESET_RECOVERY_HIGH_MS 100u
+#define NODE_RESET_RECOVERY_LOW_MS  400u
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +35,13 @@ extern "C" {
  * @return ESP_OK on success, or the GPIO driver's error.
  */
 esp_err_t node_reset_release(void);
+
+/**
+ * Hold the node in reset (HIGH), then release it (LOW), pulses times.
+ * The line is released on every exit, including an invalid argument or GPIO
+ * error. Call only from a task; this operation blocks for the requested time.
+ */
+esp_err_t node_reset_pulse_train(uint32_t pulses, uint32_t high_ms, uint32_t low_ms);
 
 
 #ifdef __cplusplus

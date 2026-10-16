@@ -3,7 +3,7 @@
 # =============================================================================
 # Bench firmware for the brain (ESP32-S3-WROOM-1U-N16R8): an image POSTed to
 # http://<ip>/ota goes into the inactive OTA slot, the board reboots, and a
-# self-test marks it valid or rolls it back (docs/bench-test.md, section 8).
+# self-test marks it valid or rolls it back (docs/testing/bench/brain-ota.md).
 # From the repo root:
 #   powershell -ExecutionPolicy Bypass -File build.ps1 brain
 #   ./build.sh brain

@@ -1,3 +1,3 @@
-# Extra defaults for the "bad" bench image (rollback test, docs/bench-test.md).
+# Extra defaults for the "bad" bench image (rollback test, docs/testing/bench/node-updater.md).
 # Layered on sdkconfig.defaults in its own build dir; see that guide.
 CONFIG_BENCH_APP_SKIP_MARK_VALID=y

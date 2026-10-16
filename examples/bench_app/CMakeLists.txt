@@ -2,7 +2,7 @@
 # CMakeLists.txt — bench-test app for the ESP32-S3 CAN updater
 # =============================================================================
 # A minimal OTA application delivered over CAN by tools/can-flash
-# (docs/bench-test.md). From the repo root:
+# (docs/testing/bench/node-updater.md). From the repo root:
 #   powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app
 #   ./build.sh examples/bench_app
 # OTA image: examples/bench_app/build/bench_app.bin. Never `idf.py flash` it

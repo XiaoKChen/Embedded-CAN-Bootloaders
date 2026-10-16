@@ -8,7 +8,7 @@ menu "Bench App"
             esp_ota_mark_app_valid_cancel_rollback(). It runs once; the next
             reset makes the bootloader roll it back, which lands the board in
             the CAN updater. Build it in its own build dir with
-            sdkconfig.skip_mark_valid (docs/bench-test.md).
+            sdkconfig.skip_mark_valid (docs/testing/bench/node-updater.md).
 
     config BENCH_APP_CRASH_LOOP
         bool "Abort after confirming the image (crash-loop recovery test)"
@@ -16,6 +16,6 @@ menu "Bench App"
         default n
         help
             Marks the image valid, then aborts after two seconds on every boot.
-            Build in crash/ with sdkconfig.crash_loop (docs/bench-test.md).
+            Build in crash/ with sdkconfig.crash_loop (docs/testing/bench/node-recovery.md).
 
 endmenu

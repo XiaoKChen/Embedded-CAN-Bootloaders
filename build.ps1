@@ -293,7 +293,7 @@ function Build-Project([string]$ProjectDir, [object[]]$CliArgs) {
         Write-Host ''
         Write-Host "Built with ESP-IDF $IdfVersion for $Target. OTA image to flash over CAN (tools\can-flash):" -ForegroundColor Green
         Write-Host ('  ' + (Join-Path $BuildDir ($flasher.app.file -replace '/', '\')))
-        Write-Host 'Do not idf.py flash it onto an updater board. Details: docs\bench-test.md'
+        Write-Host 'Do not idf.py flash it onto an updater board. Details: docs\guides\writing-a-node-app.md'
         Write-Host ''
         return
     }
@@ -304,7 +304,7 @@ function Build-Project([string]$ProjectDir, [object[]]$CliArgs) {
     }
     Write-Host ''
     Write-Host "Flash all of them over USB/UART (from $BuildDir):  python -m esptool --chip esp32s3 write_flash `"@flash_args`""
-    Write-Host 'Details: docs\build.md'
+    Write-Host 'Details: docs\getting-started\first-flash.md'
     Write-Host ''
 }
 

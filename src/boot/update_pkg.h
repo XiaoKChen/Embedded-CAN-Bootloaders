@@ -1,4 +1,4 @@
-/* Package v1 wire layout is specified in docs/package-format.md. */
+/* Package v1 wire layout is specified in docs/reference/package-format.md. */
 #ifndef UPDATE_PKG_H
 #define UPDATE_PKG_H
 

@@ -195,7 +195,7 @@ import json, os, sys
 build_dir = sys.argv[1]
 print("  " + os.path.join(build_dir, json.load(open(os.path.join(build_dir, "flasher_args.json")))["app"]["file"]))
 EOF
-        printf 'Do not idf.py flash it onto an updater board. Details: docs/bench-test.md\n\n'
+        printf 'Do not idf.py flash it onto an updater board. Details: docs/guides/writing-a-node-app.md\n\n'
         exit 0
     fi
     printf '\nBuilt with ESP-IDF %s for %s. Flash offsets and files:\n' "$idf_version" "$target"
@@ -207,7 +207,7 @@ for offset in sorted(files, key=lambda o: int(o, 16)):
     print("  %-9s %s" % (offset, os.path.join(build_dir, files[offset])))
 EOF
     printf '\nFlash all of them over USB/UART (from %s):  python -m esptool --chip esp32s3 write_flash @flash_args\n' "$build_dir"
-    printf 'Details: docs/build.md\n\n'
+    printf 'Details: docs/getting-started/first-flash.md\n\n'
 )
 
 for project_dir in "${project_dirs[@]}"; do

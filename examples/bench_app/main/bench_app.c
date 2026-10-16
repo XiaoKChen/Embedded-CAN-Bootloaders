@@ -1,7 +1,7 @@
 /* =============================================================================
  * bench_app.c — Minimal OTA app for bench-testing the ESP32-S3 CAN updater
  * =============================================================================
- * Delivered over CAN by tools/can-flash (docs/bench-test.md). It:
+ * Delivered over CAN by tools/can-flash (docs/testing/bench/node-updater.md). It:
  *   - logs its version, running partition and OTA state at boot;
  *   - after a trivial self-test confirms itself with
  *     esp_ota_mark_app_valid_cancel_rollback(), unless

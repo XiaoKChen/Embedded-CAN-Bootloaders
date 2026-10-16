@@ -26,7 +26,7 @@ extern "C" {
  * at runtime — these constants are only the fallback. */
 #define CAN_ID_HOST_TO_BOOT 0x79Eu       /* default host -> bootloader commands */
 #define CAN_ID_BOOT_TO_HOST 0x79Fu       /* default bootloader -> host ACK/NAK  */
-#define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3) */
+#define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3, version/c-cpp/ra4m1) */
 
 /* -----------------------------------------------------------------------------
  * Handoff & image magics

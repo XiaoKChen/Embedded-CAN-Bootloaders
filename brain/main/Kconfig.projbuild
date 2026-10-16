@@ -9,6 +9,6 @@ menu "Brain OTA"
             It runs until the next reset, which makes the bootloader roll
             back to the previous slot. While pending it refuses new uploads.
             Build it in its own build dir with sdkconfig.skip_mark_valid
-            (docs/bench-test.md).
+            (docs/testing/bench/brain-ota.md).
 
 endmenu

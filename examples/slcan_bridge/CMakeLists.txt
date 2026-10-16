@@ -3,7 +3,7 @@
 # =============================================================================
 # Turns the brain (ESP32-S3-WROOM-1U-N16R8, TWAI TX GPIO6 / RX GPIO7) into an
 # SLCAN adapter on its native USB port, so tools/can-flash reaches the node's
-# updater with `--interface slcan` (docs/bench-test.md). From the repo root:
+# updater with `--interface slcan` (docs/guides/slcan-bridge.md). From the repo root:
 #   powershell -ExecutionPolicy Bypass -File build.ps1 examples/slcan_bridge
 #   ./build.sh examples/slcan_bridge
 # Flash it onto the brain over USB (it is a plain app, not an OTA image):

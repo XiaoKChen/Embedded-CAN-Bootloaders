@@ -4,8 +4,8 @@
 # The starting point for real node firmware: an OTA app for the node's 4 MB
 # layout that tracks Phase 3 health, confirms itself after a self-test, and
 # answers APP_INFO / ENTER_UPDATER on its own CAN update IDs so the brain can
-# park it in the CAN updater without the GPIO3 reset line (docs/bench-test.md,
-# section 12). From the repo root:
+# park it in the CAN updater without the GPIO3 reset line
+# (docs/testing/bench/node-app.md). From the repo root:
 #   powershell -ExecutionPolicy Bypass -File build.ps1 examples/node_app
 #   ./build.sh examples/node_app
 # OTA image: examples/node_app/build/node_app.bin, delivered over CAN (brain

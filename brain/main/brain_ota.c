@@ -9,7 +9,7 @@
  *     "Ethernet got an IP within SELF_TEST_IP_TIMEOUT_MS": it then marks
  *     itself valid, otherwise it rolls back and reboots. A
  *     CONFIG_BRAIN_OTA_SKIP_MARK_VALID build stays PENDING_VERIFY, so the
- *     next reset rolls it back (docs/bench-test.md, section 8).
+ *     next reset rolls it back (docs/testing/bench/brain-ota.md).
  * ============================================================================= */
 
 #include <inttypes.h>

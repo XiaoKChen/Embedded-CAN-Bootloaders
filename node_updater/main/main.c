@@ -1,12 +1,11 @@
 /* =============================================================================
  * main.c — ESP32-S3 CAN (TWAI) updater: the `factory` app
  * =============================================================================
- * The stock ESP-IDF 2nd-stage bootloader runs this app when no OTA app is
+ * The node's ESP-IDF 2nd-stage bootloader runs this app when no OTA app is
  * selected: on a fresh board, after an app called can_updater_client (which
  * points the boot partition here), or when every OTA app failed validation /
- * was rolled back. (Software recovery — an RTC crash-loop counter and a flash
- * boot counter the brain trips with EN pulses — arrives in Phase 3; there is
- * no GPIO recovery, GPIO4 is TWAI TX.) In all of those cases the user wants
+ * was rolled back. Recovery counters also select factory without changing
+ * otadata (no GPIO recovery: GPIO4 is TWAI TX). In all those cases the user wants
  * the updater, so it always parks serving CAN Update Protocol v1 — the only
  * exits are a completed update (GO) or a re-flash over USB/UART.
  *
@@ -16,7 +15,7 @@
  *   DATA   -> esp_ota_write + esp_partition_read read-back verify
  *   VERIFY -> engine CRC over esp_partition_read, then esp_ota_end
  *             (ESP image format, chip ID and SHA-256 validation)
- *   GO     -> esp_ota_set_boot_partition, then esp_restart
+ *   GO     -> verified recovery-counter clear, esp_ota_set_boot_partition, restart
  *
  * Power-loss table (the otadata write in GO is the only boot-selection change
  * and ESP-IDF makes it atomic across its two sectors):
@@ -28,6 +27,11 @@
  *   after GO .................. new app boots PENDING_VERIFY; if it never
  *                                calls esp_ota_mark_app_valid_cancel_rollback
  *                                the bootloader rolls back -> updater
+ * For counter-forced entry, the prior OTA selection remains the fallback
+ * after the counters clear (10 s stable or verified GO); interrupted updates
+ * can return to that app and require recovery again. Pending rollback may
+ * return to a prior valid OTA image instead of factory. A GO clear interrupted
+ * before otadata changes never selects the new image. Clear failure rejects GO.
  * The factory partition (this app) is never written by anything here.
  * ============================================================================= */
 
@@ -36,6 +40,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "can_updater_client.h"
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
@@ -140,6 +145,13 @@ static bool slot_commit(void)
 
 static bool slot_activate(void)
 {
+    /* The engine only calls this after successful VERIFY. Clear before OTA
+     * selection so a small image can boot even inside the 10 s trip window. */
+    const esp_err_t clear_err = can_updater_client_prepare_verified_boot();
+    if (clear_err != ESP_OK) {
+        ESP_LOGE(TAG, "recovery clear failed; GO refused: %s", esp_err_to_name(clear_err));
+        return false;
+    }
     const esp_err_t err = esp_ota_set_boot_partition(s_target);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "set boot partition failed: %s", esp_err_to_name(err));
@@ -263,6 +275,7 @@ static void serve_can_forever(void)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
+    ESP_ERROR_CHECK(can_updater_client_start_health());
     load_config_block();
 
     /* The slot otadata does NOT select: ota_0 while the factory app is the

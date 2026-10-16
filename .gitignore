@@ -1,5 +1,7 @@
 # Build outputs
 /build-host/
+/build-host-p3/
+/examples/bench_app/crash/
 build/
 _build/
 

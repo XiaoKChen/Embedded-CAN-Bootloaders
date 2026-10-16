@@ -9,7 +9,8 @@ the **ESP32-S3-WROOM-1U-N16R8** board with a TCAN332DR on **TX = GPIO6,
 RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
 works in the brain's place (section 7). Section 8 tests something else: the
 brain updating itself over Ethernet (issue #5). Section 9 tests the brain
-flashing a parked node over CAN with its C host (Phase 2, issue #8).
+flashing a parked node over CAN with its C host (Phase 2, issue #8). Section 10
+tests node crash-loop and brain-forced recovery (Phase 3, issue #9).
 
 You need:
 
@@ -338,18 +339,19 @@ restart: can-flash's exit closed the channel (`C`), which stopped TWAI and
 dropped the frames still queued, and the next run reopens it. Bus-off, if it
 happens, recovers on its own.
 
-## 5. Recovery until Phase 3
+## 5. Recovery
 
-There is no GPIO recovery: GPIO4 is TWAI TX, and the bootloader would sample
-the transceiver's D line at reset. Software recovery (an RTC crash-loop
-counter, plus a flash boot counter the brain trips with EN pulses) arrives in
-Phase 3. Until then the ways into the updater are: a fresh board, the app
-calling `can_updater_client_enter_updater()` (`u` here), or rollback of an
-app that never marks itself valid.
+There is no GPIO recovery: GPIO4 is TWAI TX. The Phase 3 node bootloader
+instead selects `factory` after three crash resets or three power-on/EN boots
+without 10 seconds of stable uptime. The brain can deliberately trip the
+latter through its existing GPIO3-to-EN inverting stage. See section 10 for
+installation, timing, tests, and the distinction between forced recovery
+(which preserves `otadata`) and `u` (which erases it).
 
-If a confirmed app on the bench cannot reach the updater any more, erase
-`otadata` over USB. The bootloader then falls back to `factory` and nothing
-else is rewritten:
+Other entry paths still work: a fresh board, an app calling
+`can_updater_client_enter_updater()` (`u` here), and rollback of an app that
+never marks itself valid. As a USB fallback, erase only `otadata`; factory
+then remains selected until another image is flashed:
 
 ```sh
 python -m esptool --chip esp32s3 -p COM7 erase_region 0xe000 0x2000
@@ -359,7 +361,7 @@ python -m esptool --chip esp32s3 -p COM7 erase_region 0xe000 0x2000
 
 The brain (ESP32-S3-WROOM-1U-N16R8, TWAI TX GPIO6 / RX GPIO7) controls the
 node's EN (reset) from its **GPIO3**. That is the only brain-to-node wire
-besides CAN and ground. Reset pulses arrive with Phase 3.
+besides CAN and ground. Phase 3 uses four deliberate reset pulses (section 10).
 
 - **Polarity is inverted: GPIO3 HIGH = node held in reset, LOW = node runs.**
   Firmware on the brain drives GPIO3 push-pull LOW as early as possible
@@ -661,7 +663,7 @@ node connected over USB re-enumerates.
 The PC supplies the image over Ethernet; it is **not on the CAN bus**. The
 brain runs `brain_ota`, not the SLCAN bridge. The node must already be parked
 in its updater: use the bench app's `u` command or section 5's USB recovery.
-This phase neither remotely enters the updater nor pulses reset. **GPIO3
+`POST /node/recover` (section 10) can now park a running node first. **GPIO3
 stays LOW throughout staging, scanning and flashing.** Brain reboot caveats
 in section 8.5 still apply.
 
@@ -726,7 +728,7 @@ HELLO → SIZE → ERASE → DATA → VERIFY → GO from that partition. Poll st
 {"state":"flashing","percent":42,"bytes":81920,"total":191264,"status":"CAN transfer; awaiting VERIFY and GO"}
 ```
 
-States: `idle`, `staging`, `flashing`, `success`, `failed`. Bytes/percent refer
+States: `idle`, `staging`, `flashing`, `recovering`, `success`, `failed`. Bytes/percent refer
 to staged bytes while staging and accepted image bytes while flashing;
 **100% is not success until VERIFY and GO are ACKed.** On success expect
 `state:success`, `percent:100`, equal `bytes`/`total`, and `status` beginning
@@ -819,3 +821,168 @@ size/timeout errors, three-node discovery and every name length 0..32. A
 5099-byte deterministic image was cross-checked against the actual Python
 `CanFlasher`: all **857 frames / 6856 payload bytes** (HELLO through GO,
 including padding and sequence bytes) matched, CRC32 `0xBBCFA65A`.
+
+## 10. Node recovery (Phase 3, issue #9)
+
+Software-only recovery uses the existing inverted GPIO3-to-EN wire: no PCB
+change, signing, or CAN protocol change. The brain runs `brain_ota`, not the
+SLCAN bridge. HTTP recovery is unauthenticated: use a trusted bench LAN only.
+
+### 10.1 Install once over USB
+
+**Existing nodes need bootloader + partition table + updater flashed over
+USB once. The bootloader cannot be updated over CAN.** Follow section 3,
+with the brain already running to release the node's EN:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 node_updater
+powershell -ExecutionPolicy Bypass -File build.ps1 node_updater -p COM7 flash
+```
+
+This writes bootloader `0x0`, table `0x8000`, initial otadata `0xe000`, and
+updater `0x20000`. It resets OTA selection but preserves app slots and
+`cancfg`; do not add `erase-flash` if you need those. **`bootcnt`, data subtype
+`0x42`, occupies the previously unused `0x12000..0x12fff`.** All existing
+partition offsets and sizes are unchanged. Leave the updater running until
+`node_health: 10 s stable uptime: recovery counters cleared` before testing.
+Garbage in bootcnt is treated as zero unless it contains at least three
+exact valid records.
+
+Existing generated sdkconfig files retain old defaults. Save local settings,
+remove generated node/bench `sdkconfig` (and `skip/sdkconfig` for that variant),
+then run that project's `fullclean` and rebuild. Do not delete committed
+`sdkconfig.defaults`. All app builds must match this RTC contract:
+
+```ini
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC=y
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=0x10
+# CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_IN_CRC is not set
+```
+
+Call `can_updater_client_start_health()` once early in `app_main`, check its
+result, and keep the main task/deliberate restart caller on CPU0. The updater
+and bench variants already do this. Older app binaries retain flash-layout
+compatibility but lack the clean-restart mark and stable clear and may use
+the reserved RTC area; rebuild them for full recovery support. Flash-bit
+recovery itself does not require their cooperation.
+
+### 10.2 B — confirmed-app crash loop
+
+Build a separate short `crash` directory, alongside normal `build` and `skip`:
+
+```sh
+powershell -ExecutionPolicy Bypass -File build.ps1 examples/bench_app -B crash -D SDKCONFIG=crash/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.crash_loop" app
+./build.sh examples/bench_app -B crash -D SDKCONFIG=crash/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.crash_loop" app
+```
+
+The resulting `examples/bench_app/crash/bench_app.bin` marks itself **VALID**,
+waits about 2 seconds and `abort()`s on every boot. Unlike `skip`, this tests
+recovery of a confirmed image, not pending-image rollback. The existing
+section 2 `skip` build command is unchanged.
+
+1. Park the node (`u` or recovery below), then wait for its 10 s stable-clear
+   message so the test starts with zero counters.
+2. Flash through the brain's section 9 API:
+
+   ```sh
+   curl.exe -i --data-binary "@examples/bench_app/crash/bench_app.bin" "http://<ip>/node/flash?cmd=0x79E&reply=0x79F"
+   curl.exe http://<ip>/node/status
+   ```
+
+3. Flash `success` means VERIFY/GO succeeded, not that the app stays healthy.
+   Observe three abort resets. On the boot after abort 3, expect
+   `recovery: latched recovery -> factory (RTC 3, flash 1)`, then
+   `can_updater: parked`. Here `flash 1` is a boolean latch, not a count.
+4. Reset/EN-pulse factory before 10 s: it must remain in factory. Flash a
+   verified image immediately, without waiting for stable clear: GO clears
+   both counters before selecting/restarting the image. A small image that
+   reaches GO within 10 s must boot too. It must mark valid and keep running.
+
+Bootloader logs may only appear on UART0; USB re-enumeration can hide early
+boots. Use UART capture/logic analyzer for early timing and do not confuse
+opening a resetting serial monitor with a passive observation.
+
+### 10.3 C — brain-forced recovery
+
+Start with a normal VALID bench app running for more than 10 s. No app CAN
+handler is required. Use one of these alternative requests:
+
+```sh
+curl.exe -i -X POST http://<ip>/node/recover
+curl.exe -i -X POST "http://<ip>/node/recover?cmd=0x79E&reply=0x79F"
+curl.exe http://<ip>/node/status
+```
+
+POST returns **202**. Poll `GET /node/status` for `recovering`, then
+`success` or `failed`. For provisioned nodes supply both actual IDs. The
+brain sends **four pulses**, each **GPIO3 HIGH 100 ms** (node held reset),
+then **LOW 400 ms** (node runs), finally leaving LOW. From a healthy erased
+log, release 3 must select factory, and release 4 must still select factory.
+A genuinely torn write is ignored; one lost record can defer the third
+valid record until release 4. Persistent flash faults cannot be repaired
+by counting uncertain bits as evidence.
+
+The node records before app validation/loading, with no intentional delay
+and normally no erase. Verify EN-release-to-record latency is **well below
+400 ms on hardware**; a firmware build alone cannot measure it. `success`
+means the brain reached the updater. Immediately flash via section 9, even
+before 10 s: after successful VERIFY, GO clears and verifies both counters
+before changing otadata and restarting. Clear failure rejects GO and leaves
+the updater running. Verify the normal app boots; repeat with a small image
+whose GO occurs inside 10 s. Disconnect CAN and repeat: the node may park
+physically, but the brain must report failure without a valid updater reply.
+
+### 10.4 Normal resets, stable clear, and fault injection
+
+- Let the normal app run 10 s, power-cycle once, and confirm it boots normally.
+  Let it run 10 s again before another cycle. This must never trip. Three
+  rapid ordinary power cycles intentionally look like a recovery request.
+- Repeat flash/`u` re-entry. Deliberate `esp_restart()` must not increment the
+  RTC crash count. Its clean mark is consumed on the next software reset
+  only, never on a hardware WDT reset.
+- Reset at 9 s: evidence remains. The timer starts at the early health call,
+  not power-on or CAN discovery, and clears once after 10 s of uninterrupted
+  uptime. Confirm the clear log. An already erased sector is not erased again.
+- Both counts saturate at 3. RTC trips also latch flash so EN cannot release
+  them. Only the updater may clear a trip, after 10 s or after successful
+  VERIFY immediately before GO. Normal apps clear only untripped evidence.
+- Forced recovery does not change `otadata`. After clear, the updater keeps
+  running, but a later reset may boot the old selected app. Re-run recovery
+  if a failed transfer after clear returns there. By contrast `u` erases
+  otadata and remains parked. Forced recovery is not permanent app disabling.
+
+Flash mutation / interruption outcomes:
+
+| Operation | Interrupted by EN/power loss |
+|---|---|
+| Append 16 bytes using only 1→0 bits | Exact record counts; torn/weak records are ignored and their slots skipped. Read-back failure logs a warning and continues boot. No image is touched. |
+| Full **untripped** log wrap | Only after all 256 slots are consumed: erase, verify, restore prior count plus this boot. Interruption may lose evidence, intentionally failing toward normal boot. A tripped log never wraps. |
+| Stable clear / verified GO clear (one 4 KB erase) | After 10 s, or after successful VERIFY before GO. Partial erase leaves zero/some exact old records; later boots remain latched or use the prior selection. RTC clears only after flash clear verifies. Failed GO clear rejects GO without changing otadata. |
+| RTC/clean-mark update | Magic, bounded fields and check value reject garbage/interruption. Invalid state starts at zero (the current unclean reset can then count once). A flash latch remains authoritative. |
+
+The flash sector contains 256 independently recognizable 128-bit records.
+Three valid records trip; further rapid boots write nothing. Normal wear is
+**one sector erase per stable power-on session**, zero per clean SW restart
+when already empty. At an assumed conservative 10,000 erase endurance, one
+stable power cycle/day is about 27 years, ten/day about 2.7 years; check the
+actual in-package flash specification. Frequent stable power cycling, not
+a four-pulse burst, dominates wear. A bad/unreadable region never blocks boot.
+
+IDF v5.3.6 hooks cannot select the partition, so
+`node_updater/bootloader_components/main` overrides startup but retains IDF's
+hardware init, linker, image verification/loading and normal OTA rollback.
+Recovery chooses factory **before** normal OTA selection can change pending
+metadata. The 16-byte RTC record uses IDF's reserved FAST region, outside
+its CRC. IDF's independent retained-state CRC is established first so its
+image-loader update cannot zero the newly written custom state.
+
+Verified in pinned IDF source: `esp_system.c:esp_restart` runs shutdown
+handlers; `port/panic_handler.c:panic_restart` directly calls
+`esp_restart_noos`; hardware WDT resets execute no application shutdown
+code. S3 raw reason `0x01` aliases power-on, chip brownout and super-WDT,
+which are indistinguishable and all use the flash path.
+
+Host tests cover threshold, sticky trip, clear, one-use clean marks, RTC
+garbage, every single weak programmed bit, erased/garbage logs, and full-log
+wrap. Builds do not prove real EN timing, RTC retention, or brownout flash
+behavior: run the hardware checks above before deployment.

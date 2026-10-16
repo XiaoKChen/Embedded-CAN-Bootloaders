@@ -1,7 +1,7 @@
 # =============================================================================
 # CMakeLists.txt — ESP32-S3 CAN (TWAI) updater (ESP-IDF project, the node's)
 # =============================================================================
-# Builds the `factory` app (main/), the stock 2nd-stage bootloader configured
+# Builds the `factory` app (main/), the recovery 2nd-stage bootloader configured
 # by sdkconfig.defaults, and the partition table (partitions.csv).
 #   One command, tools included:  ./build.sh node_updater  (see README)
 #   With ESP-IDF v5.3 exported:   idf.py set-target esp32s3 build

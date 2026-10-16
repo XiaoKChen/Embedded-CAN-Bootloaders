@@ -13,6 +13,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "can_updater_client.h"
@@ -32,6 +33,7 @@
 #define ENTER_UPDATER_COMMAND  "u"
 #define CONSOLE_LINE_MAX       16u
 #define CONSOLE_POLL_MS        50u
+#define CRASH_DELAY_MS         2000u
 
 static const char *TAG = "bench_app";
 
@@ -137,8 +139,14 @@ static void serve_console_forever(void)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
+    ESP_ERROR_CHECK(can_updater_client_start_health());
     log_identity();
     confirm_image();
+#ifdef CONFIG_BENCH_APP_CRASH_LOOP
+    ESP_LOGW(TAG, "CRASH_LOOP: confirmed image will abort in 2 seconds");
+    vTaskDelay(pdMS_TO_TICKS(CRASH_DELAY_MS));
+    abort();
+#endif
     ESP_LOGI(TAG, "type 'u' + Enter to enter the CAN updater");
     serve_console_forever();
 }

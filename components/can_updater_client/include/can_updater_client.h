@@ -39,6 +39,24 @@ extern "C" {
  */
 esp_err_t can_updater_client_enter_updater(void);
 
+/**
+ * Call once, early in app_main (CPU0), before any deliberate esp_restart().
+ * Registers a clean-restart shutdown mark and clears recovery counters after
+ * 10 seconds of continuous uptime. A latched trip is cleared only in factory.
+ * App sdkconfig must reserve 0x10 custom RTC bytes, excluded from IDF CRC,
+ * exactly like node_updater/sdkconfig.defaults. Never call from an ISR.
+ * Returns an ESP error if registration/task setup fails.
+ */
+esp_err_t can_updater_client_start_health(void);
+
+/**
+ * Factory updater only: after successful image VERIFY, clear both recovery
+ * counters (read-back verifying flash) before GO selects/restarts the image.
+ * This permits immediate recovery + flash without waiting for stable uptime.
+ * Requires start_health() first. Failure must reject GO, not restart.
+ */
+esp_err_t can_updater_client_prepare_verified_boot(void);
+
 
 #ifdef __cplusplus
 }

@@ -29,6 +29,8 @@ guide. **The brain can also flash parked nodes itself over CAN** (Phase 2,
 issue #8): upload the node `.bin` over Ethernet to `/node/flash`, then poll
 `/node/status`; `/node/scan` discovers command/reply IDs. No PC CAN adapter
 is needed. See [section 9](docs/bench-test.md#9-brain-flashes-the-node-over-can-phase-2-issue-8).
+**Phase 3 recovery (#9)** also catches confirmed-app crash loops and lets the
+brain force the updater with `POST /node/recover`; see section 10 of that guide.
 
 ## Repository layout
 
@@ -45,7 +47,7 @@ is needed. See [section 9](docs/bench-test.md#9-brain-flashes-the-node-over-can-
 │   ├── boot_core/         compiles src/boot/ into the firmware
 │   ├── can_flash_host/    pure C scan/flash host (callbacks, no heap, host-tested)
 │   ├── can_link/          TWAI wrapper shared by updater, brain and bridge
-│   ├── can_updater_client/  app-side "enter the updater" call
+│   ├── can_updater_client/  app-side updater entry + 10 s recovery health tracking
 │   ├── node_reset/        the brain's GPIO3 reset line to the node
 │   └── slcan_codec/       pure-logic SLCAN parser/encoder (host-tested)
 ├── examples/bench_app/    minimal node OTA app for bench tests (docs/bench-test.md)
@@ -67,8 +69,8 @@ Flash an application `.bin` onto custom **ESP32-S3** boards over classic CAN
 on the `version/c-cpp/ra4m1` branch. Tracks issue #1.
 
 The updater is an ordinary ESP-IDF app living in the **`factory`** partition,
-booted by the stock ESP-IDF 2nd-stage bootloader. It receives an image over
-CAN, writes it to the inactive OTA slot with `esp_ota_*` (which validates the
+booted by an ESP-IDF 2nd-stage override with recovery counters. It receives
+an image over CAN, writes it to the inactive OTA slot with `esp_ota_*` (which validates the
 ESP image format, chip ID and SHA-256), and on GO selects that slot and
 restarts into it.
 
@@ -84,7 +86,8 @@ restarts into it.
   250 kbit/s**, matching the node board (ESP32-S3FH4R2 + TCAN332DR, issue
   #2). The brain (WROOM-1U-N16R8) uses GPIO6/GPIO7 at 250 kbit/s for its
   C CAN host, or can run the alternative USB-CAN bridge below. Its GPIO3
-  node-reset output stays LOW; reset pulses remain Phase 3.
+  node-reset output stays LOW except for an explicit `/node/recover` request
+  (four 100 ms HIGH / 400 ms LOW pulses through the inverting stage).
 - **No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO
   factory-reset is off (see below).
 
@@ -109,12 +112,13 @@ shared with `brain/`). Setup and tests: [docs/bench-test.md](docs/bench-test.md)
 
 | Partition | Offset | Size | Contents |
 |---|---|---|---|
-| bootloader | `0x0` | — | stock ESP-IDF 2nd stage (app rollback enabled) |
+| bootloader | `0x0` | — | ESP-IDF 2nd stage + recovery selection (rollback enabled) |
 | partition table | `0x8000` | 4 KB | |
 | `nvs` | `0x9000` | 20 KB | application data |
 | `otadata` | `0xE000` | 8 KB | which OTA slot boots (erased = boot `factory`) |
 | `phy_init` | `0x10000` | 4 KB | |
 | `cancfg` | `0x11000` | 4 KB | per-device CAN-ID / name block (optional) |
+| `bootcnt` | `0x12000` | 4 KB | recovery bit log (data subtype `0x42`); no existing offset moves |
 | `factory` | `0x20000` | 384 KB | **this CAN updater** (~50 % free) |
 | `ota_0` / `ota_1` | `0x80000` / `0x240000` | 1.75 MB each | the application |
 
@@ -124,19 +128,30 @@ shared with `brain/`). Setup and tests: [docs/bench-test.md](docs/bench-test.md)
 |---|---|
 | **App request** (`can_flash.py --enter-bootloader`) | the app calls `can_updater_client_enter_updater()` (`components/can_updater_client`), which selects `factory` and restarts — the ESP32 twin of the RA4M1 app writing the handoff magic and resetting |
 | **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
-| **Software recovery** (Phase 3, not yet) | an RTC crash-loop counter, plus a flash boot counter the brain can trip with EN pulses. There is no GPIO recovery: GPIO4 is TWAI TX, and the bootloader would sample the transceiver's D line at reset |
+| **Software recovery** (Phase 3, #9) | three unclean SW/panic/WDT resets in RTC, or three power-on/EN boots in a flash bit log, force `factory` without changing `otadata`. Trips remain latched until 10 s of updater uptime or a verified GO. Normal `esp_restart()` is marked clean by the client shutdown handler |
 
-The updater always parks waiting for the host. Because selecting `factory`
-erases `otadata`, a board stays in the updater across resets until an image is
-flashed — it is never bricked, and always reachable over CAN.
+The updater always parks waiting for the host. **App-requested** entry erases
+`otadata` and remains parked across resets. **Counter-forced** entry preserves
+`otadata`: after 10 s the counters clear but the updater keeps running; a
+later reset may boot the previously selected app. A verified GO also clears
+both counters before selecting the new image, so recovery can be followed
+immediately by a flash; no 10 s wait is needed.
+
+Apps must call `can_updater_client_start_health()` once early in `app_main`
+and reserve the same 16 custom RTC bytes as `node_updater/sdkconfig.defaults`.
+Rebuild older apps for clean-restart and stable-clear support. Existing nodes
+need a one-time USB bootloader/table/updater flash; CAN cannot replace the
+bootloader (bench guide section 10).
 
 ## Fail-safe
 
 Nothing in the update path writes the `factory` partition. The only
 boot-selection change is the `otadata` write on GO, which ESP-IDF makes atomic
-across its two sectors. Power loss before or during GO therefore comes back up
-in the updater; after GO the new app boots in `PENDING_VERIFY` and rolls back
-to the updater if it does not confirm itself. Full table:
+across its two sectors. With app-requested factory entry, power loss before
+GO comes back in the updater. With counter-forced entry, after stable clear
+the prior OTA selection remains the fallback; re-trigger recovery if needed.
+After GO the new app boots in `PENDING_VERIFY`; failure to confirm rolls back
+to the previous valid image (or factory when none exists). Full table:
 `node_updater/main/main.c`.
 
 ## CAN Update Protocol v1

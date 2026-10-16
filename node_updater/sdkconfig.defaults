@@ -13,8 +13,12 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # No GPIO factory-reset (CONFIG_BOOTLOADER_FACTORY_RESET): GPIO4 is the
 # node's TWAI TX, so the bootloader would sample the transceiver's D line at
-# reset. Software recovery (RTC crash-loop counter, EN-pulse boot counter)
-# arrives in Phase 3 (issue #2).
+# reset. Phase 3 recovery (#9) selects factory without modifying otadata.
+
+# Shared bootloader/app RTC contract; custom bytes have their own validation.
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC=y
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=0x10
+# CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_IN_CRC is not set
 
 # A hung updater resets (back into itself) instead of only logging.
 CONFIG_ESP_TASK_WDT_PANIC=y

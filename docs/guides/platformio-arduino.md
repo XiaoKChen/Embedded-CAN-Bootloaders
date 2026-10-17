@@ -79,6 +79,31 @@ custom_sdkconfig =
   is running from. Workaround used for the verification build: copy the
   Core's `tool-scons` into `packages_dir` under a name not starting with
   `tool-scons` (e.g. `<packages_dir>/core-tool-scons`) before building.
+- **Two limits that can rule `custom_sdkconfig` out** (found integrating the
+  SOLO ODU, #14):
+  - **No spaces in the project path.** ESP-IDF refuses a build directory
+    containing whitespace, and `-fmacro-prefix-map` breaks on a project
+    directory with one. A `subst` drive does not help: parts of the build
+    resolve it back to the real path.
+  - **No TinyUSB.** The rebuilt libraries lack the `arduino_tinyusb`
+    component, so `-DARDUINO_USB_MODE=0` (USB-OTG CDC, custom USB
+    descriptors) no longer compiles (`'USBSerial' was not declared`); only
+    mode 1 (the chip's USB-Serial-JTAG) works.
+
+  **Stock-core alternative.** Skip `custom_sdkconfig` and
+  `custom_can_updater_client`, and implement in the app what needs no RTC
+  state: after `BOOT_COUNTER_STABLE_MS` of uptime, scan the `bootcnt`
+  partition with `boot_counter_log_scan()` and, unless it tripped, erase and
+  verify it (the flash half of `clear_counters()` in
+  `components/can_updater_client/recovery.c`); enter the updater by selecting
+  `factory` and restarting, as `can_updater_client_enter_updater()` does.
+  This keeps power-cycle bursts from stranding the node and keeps the
+  brain's GPIO3 recovery working. It gives up the RTC crash-loop counter and
+  the clean-restart mark: the stock core does not reserve the 16 RTC bytes,
+  so the app may overwrite them (the bootloader then reads them as zero), and
+  an already-confirmed image that later crash-loops is not caught. A new
+  unconfirmed image still rolls back. Reference:
+  `Airform-SOLO-ODU-Controller/src/can_update/can_update.cpp`.
 - **Defer mark-valid.** Arduino's `initArduino()` marks a PENDING_VERIFY image
   valid before `setup()`, which defeats rollback into the updater. Opt out and
   confirm after the app's own self-test:

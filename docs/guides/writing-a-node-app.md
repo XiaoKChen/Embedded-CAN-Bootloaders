@@ -30,7 +30,8 @@ bitrate (**Node app CAN** menu) must match the updater
 
 ## Integrating an existing application
 
-An application that should be updatable over CAN:
+An application that should be updatable over CAN (an Arduino-ESP32 / PlatformIO
+app: [platformio-arduino.md](platformio-arduino.md)):
 
 1. **Use the updater's layout.** Copy `node_updater/partitions.csv` (or point
    at it, as `examples/bench_app` does) and set, in the app's

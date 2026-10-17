@@ -3,14 +3,17 @@
 # the app's sdkconfig reserves the node bootloader's custom RTC bytes, which a
 # brain build does not. A node environment opts in with
 # `custom_can_updater_client = yes`.
-import os
-
+#
+# This script runs once per library builder, and pioarduino creates builders
+# more than once per build (espidf.py resets the builder cache). So it only
+# extends this builder's srcFilter, which the builder reads when it is built;
+# library.json's srcFilter takes precedence over env SRC_FILTER, so it is
+# edited in the builder's manifest.
 Import("env", "pio_lib_builder")
 
 if env.GetProjectOption("custom_can_updater_client", "no").strip().lower() in ("yes", "true", "1"):
-    client_dir = os.path.join("components", "can_updater_client")
-    env.BuildSources(
-        os.path.join(pio_lib_builder.build_dir, client_dir),
-        os.path.join(pio_lib_builder.path, client_dir),
-        ["+<can_updater_client.c>", "+<recovery.c>"],
-    )
+    build = pio_lib_builder._manifest["build"]
+    build["srcFilter"] = list(build["srcFilter"]) + [
+        "+<components/can_updater_client/can_updater_client.c>",
+        "+<components/can_updater_client/recovery.c>",
+    ]

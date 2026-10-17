@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define UPDATE_PKG_MAGIC "ECBPKG\0\0"
 #define UPDATE_PKG_MAGIC_SIZE 8u
 #define UPDATE_PKG_VERSION 1u
@@ -63,5 +67,9 @@ typedef enum {
 update_pkg_status_t update_pkg_parse(const uint8_t *buf, size_t available,
                                      uint32_t package_size, update_pkg_t *out);
 const char *update_pkg_status_text(update_pkg_status_t status);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define BOOT_COUNTER_LIMIT 3u
 #define BOOT_COUNTER_STABLE_MS 10000u
 #define BOOT_COUNTER_PARTITION_LABEL "bootcnt"
@@ -43,5 +47,9 @@ bool boot_counter_rtc_boot(boot_counter_rtc_t *rtc, boot_counter_reset_t reset);
 boot_counter_log_t boot_counter_log_scan(const void *data, size_t size);
 bool boot_counter_log_wrap(const boot_counter_log_t *log);
 extern const uint32_t boot_counter_record[BOOT_COUNTER_RECORD_BYTES / sizeof(uint32_t)];
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -35,6 +35,7 @@ Start with [getting-started/build.md](getting-started/build.md), then
 |---|---|
 | [updating-nodes.md](guides/updating-nodes.md) | flash nodes via package, brain `/node/flash`, or `can_flash.py` |
 | [writing-a-node-app.md](guides/writing-a-node-app.md) | start from `examples/node_app`, integrate `can_updater_client`, recovery contract |
+| [platformio-arduino.md](guides/platformio-arduino.md) | the shared code as a PlatformIO library for Arduino-ESP32 node and brain apps |
 | [provisioning-can-ids.md](guides/provisioning-can-ids.md) | per-device CAN IDs and INFO name in `cancfg` |
 | [slcan-bridge.md](guides/slcan-bridge.md) | the brain as an SLCAN USB-CAN adapter for PC tools |
 

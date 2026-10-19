@@ -98,6 +98,25 @@ typedef struct {
     char name[DFU_CONFIG_STR_MAX + 1u]; /* raw ASCII bytes + NUL; use name_len */
 } can_flash_host_info_t;
 
+typedef enum {
+    CAN_FLASH_HOST_NODE_UPDATER = 0, /* parked in its updater: answers INFO */
+    CAN_FLASH_HOST_NODE_APP,         /* running its app: answers APP_INFO   */
+} can_flash_host_node_mode_t;
+
+/* One discovered node. UPDATER fills name_len/name (INFO); APP fills
+ * project/version (APP_INFO, NUL-terminated, no embedded NULs). The fields of
+ * the other mode are zeroed. */
+typedef struct {
+    can_flash_host_node_mode_t mode;
+    uint16_t cmd_id;
+    uint16_t reply_id;
+    uint8_t protocol_version;
+    uint8_t name_len;
+    char name[DFU_CONFIG_STR_MAX + 1u];
+    char project[APP_CONTROL_STR_MAX + 1u];
+    char version[APP_CONTROL_STR_MAX + 1u];
+} can_flash_host_node_t;
+
 typedef struct {
     void *user;
     /* send must wait for queue space up to timeout_ms; report permanent errors.
@@ -117,12 +136,24 @@ typedef struct {
  * are used for retry and CRC). All output storage is caller-owned. */
 can_flash_host_status_t can_flash_host_info(can_flash_host_t *host, uint16_t cmd_id,
                                            uint16_t reply_id, can_flash_host_info_t *info);
-/* Probe sorted unique range + legacy 0x79E + known IDs 1/3/5/7/9, just as Python.
+/* Parked updaters only: a running app is silent to INFO (see _discover).
+ * Probe sorted unique range + legacy 0x79E + known IDs 1/3/5/7/9, just as Python.
  * One 300 ms probe per ID; arbitrary reply pairing. count = stored hits.
  * CAPACITY means more hits exist than max; never writes beyond results[max]. */
 can_flash_host_status_t can_flash_host_scan(can_flash_host_t *host, uint16_t from,
                                            uint16_t to, can_flash_host_info_t results[],
                                            uint32_t max, uint32_t *count);
+/* Like can_flash_host_scan over the same candidate IDs, but finds running apps
+ * too. Each ID is probed with APP_INFO first, listening on any standard reply
+ * ID: an app's complete valid burst reports APP; the updater's unknown-command
+ * NAK (0x05/0x00) triggers the INFO exchange and reports UPDATER; silence or
+ * anything else is skipped. Silent IDs cost one CAN_FLASH_HOST_SCAN_MS window
+ * (as scan); a parked updater costs up to two. Like app requests, stale frames
+ * are flushed without a quiet-bus wait, so a busy bus does not stall it.
+ * Results are sorted by cmd ID; count/CAPACITY as scan. */
+can_flash_host_status_t can_flash_host_discover(can_flash_host_t *host, uint16_t from,
+                                               uint16_t to, can_flash_host_node_t results[],
+                                               uint32_t max, uint32_t *count);
 /* HELLO -> SIZE -> ERASE -> DATA -> VERIFY -> GO. Four attempts, 2 s ACK,
  * 15 s ERASE, early NAK poll every frame (1 ms every 32), 150 ms quiet drain.
  * Rewinds resolve only current/next window. Unlike Python, a final DATA timeout

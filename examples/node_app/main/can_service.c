@@ -1,15 +1,16 @@
-/* =============================================================================
- * can_service.c — The node app's side of the CAN update protocol
- * =============================================================================
- * See can_service.h. Requests and replies are encoded by the shared, host-
- * tested codec (src/boot/app_control.c); this file only moves frames.
+/**
+ * @file    can_service.c
+ * @brief   The node app's side of the CAN update protocol (see can_service.h for the contract).
  *
- * ENTER_UPDATER ordering: ACK first, let it drain, then
- * can_updater_client_enter_updater() selects `factory` and calls esp_restart().
- * That restart passes the client's shutdown handler, so Phase 3 recovery
- * counts it as clean, not as a crash. A lost ACK is harmless: the host's retry
- * reaches the freshly booted updater, whose NAK also means "entered".
- * ============================================================================= */
+ * Implementation notes: requests and replies are encoded by the shared, host-tested codec
+ * (src/boot/app_control.c); this file only moves frames. ENTER_UPDATER ordering: ACK first, let
+ * it drain, then can_updater_client_enter_updater() selects `factory` and calls esp_restart().
+ * That restart passes the client's shutdown handler, so Phase 3 recovery counts it as clean, not
+ * as a crash. A lost ACK is harmless: the host's retry reaches the freshly booted updater, whose
+ * NAK also means "entered".
+ *
+ * @see     can_service.h, app_control.h
+ */
 
 #include "can_service.h"
 

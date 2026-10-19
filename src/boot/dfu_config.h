@@ -1,19 +1,27 @@
-/* =============================================================================
- * dfu_config.h — Pure-logic parse/validate of the flash-time DFU config block
- * =============================================================================
- * At boot the bootloader reads a config block from RA4M1 data flash
- * (memory_map.h DFU_CONFIG_ADDR) to override two things:
- *   1. the compiled USB DFU manufacturer (string index 1) and product
- *      (string index 2) strings, and
- *   2. (v2 only) the per-device CAN update IDs, so several boards can sit in
- *      bootloader mode on one bus and each be addressed individually.
- * An absent or invalid block => fall back to the compiled defaults, so
- * unprovisioned boards behave exactly as before.
+/**
+ * @file    dfu_config.h
+ * @brief   Pure-logic parse/validate of the flash-time DFU config block.
  *
- * FROZEN SHARED CONTRACT — identical in the provisioning flasher(s). Do not
- * change any value or offset here without changing it there in lock-step. Two
- * on-disk versions coexist; the bootloader accepts BOTH on read:
+ * At boot the bootloader reads a config block from RA4M1 data flash (memory_map.h
+ * DFU_CONFIG_ADDR) to override the compiled USB DFU manufacturer (string index 1) and product
+ * (string index 2) strings and, v2 only, the per-device CAN update IDs, so several boards can sit
+ * in bootloader mode on one bus and each be addressed individually. An absent or invalid block
+ * => fall back to the compiled defaults, so unprovisioned boards behave exactly as before.
  *
+ * Owns:         The block layout (v1 and v2, below), its magic, offsets and validity rules.
+ * Not here:     Reading data flash (the bootloader); the default IDs (boot_config.h).
+ * Invariants:   FROZEN SHARED CONTRACT — identical in the provisioning flasher(s). Do not change
+ *               any value or offset here without changing it there in lock-step. Two on-disk
+ *               versions coexist; the bootloader accepts BOTH on read.
+ * Errors:       dfu_config_parse() returns dfu_config_status_t and leaves its out-params
+ *               untouched on failure; dfu_config_can_ids() always yields usable IDs.
+ * Depends on:   Pure C over a byte buffer — no flash or peripheral access — so it compiles and
+ *               unit-tests on the host (tests/), mirroring image_validate.{h,c}.
+ *
+ * @see     dfu_config.c, test_dfu_config.c, docs/guides/provisioning-can-ids.md
+ */
+
+/*
  * v1 (version byte = 1, 76 bytes) — no CAN-ID fields, defaults used for IDs:
  *   0x00 u32  magic    = DFU_CONFIG_MAGIC
  *   0x04 u8   version  = 1
@@ -34,10 +42,7 @@
  * AND mfr_len <= 32 AND prod_len <= 32 AND the version's crc32 matches. A CAN-ID
  * field that is not a valid 11-bit value (0x000..0x7FF; 0xFFFF/out-of-range =
  * unset) falls back to that ID's compiled default individually.
- *
- * Pure C over a byte buffer — no flash or peripheral access — so it compiles
- * and unit-tests on the host (tests/), mirroring image_validate.{h,c}.
- * ============================================================================= */
+ */
 
 #ifndef DFU_CONFIG_H
 #define DFU_CONFIG_H

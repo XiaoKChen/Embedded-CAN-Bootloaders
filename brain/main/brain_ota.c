@@ -1,16 +1,20 @@
-/* =============================================================================
- * brain_ota.c — Brain self-update over Ethernet: entry point and self-test
- * =============================================================================
- * Bench firmware for the brain (ESP32-S3-WROOM-1U-N16R8, W5500 on SPI2):
- *   - drives GPIO3 LOW first, so the node is not held in reset;
- *   - logs its version, running slot and OTA state;
- *   - brings up Ethernet (DHCP) and the HTTP server (GET /, POST /ota);
- *   - when it boots as a fresh OTA image (PENDING_VERIFY), its self-test is
- *     "Ethernet got an IP within SELF_TEST_IP_TIMEOUT_MS": it then marks
- *     itself valid, otherwise it rolls back and reboots. A
- *     CONFIG_BRAIN_OTA_SKIP_MARK_VALID build stays PENDING_VERIFY, so the
- *     next reset rolls it back (docs/testing/bench/brain-ota.md).
- * ============================================================================= */
+/**
+ * @file    brain_ota.c
+ * @brief   Brain firmware entry point: self-update over Ethernet and its self-test.
+ *
+ * Bench firmware for the brain (ESP32-S3-WROOM-1U-N16R8, W5500 on SPI2). It logs its version,
+ * running slot and OTA state, then brings up the node CAN host, Ethernet (DHCP) and the HTTP
+ * server (GET /, POST /ota).
+ *
+ * Owns:         Boot order: GPIO3 is driven LOW first, so the node is not held in reset.
+ * Invariants:   When it boots as a fresh OTA image (PENDING_VERIFY), its self-test is "Ethernet
+ *               got an IP within SELF_TEST_IP_TIMEOUT_MS": it then marks itself valid, otherwise
+ *               it rolls back and reboots. A CONFIG_BRAIN_OTA_SKIP_MARK_VALID build stays
+ *               PENDING_VERIFY, so the next reset rolls it back (docs/testing/bench/brain-ota.md).
+ * Depends on:   eth_w5500.h, http_ota_server.h, node_flash.h, ota_update.h, node_reset.h.
+ *
+ * @see     http_ota_server.h, docs/testing/bench/brain-ota.md
+ */
 
 #include <inttypes.h>
 #include <stdbool.h>

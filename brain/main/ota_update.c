@@ -1,8 +1,13 @@
-/* =============================================================================
- * ota_update.c — Transport-independent A/B self-update of the running app
- * =============================================================================
- * See ota_update.h for the public interface and the power-loss table.
- * ============================================================================= */
+/**
+ * @file    ota_update.c
+ * @brief   Transport-independent A/B self-update of the running app (see ota_update.h for the
+ *          contract).
+ *
+ * Implementation notes: esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES) erases the inactive slot sector
+ * by sector as the image arrives; the session lives in file-local state only.
+ *
+ * @see     ota_update.h
+ */
 
 #include "ota_update.h"
 

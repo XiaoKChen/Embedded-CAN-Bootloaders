@@ -1,11 +1,18 @@
-/* =============================================================================
- * node_reset.h — the brain's reset line to the node
- * =============================================================================
- * The brain drives the node's EN (reset) from CONFIG_NODE_RESET_GPIO (GPIO3)
- * through an inverting stage: HIGH holds the node in reset, LOW lets it run.
- * Shared by every firmware that runs on the brain (brain/, the SLCAN bridge).
- * A pulse train forces the node into recovery and always finishes LOW.
- * ============================================================================= */
+/**
+ * @file    node_reset.h
+ * @brief   The brain's reset line to the node.
+ *
+ * The brain drives the node's EN (reset) from CONFIG_NODE_RESET_GPIO (GPIO3) through an inverting
+ * stage: HIGH holds the node in reset, LOW lets it run. Shared by every firmware that runs on the
+ * brain (brain/, the SLCAN bridge).
+ *
+ * Owns:         The reset GPIO and the recovery pulse-train timing.
+ * Invariants:   A pulse train forces the node into recovery and always finishes LOW.
+ * Concurrency:  node_reset_pulse_train() blocks for the requested time: call it only from a task.
+ * Errors:       Calls return esp_err_t: ESP_OK, an invalid argument or the GPIO driver's error.
+ *
+ * @see     node_reset.c, docs/concepts/recovery.md
+ */
 
 #ifndef NODE_RESET_H
 #define NODE_RESET_H

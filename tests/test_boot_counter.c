@@ -1,3 +1,20 @@
+/**
+ * @file    test_boot_counter.c
+ * @brief   Host-side Unity tests for the recovery counters (boot_counter.h).
+ *
+ * A RAM byte buffer stands in for the bootcnt flash partition and is erased (0xFF) before every
+ * test.
+ *
+ * Covers:       RTC threshold, sticky trip and clear; RTC garbage and power-on; one-use,
+ *               software-only clean marks; empty and truncated logs; a torn record at every bit;
+ *               garbage, full-log wrap and full trip; the log threshold; the verified-boot clear
+ *               releasing both latches.
+ * Not covered:  Real EN timing, RTC retention and flash behaviour on the chip (boot.c,
+ *               recovery.c; the bench tests).
+ *
+ * @see     boot_counter.h, docs/concepts/recovery.md, rules/testing.md
+ */
+
 #include "boot_counter.h"
 #include "unity.h"
 #include <string.h>

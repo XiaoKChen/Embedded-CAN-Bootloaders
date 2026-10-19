@@ -1,8 +1,12 @@
-/* =============================================================================
- * slcan_codec.c — SLCAN (Lawicel) line parser and encoder
- * =============================================================================
- * See slcan_codec.h for the supported subset and the reply strings.
- * ============================================================================= */
+/**
+ * @file    slcan_codec.c
+ * @brief   SLCAN (Lawicel) line parser and encoder (see slcan_codec.h for the contract).
+ *
+ * Implementation notes: hex fields are parsed digit by digit against an exact length; the
+ * bitrate table is Lawicel S0..S8, python-can's table without its non-standard S9.
+ *
+ * @see     slcan_codec.h, test_slcan_codec.c
+ */
 
 #include "slcan_codec.h"
 

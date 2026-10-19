@@ -1,3 +1,17 @@
+/**
+ * @file    package_update.c
+ * @brief   Brain + nodes update packages (see package_update.h for the contract).
+ *
+ * Implementation notes: the upload is erased, written and read back into pkg chunk by chunk, then
+ * the manifest, every payload SHA-256 and each image envelope are checked before 202. A changed
+ * brain image is written and verified into the inactive slot, the pending record saved, and the
+ * brain restarts; after boot, resume() checks the running image against the record before
+ * relaying. Per node: ENTER_UPDATER over CAN, then INFO, then the GPIO3 pulse train if nothing
+ * answered. NVS is never erased to hide an initialization failure.
+ *
+ * @see     package_update.h, update_pkg.h, node_flash.h
+ */
+
 #include "package_update.h"
 
 #include <inttypes.h>

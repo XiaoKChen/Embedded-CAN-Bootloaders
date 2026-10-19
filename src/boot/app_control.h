@@ -1,15 +1,23 @@
-/* =============================================================================
- * app_control.h — CAN Update Protocol v1 app-control extension codec
- * =============================================================================
- * APP_INFO / ENTER_UPDATER are answered by a RUNNING node app on the node's own
- * update IDs (opcodes, markers and the frame layout: can_update.h). The
- * updater's engine NAKs both as unknown commands, which is what lets a host
- * tell "app answered" from "node already parked in its updater".
+/**
+ * @file    app_control.h
+ * @brief   Codec for the CAN Update Protocol v1 app-control extension (APP_INFO, ENTER_UPDATER).
  *
- * Pure byte-buffer codec shared by both ends: the node app parses requests and
- * encodes replies; the host (can_flash_host, tools/can-flash) encodes requests
- * and classifies/decodes replies. No hardware, no heap.
- * ============================================================================= */
+ * APP_INFO / ENTER_UPDATER are answered by a RUNNING node app on the node's own update IDs. The
+ * updater's engine NAKs both as unknown commands, which is what lets a host tell "app answered"
+ * from "node already parked in its updater".
+ *
+ * Owns:         The app-control request/reply encoding, reply classification and the 9-frame
+ *               APP_INFO layout, shared by both ends: the node app parses requests and encodes
+ *               replies; the host (can_flash_host, tools/can-flash) encodes requests and
+ *               classifies/decodes replies.
+ * Not here:     Opcodes, markers and the frame layout (can_update.h); moving frames on the bus
+ *               (examples/node_app can_service.c, can_flash_host).
+ * Errors:       A bad DLC/version/key parses as APP_CONTROL_REQ_MALFORMED;
+ *               app_control_decode_info() fails closed (false, out untouched).
+ * Depends on:   can_update.h only. Pure byte-buffer codec: no hardware, no heap.
+ *
+ * @see     app_control.c, can_update.h, test_app_control.c
+ */
 
 #ifndef APP_CONTROL_H
 #define APP_CONTROL_H

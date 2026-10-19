@@ -1,15 +1,18 @@
-/* =============================================================================
- * image_validate.h — Pure-logic validation of the application image
- * =============================================================================
- * No flash or peripheral access: operates on a byte buffer standing in for
- * code flash, so it compiles and unit-tests on the host (tests/). Per
- * rules/bootloader.md: never jump to an image that has not passed
- * image_validate().
+/**
+ * @file    image_validate.h
+ * @brief   Pure-logic validation of the application image.
  *
- * Check order (fail closed, first failure wins):
- *   magic -> header CRC -> size bounds -> initial SP -> entry point ->
- *   payload CRC.
- * ============================================================================= */
+ * Operates on a byte buffer standing in for code flash, so it compiles and unit-tests on the host
+ * (tests/). Per rules/bootloader.md: never jump to an image that has not passed image_validate().
+ *
+ * Invariants:   Check order (fail closed, first failure wins): magic -> header CRC -> size
+ *               bounds -> initial SP -> entry point -> payload CRC. The result codes follow that
+ *               order and are a frozen contract.
+ * Errors:       Returns IMAGE_VALID, or the image_validate_result_t of the first failed check.
+ * Depends on:   image_header.h and memory_map.h; no flash or peripheral access.
+ *
+ * @see     image_validate.c, test_image_validate.c, rules/bootloader.md
+ */
 
 #ifndef IMAGE_VALIDATE_H
 #define IMAGE_VALIDATE_H

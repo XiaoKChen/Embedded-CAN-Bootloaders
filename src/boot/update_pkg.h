@@ -1,4 +1,20 @@
-/* Package v1 wire layout is specified in docs/reference/package-format.md. */
+/**
+ * @file    update_pkg.h
+ * @brief   Pure-logic parser for the v1 update package manifest (.ecbpkg).
+ *
+ * Decodes and validates the header and entry table of a brain + nodes update package so the
+ * brain can stage it and relay each payload. Package v1 wire layout is specified in
+ * docs/reference/package-format.md.
+ *
+ * Owns:         The v1 format constants and the decoded manifest (update_pkg_t).
+ * Not here:     Payload reads and SHA-256 checks (brain/main/package_update.c); the deployment
+ *               slot limits, which the caller checks.
+ * Errors:       update_pkg_parse() returns update_pkg_status_t; update_pkg_status_text() names
+ *               each code.
+ * Depends on:   crc32.h. Pure C: no hardware, host-tested.
+ *
+ * @see     update_pkg.c, test_update_pkg.c, docs/reference/package-format.md
+ */
 #ifndef UPDATE_PKG_H
 #define UPDATE_PKG_H
 

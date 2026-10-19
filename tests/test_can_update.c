@@ -1,12 +1,17 @@
-/* =============================================================================
- * test_can_update.c — Host-side Unity tests for the CAN update state machine
- * =============================================================================
- * Fake slot HAL over a static 32 KB array with NOR-like semantics (program
- * only into erased bytes, window-aligned offsets enforced). Covers the happy
- * path end-to-end (transfer -> read-back CRC -> commit -> activate on GO),
- * every NAK path, window rewind after a seq gap, flash/read/commit/activate
- * failure injection, and the final short window.
- * ============================================================================= */
+/**
+ * @file    test_can_update.c
+ * @brief   Host-side Unity tests for the CAN update state machine.
+ *
+ * Fake slot HAL over a static 32 KB array with NOR-like semantics (program only into erased
+ * bytes, window-aligned offsets enforced).
+ *
+ * Covers:       The happy path end-to-end (transfer -> read-back CRC -> commit -> activate on GO),
+ *               every NAK path, window rewind after a seq gap, flash/read/commit/activate failure
+ *               injection, the final short window, and per-device command-ID matching.
+ * Not covered:  The ESP-IDF slot HAL (node_updater/main/main.c) and INFO.
+ *
+ * @see     can_update.h, rules/testing.md
+ */
 
 #include <string.h>
 

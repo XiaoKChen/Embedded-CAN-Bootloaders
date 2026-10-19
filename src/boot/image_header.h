@@ -1,16 +1,22 @@
-/* =============================================================================
- * image_header.h — Application image metadata layout
- * =============================================================================
- * A 16-byte little-endian metadata record lives at METADATA_ADDR (the last
- * 2 KB flash block, see memory_map.h). It is written LAST during an update:
- * power loss at any earlier instant leaves the block erased, the image
- * unvalidated, and the device parked in the bootloader — never bricked.
+/**
+ * @file    image_header.h
+ * @brief   Application image metadata layout: the 16-byte record at METADATA_ADDR.
  *
- * image_crc32 covers flash [APP_BASE, APP_BASE + image_size).
- * header_crc32 covers the first 12 bytes of this record as stored in flash.
+ * A 16-byte little-endian metadata record lives at METADATA_ADDR (the last 2 KB flash block, see
+ * memory_map.h) and describes the application image that image_validate() checks.
  *
- * Pure host-compilable header: <stdint.h> only, no target includes.
- * ============================================================================= */
+ * Owns:         The image_meta_t layout and the coverage of its two CRCs.
+ * Not here:     The magic value (boot_config.h); validation (image_validate.h); addresses
+ *               (memory_map.h).
+ * Invariants:   The record is written LAST during an update: power loss at any earlier instant
+ *               leaves the block erased, the image unvalidated, and the device parked in the
+ *               bootloader — never bricked. image_crc32 covers flash [APP_BASE, APP_BASE +
+ *               image_size); header_crc32 covers the first 12 bytes of this record as stored in
+ *               flash.
+ * Depends on:   <stdint.h> and boot_config.h: a pure host-compilable header, no target includes.
+ *
+ * @see     image_validate.h, memory_map.h, boot_config.h
+ */
 
 #ifndef IMAGE_HEADER_H
 #define IMAGE_HEADER_H

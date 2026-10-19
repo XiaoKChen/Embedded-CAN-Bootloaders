@@ -1,11 +1,20 @@
-/* =============================================================================
- * test_can_flash_host.c — Host vs real node engine, RAM slot and fake clock
- * =============================================================================
- * A node is either parked (the real can_update engine, plus INFO) or running
- * its app (s_app_mode: answers only APP_INFO / ENTER_UPDATER through the same
- * app_control codec as examples/node_app; ENTER "restarts" it into the
- * updater).
- * ============================================================================= */
+/**
+ * @file    test_can_flash_host.c
+ * @brief   Host-side Unity tests for can_flash_host against the real node engine, a RAM slot and a
+ *          fake clock.
+ *
+ * A node is either parked (the real can_update engine, plus INFO) or running its app (s_app_mode:
+ * answers only APP_INFO / ENTER_UPDATER through the same app_control codec as examples/node_app;
+ * ENTER "restarts" it into the updater).
+ *
+ * Covers:       Clean multi-window flashes; lost, dropped and duplicate frames and ACKs;
+ *               sequence wrap and rewind; clock wrap; CRC, size and image rejection; flash
+ *               failure retry; INFO, scan and discovery (mixed apps and updaters, capacity,
+ *               foreign frames); APP_INFO and ENTER_UPDATER outcomes; transport errors.
+ * Not covered:  Real TWAI timing and bus-off (can_link, the bench tests).
+ *
+ * @see     can_flash_host.h, can_update.h, app_control.h, rules/testing.md
+ */
 #include <stdio.h>
 #include <string.h>
 #include "unity.h"

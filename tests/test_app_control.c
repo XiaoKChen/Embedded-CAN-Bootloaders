@@ -1,10 +1,17 @@
-/* =============================================================================
- * test_app_control.c — App-control extension codec (APP_INFO / ENTER_UPDATER)
- * =============================================================================
- * Golden vectors (shared with tools/can-flash check_app_control_vector), the
- * request parser's fail-closed paths, reply classification against the REAL
- * updater engine's NAK, and APP_INFO decode rejecting partial/foreign bursts.
- * ============================================================================= */
+/**
+ * @file    test_app_control.c
+ * @brief   Host-side Unity tests for the app-control extension codec (APP_INFO / ENTER_UPDATER).
+ *
+ * Pure logic on byte buffers; reply classification runs against the REAL updater engine.
+ *
+ * Covers:       Golden vectors (shared with tools/can-flash check_app_control_vector), the
+ *               request parser's fail-closed paths, reply classification against the real
+ *               updater engine's NAK, every APP_INFO string length and truncation, and APP_INFO
+ *               decode rejecting partial/foreign bursts.
+ * Not covered:  Moving frames on a bus (test_can_flash_host.c; the node app on the bench).
+ *
+ * @see     app_control.h, can_update.h, rules/testing.md
+ */
 
 #include <string.h>
 

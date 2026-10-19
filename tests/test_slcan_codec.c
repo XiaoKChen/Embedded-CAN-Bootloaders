@@ -1,12 +1,17 @@
-/* =============================================================================
- * test_slcan_codec.c — Host-side Unity tests for the SLCAN (Lawicel) codec
- * =============================================================================
- * Exercises the codec at its seam: CR-stripped command lines in, encoded
- * reply/frame lines out. Covers python-can's exact open sequence, every
- * S0..S8 bitrate, standard/extended/RTR frames at DLC 0..8, the malformed
- * lines the bridge must NAK, and encode -> parse round-trips.
+/**
+ * @file    test_slcan_codec.c
+ * @brief   Host-side Unity tests for the SLCAN (Lawicel) codec.
+ *
+ * Exercises the codec at its seam: CR-stripped command lines in, encoded reply/frame lines out.
  * Pure logic: no hardware, mirrors test_image_validate.c.
- * ============================================================================= */
+ *
+ * Covers:       python-can's exact open sequence, every S0..S8 bitrate, standard/extended/RTR
+ *               frames at DLC 0..8, the malformed lines the bridge must NAK, and encode -> parse
+ *               round-trips.
+ * Not covered:  The USB and TWAI I/O of the bridge (examples/slcan_bridge).
+ *
+ * @see     slcan_codec.h, rules/testing.md
+ */
 
 #include <string.h>
 

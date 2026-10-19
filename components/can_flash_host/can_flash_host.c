@@ -1,6 +1,15 @@
-/* =============================================================================
- * can_flash_host.c — Blocking host protocol over injected bus and image callbacks
- * ============================================================================= */
+/**
+ * @file    can_flash_host.c
+ * @brief   Blocking host protocol over injected bus and image callbacks (see can_flash_host.h for
+ *          the contract).
+ *
+ * Implementation notes: every wait is bounded by a deadline measured with clock_ms(), modulo
+ * 2^32. Updater requests first drain the bus until it has been quiet for
+ * CAN_FLASH_HOST_QUIET_MS; app-control requests only flush the frames already queued, because
+ * running apps keep the bus busy.
+ *
+ * @see     can_flash_host.h, test_can_flash_host.c
+ */
 #include "can_flash_host.h"
 
 #include <inttypes.h>

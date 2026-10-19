@@ -1,15 +1,18 @@
-/* =============================================================================
- * bench_app.c — Minimal OTA app for bench-testing the ESP32-S3 CAN updater
- * =============================================================================
- * Delivered over CAN by tools/can-flash (docs/testing/bench/node-updater.md). It:
- *   - logs its version, running partition and OTA state at boot;
- *   - after a trivial self-test confirms itself with
- *     esp_ota_mark_app_valid_cancel_rollback(), unless
- *     CONFIG_BENCH_APP_SKIP_MARK_VALID leaves it PENDING_VERIFY so the next
- *     reset rolls back into the updater;
- *   - on the console, `u` + Enter calls can_updater_client_enter_updater().
- * It sends no CAN traffic of its own.
- * ============================================================================= */
+/**
+ * @file    bench_app.c
+ * @brief   Minimal OTA app for bench-testing the ESP32-S3 CAN updater.
+ *
+ * Delivered over CAN by tools/can-flash (docs/testing/bench/node-updater.md). It logs its version,
+ * running partition and OTA state at boot; on the console, `u` + Enter calls
+ * can_updater_client_enter_updater(). It sends no CAN traffic of its own.
+ *
+ * Invariants:   After a trivial self-test it confirms itself with
+ *               esp_ota_mark_app_valid_cancel_rollback(), unless CONFIG_BENCH_APP_SKIP_MARK_VALID
+ *               leaves it PENDING_VERIFY so the next reset rolls back into the updater.
+ * Depends on:   can_updater_client.h.
+ *
+ * @see     docs/testing/bench/node-updater.md, examples/node_app/main/node_app.c
+ */
 
 #include <stdbool.h>
 #include <stdio.h>

@@ -1,11 +1,14 @@
-/* =============================================================================
- * image_validate.c — Pure-logic validation of the application image
- * =============================================================================
- * See image_validate.h for the interface and check order. Fail-closed: every
- * metadata field is bounds-checked before it is trusted, and the expensive
- * payload CRC runs last. All multi-byte reads go through explicit little-
- * endian byte loads — no misaligned or aliased direct loads from the buffer.
- * ============================================================================= */
+/**
+ * @file    image_validate.c
+ * @brief   Pure-logic validation of the application image (see image_validate.h for the
+ *          contract).
+ *
+ * Implementation notes: fail-closed — every metadata field is bounds-checked before it is
+ * trusted, and the expensive payload CRC runs last. All multi-byte reads go through explicit
+ * little-endian byte loads — no misaligned or aliased direct loads from the buffer.
+ *
+ * @see     image_validate.h, test_image_validate.c
+ */
 
 #include "image_validate.h"
 

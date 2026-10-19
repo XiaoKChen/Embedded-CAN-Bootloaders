@@ -1,12 +1,15 @@
-/* =============================================================================
- * dfu_config.c — Pure-logic parse/validate of the flash-time DFU name config
- * =============================================================================
- * See dfu_config.h for the interface and the frozen block layout. Fail-closed:
- * every field is checked before the out-params are populated, and the string
- * bytes are exposed only after the crc32 authenticates the whole record. All
- * multi-byte reads go through explicit little-endian byte loads — no aliased
- * direct loads from the buffer (mirrors image_validate.c).
- * ============================================================================= */
+/**
+ * @file    dfu_config.c
+ * @brief   Pure-logic parse/validate of the flash-time DFU name config (see dfu_config.h for the
+ *          contract).
+ *
+ * Implementation notes: fail-closed — every field is checked before the out-params are
+ * populated, and the string bytes are exposed only after the crc32 authenticates the whole
+ * record. All multi-byte reads go through explicit little-endian byte loads — no aliased direct
+ * loads from the buffer (mirrors image_validate.c).
+ *
+ * @see     dfu_config.h, test_dfu_config.c
+ */
 
 #include "dfu_config.h"
 

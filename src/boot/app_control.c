@@ -1,8 +1,12 @@
-/* =============================================================================
- * app_control.c — CAN Update Protocol v1 app-control extension codec
- * =============================================================================
- * See app_control.h and the protocol block in can_update.h.
- * ============================================================================= */
+/**
+ * @file    app_control.c
+ * @brief   CAN Update Protocol v1 app-control extension codec (see app_control.h for the contract).
+ *
+ * Implementation notes: the frame layout follows the protocol block in can_update.h; multi-byte
+ * fields go through explicit little-endian byte loads and stores.
+ *
+ * @see     app_control.h, can_update.h, test_app_control.c
+ */
 
 #include "app_control.h"
 

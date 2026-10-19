@@ -1,9 +1,26 @@
 /* SPDX-FileCopyrightText: 2015-2021 Espressif Systems (Shanghai) CO LTD
  * SPDX-License-Identifier: Apache-2.0
  */
-/* boot.c — Node recovery selection before IDF touches otadata or loads an app.
- * Based on ESP-IDF v5.3.6 examples/custom_bootloader/bootloader_override.
- * IDF retains responsibility for image verification, rollback and jumping. */
+/**
+ * @file    boot.c
+ * @brief   Node recovery selection before IDF touches otadata or loads an app.
+ *
+ * Overrides the ESP-IDF 2nd-stage bootloader entry (call_start_cpu0) to classify the reset,
+ * advance the recovery counters and, once either trips, load the factory CAN updater. Based on
+ * ESP-IDF v5.3.6 examples/custom_bootloader/bootloader_override.
+ *
+ * Owns:         The bootloader's copy of the recovery counters: the RTC retained record and the
+ *               bootcnt flash log.
+ * Not here:     The counter logic (src/boot/boot_counter.h); clearing the counters
+ *               (components/can_updater_client/recovery.c). IDF retains responsibility for image
+ *               verification, rollback and jumping.
+ * Invariants:   Only the dedicated writable, unencrypted bootcnt data partition is written, never
+ *               app/otadata. A bootcnt failure never blocks the boot: the RTC decision still
+ *               applies.
+ * Depends on:   boot_counter.h and the IDF bootloader support components.
+ *
+ * @see     boot_counter.h, docs/concepts/recovery.md
+ */
 #include "boot_counter.h"
 
 #include <string.h>

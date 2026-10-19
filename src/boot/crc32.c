@@ -1,10 +1,12 @@
-/* =============================================================================
- * crc32.c — CRC32 (IEEE 802.3 / zlib-compatible), table-less
- * =============================================================================
- * See crc32.h. Bitwise loop chosen deliberately over a lookup table to save
- * bootloader flash (research doc §6.3 on branch version/c-cpp/ra4m1, risk R1:
- * 16 KB region is tight).
- * ============================================================================= */
+/**
+ * @file    crc32.c
+ * @brief   Table-less CRC32, IEEE 802.3 / zlib-compatible (see crc32.h for the contract).
+ *
+ * Implementation notes: bitwise loop chosen deliberately over a lookup table to save bootloader
+ * flash (research doc §6.3 on branch version/c-cpp/ra4m1, risk R1: 16 KB region is tight).
+ *
+ * @see     crc32.h, test_crc32.c
+ */
 
 #include "crc32.h"
 

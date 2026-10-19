@@ -6,8 +6,12 @@ app, or a brain replacement. History: #12.
 
 Verified: throwaway brain-style and node-style projects (pioarduino
 `espressif32` 55.03.311, Arduino-ESP32 3.3.11, `esp32-s3-devkitc-1`) build and
-link. **Not bench-tested:** nothing in this guide has run on a board yet; run
-the [bench tests](../testing/bench/README.md) before deploying such an app.
+link. **Bench-validated on 2026-10-19:** the SOLO IDU (brain app on the stock
+Arduino core) and SOLO ODU (stock-core node app with the flash-only
+boot-counter clear) passed node flash, recover, scan, APP_INFO, brain OTA and
+rollback, `/package`, and the power-cycle trip. The ODU's unconfirmed-image
+rollback landed safely in the factory CAN updater, not the previous app.
+See the [bench tests](../testing/bench/README.md) for the test procedure.
 
 ## Adding the library
 
@@ -132,19 +136,28 @@ custom_sdkconfig =
   }
   ```
 
-- **Never `pio run -t upload` a node app.** PlatformIO's default upload
-  writes the Arduino bootloader at `0x0` (replacing the node's recovery
-  bootloader), the partition table, Arduino's `boot_app0.bin` over `otadata`
-  at `0xe000`, and the app at `ota_0` (`0x80000`). Deliver
-  `.pio/build/<env>/firmware.bin` over CAN
-  ([updating-nodes.md](updating-nodes.md)), or write only `ota_0` at
-  `0x80000` plus a matching `otadata` with esptool.
-- **APP_INFO strings.** The app descriptor does not carry the app's own
-  identity: a stock Arduino build names the Arduino lib builder
+- **Do not use PlatformIO's default node upload.** It writes the Arduino
+  bootloader at `0x0` (replacing the node's recovery bootloader), the partition
+  table, Arduino's `boot_app0.bin` over `otadata` at `0xe000`, and the app at
+  `ota_0` (`0x80000`). Deliver `.pio/build/<env>/firmware.bin` over CAN
+  ([updating-nodes.md](updating-nodes.md)), or write only `ota_0` at `0x80000`
+  plus a matching `otadata` with esptool. The SOLO ODU overrides its upload
+  recipe to write only `otadata` and `ota_0`; its `pio run -t upload` was
+  verified not to touch `0x0`, `0x8000`, or `0x20000`.
+- **USB-Serial-JTAG reset tip.** After a USB flash the board may stay in the
+  flasher stub even when esptool says `Hard resetting via RTS pin`. Boot the
+  app with `esptool --chip esp32s3 -p <ROM port> --before no_reset --after watchdog-reset chip-id`
+  (esptool 5.x).
+- **APP_INFO strings and replies.** The app descriptor does not carry the
+  app's own identity: a stock Arduino build names the Arduino lib builder
   (`project_name` `arduino-lib-builder`, `version` its git hash), and the
   `custom_sdkconfig` test build named the project directory with version `1`.
   An app answering APP_INFO passes its own name and version to
-  `app_control_encode_info()` instead of `esp_app_get_description()`.
+  `app_control_encode_info()` instead of `esp_app_get_description()`. Send
+  APP_INFO and ENTER_UPDATER replies from a task that can wait for TWAI TX
+  queue space (the SOLO ODU uses a 50 ms per-frame wait). A zero-wait send
+  inside the CAN receive path lost reply frames immediately after the app's
+  own publish bursts (SOLO ODU #30/#31).
 
 ## Brain apps
 

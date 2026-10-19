@@ -1,3 +1,15 @@
+/**
+ * @file    update_pkg.c
+ * @brief   Update package v1 manifest parser (see update_pkg.h for the contract).
+ *
+ * Implementation notes: integers are decoded byte by byte (le16/le32), never through a cast
+ * struct. The manifest CRC32 runs over [0, manifest_size) with the check field fed as four zero
+ * bytes. Each payload range is checked for alignment, bounds and overlap with every earlier
+ * entry.
+ *
+ * @see     update_pkg.h, test_update_pkg.c, docs/reference/package-format.md
+ */
+
 #include "update_pkg.h"
 
 #include <stdbool.h>

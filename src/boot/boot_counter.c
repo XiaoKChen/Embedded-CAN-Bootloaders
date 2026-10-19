@@ -1,4 +1,14 @@
-/* boot_counter.c — Validated RTC counter and append-only flash bit log. */
+/**
+ * @file    boot_counter.c
+ * @brief   Validated RTC counter and append-only flash bit log (see boot_counter.h for the
+ *          contract).
+ *
+ * Implementation notes: the RTC record is sealed with a magic and an XOR check over its fields,
+ * so garbage retained memory fails boot_counter_rtc_valid(). A log slot is free only when all 16
+ * bytes read erased (0xFF); only exact copies of boot_counter_record count.
+ *
+ * @see     boot_counter.h, test_boot_counter.c
+ */
 #include "boot_counter.h"
 
 #include <string.h>

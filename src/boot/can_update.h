@@ -1,19 +1,32 @@
-/* =============================================================================
- * can_update.h — CAN Update Protocol v1 state machine (pure logic)
- * =============================================================================
- * Frame-in / frame-out engine for the flash-over-CAN update path. The engine
- * touches no hardware: the CAN driver feeds it received frames, sends replies
- * it produces on the boot -> host reply ID, and every access to the update
- * slot goes through the injected slot HAL — so the whole protocol unit-tests
- * on the host and the same engine serves any target (ESP32-S3: the HAL wraps
- * esp_ota_begin/write/end on the inactive OTA partition).
+/**
+ * @file    can_update.h
+ * @brief   CAN Update Protocol v1 state machine (pure logic).
  *
- * Per-device IDs: the host -> boot command ID the engine matches on is a
- * runtime value supplied to can_update_init (default CAN_ID_HOST_TO_BOOT); the
- * caller transmits every reply on the paired boot -> host ID (default
- * CAN_ID_BOOT_TO_HOST). This lets several parked boards share one bus, each
- * addressed on its own ID (see dfu_config.h v2 config block).
+ * Frame-in / frame-out engine for the flash-over-CAN update path. The CAN driver feeds it received
+ * frames and sends the replies it produces on the boot -> host reply ID; every access to the
+ * update slot goes through the injected slot HAL, so the whole protocol unit-tests on the host and
+ * the same engine serves any target (ESP32-S3: the HAL wraps esp_ota_begin/write/end on the
+ * inactive OTA partition).
  *
+ * Owns:         The protocol constants (below), the session phases and window buffer
+ *               (can_update_state_t) and the slot HAL contract (can_update_hal_t).
+ * Not here:     INFO, answered by the integration layer (node_updater/main/main.c); the
+ *               app-control codec (app_control.h); the CAN driver and the reset after GO (the
+ *               caller).
+ * Invariants:   Per-device IDs: the host -> boot command ID the engine matches on is a runtime
+ *               value supplied to can_update_init (default CAN_ID_HOST_TO_BOOT); the caller
+ *               transmits every reply on the paired boot -> host ID (default CAN_ID_BOOT_TO_HOST).
+ *               This lets several parked boards share one bus, each addressed on its own ID (see
+ *               dfu_config.h v2 config block). The slot being written is never selected for boot
+ *               before GO (fail-safe table below).
+ * Errors:       A rejected frame is answered with a NAK carrying a CAN_UPDATE_ERR_* code; frames
+ *               on other IDs get no reply.
+ * Depends on:   boot_config.h only. No hardware, no heap.
+ *
+ * @see     can_update.c, app_control.h, test_can_update.c, docs/reference/can-protocol.md
+ */
+
+/*
  * Protocol v1 (classic CAN, 11-bit IDs, every frame DLC 8, unused bytes 0xFF):
  *
  *   Host -> boot (byte0 = command), required order
@@ -75,7 +88,7 @@
  *   GO (slot_activate) ...... the target's atomic boot-selection write; the
  *                             new image boots only once it has completed
  * There is no state that bricks: the engine never writes the updater itself.
- * ============================================================================= */
+ */
 
 #ifndef CAN_UPDATE_H
 #define CAN_UPDATE_H

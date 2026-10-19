@@ -1,12 +1,13 @@
-/* =============================================================================
- * can_update.c — CAN Update Protocol v1 state machine (pure logic)
- * =============================================================================
- * See can_update.h for the protocol spec and the fail-safe/power-loss table.
- * Every slot access goes through the injected HAL; the slot is handed to the
- * target for acceptance only after its read-back CRC matches VERIFY, and made
- * bootable only on GO, so an interrupted update always leaves the device
- * coming back up in the updater.
- * ============================================================================= */
+/**
+ * @file    can_update.c
+ * @brief   CAN Update Protocol v1 state machine (see can_update.h for the contract).
+ *
+ * Implementation notes: every slot access goes through the injected HAL. The slot is handed to
+ * the target for acceptance only after its read-back CRC matches VERIFY, and made bootable only
+ * on GO, so an interrupted update always leaves the device coming back up in the updater.
+ *
+ * @see     can_update.h, test_can_update.c
+ */
 
 #include "can_update.h"
 

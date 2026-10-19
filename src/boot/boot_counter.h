@@ -1,4 +1,25 @@
-/* boot_counter.h — Portable recovery state; no hardware access. */
+/**
+ * @file    boot_counter.h
+ * @brief   Portable recovery-counter state for the node bootloader; no hardware access.
+ *
+ * Decides when a node is forced into its factory CAN updater: a validated RTC-retained counter of
+ * unclean resets and an append-only flash bit log of power-on/EN resets, each tripping at
+ * BOOT_COUNTER_LIMIT. The bootloader override and the app-side health tracker both apply it to
+ * the same RTC and flash storage.
+ *
+ * Owns:         The boot_counter_rtc_t layout and its check, the flash record pattern, the trip
+ *               limit, the stable-uptime clear delay and the bootcnt partition's label, subtype
+ *               and size.
+ * Not here:     Reset-reason classification and the RTC/flash access
+ *               (node_updater/bootloader_components/main/boot.c,
+ *               components/can_updater_client/recovery.c).
+ * Invariants:   An invalid RTC record reads as cleared; a power-on reset clears it too. A
+ *               clean-restart mark exempts only the next software reset. Both counters saturate
+ *               at BOOT_COUNTER_LIMIT; a tripped flash log never wraps.
+ * Depends on:   Pure C over caller buffers; host-tested.
+ *
+ * @see     boot_counter.c, test_boot_counter.c, docs/concepts/recovery.md
+ */
 #ifndef BOOT_COUNTER_H
 #define BOOT_COUNTER_H
 

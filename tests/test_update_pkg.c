@@ -1,3 +1,18 @@
+/**
+ * @file    test_update_pkg.c
+ * @brief   Host-side Unity tests for the update package v1 manifest parser.
+ *
+ * A 2 KB byte buffer holds a generated package whose manifest CRC32 is recomputed after each
+ * mutation.
+ *
+ * Covers:       Valid single- and multi-entry packages, an unaligned buffer, bad magic, version
+ *               and CRC, truncated manifests and a wrong total size, payload bounds, entry
+ *               counts and reserved fields, product names and CAN IDs.
+ * Not covered:  Payload SHA-256 checks and staging (brain/main/package_update.c).
+ *
+ * @see     update_pkg.h, docs/reference/package-format.md, rules/testing.md
+ */
+
 #include "unity.h"
 #include "update_pkg.h"
 #include "crc32.h"

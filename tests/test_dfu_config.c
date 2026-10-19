@@ -1,12 +1,16 @@
-/* =============================================================================
- * test_dfu_config.c — Host-side Unity tests for dfu_config_parse / _can_ids
- * =============================================================================
- * An 80-byte buffer stands in for the RA4M1 data-flash config block (large
- * enough for both a v1 76-byte and a v2 80-byte record). Every
- * dfu_config_status_t outcome gets a test (rules/testing.md), plus the empty-
- * string boundary, both on-disk versions, and the per-device CAN-ID fallbacks.
- * Pure logic: no hardware, mirrors test_image_validate.c.
- * ============================================================================= */
+/**
+ * @file    test_dfu_config.c
+ * @brief   Host-side Unity tests for dfu_config_parse / dfu_config_can_ids.
+ *
+ * An 80-byte buffer stands in for the RA4M1 data-flash config block (large enough for both a v1
+ * 76-byte and a v2 80-byte record). Pure logic: no hardware, mirrors test_image_validate.c.
+ *
+ * Covers:       Every dfu_config_status_t outcome (rules/testing.md), plus the empty-string
+ *               boundary, both on-disk versions, and the per-device CAN-ID fallbacks.
+ * Not covered:  Reading the block from data flash on target.
+ *
+ * @see     dfu_config.h, rules/testing.md
+ */
 
 #include <string.h>
 

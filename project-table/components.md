@@ -12,7 +12,7 @@ Shared ESP-IDF components for the ESP32-S3 brain/node CAN update system: they co
 ### can_flash_host/
 - **Responsibility:** Blocking, allocation-free host implementation of CAN Update Protocol v1 (info, scan, flash, app-info, enter-updater) over caller-injected send, receive, clock, read and progress callbacks; runs on the brain and in host tests.
 - **Key files:** can_flash_host.c, include/can_flash_host.h
-- **Relationships:** imports from: boot_core/ and src/boot/ (`app_control.h`, `can_update.h`, `dfu_config.h`, `crc32.h`) — exposes: can_flash_host_info, can_flash_host_scan, can_flash_host_flash, can_flash_host_app_info, can_flash_host_enter_updater, can_flash_host_result_text, can_flash_host_t, can_flash_host_status_t
+- **Relationships:** imports from: boot_core/ and src/boot/ (`app_control.h`, `can_update.h`, `dfu_config.h`, `crc32.h`) — exposes: can_flash_host_info, can_flash_host_scan, can_flash_host_discover, can_flash_host_flash, can_flash_host_app_info, can_flash_host_enter_updater, can_flash_host_result_text, can_flash_host_t, can_flash_host_status_t
 - **can_flash_host.c** — Send/receive/drain helpers, the INFO/scan probe, the windowed DATA transfer with VERIFY recovery, and app-control requests.
 - **include/can_flash_host.h** — Status and step enums, the injected-callback context `can_flash_host_t`, timing constants, result-text diagnostics.
 - **CMakeLists.txt** — Compiles `can_flash_host.c` plus `src/boot/app_control.c`, exposes `include/`, `REQUIRES boot_core`.

@@ -33,7 +33,8 @@ already runs all CTest suites.
   CAN bus, RAM slot and fake clock (loss/retry/wrap, CRC and discovery tests).
   The suite includes >256 KB/wrap recovery, lost/duplicate DATA, lost
   intermediate and final ACKs, final-frame loss, node reset/restart,
-  CRC/image rejection, size/timeout errors, three-node discovery and every
+  CRC/image rejection, size/timeout errors, three-node discovery, mixed app/updater discovery
+  (`can_flash_host_discover`) and every
   name length 0..32. A 5099-byte deterministic image was cross-checked against
   the actual Python `CanFlasher`: all **857 frames / 6856 payload bytes**
   (HELLO through GO, including padding and sequence bytes) matched, CRC32

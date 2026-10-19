@@ -1,15 +1,28 @@
-/* =============================================================================
- * node_flash.h — Brain CAN host and disposable node-image staging
- * =============================================================================
- * The HTTP server serializes scan/stage/run/recover with its own OTA on one
- * worker. Status is safe to read concurrently. Recovery uses node_reset to
- * pulse GPIO3; INFO retries can take over 8 s when no node responds.
- * Power loss during erase/write/readback: only node_fw is affected; its length
- * lives in RAM, so a partial/stale upload is never resumed after reset.
- * During CAN DATA/VERIFY the node stays in its updater; GO selects its app.
- * A node running an app with the CAN service (examples/node_app) is parked
- * with ENTER_UPDATER instead of a GPIO3 pulse (can_update.h, app-control).
- * ============================================================================= */
+/**
+ * @file    node_flash.h
+ * @brief   Brain CAN host and disposable node-image staging.
+ *
+ * Serves the brain's /node routes: stages a node image into node_fw, flashes it over CAN,
+ * recovers a node, identifies a running node app and reports the last job. A node running an app
+ * with the CAN service (examples/node_app) is parked with ENTER_UPDATER instead of a GPIO3 pulse
+ * (can_update.h, app-control).
+ *
+ * Owns:         The CAN transport and host context, the node_fw staging and the last-job status.
+ * Not here:     The worker that serializes jobs (http_ota_server.c); the GPIO3 recovery pulses
+ *               (node_reset.h); the protocol (can_flash_host.h).
+ * Invariants:   Power loss during erase/write/readback: only node_fw is affected; its length lives
+ *               in RAM, so a partial/stale upload is never resumed after reset. During CAN
+ *               DATA/VERIFY the node stays in its updater; GO selects its app.
+ * Concurrency:  The HTTP server serializes scan/stage/run/recover with its own OTA on one worker.
+ *               Status is safe to read concurrently.
+ * Errors:       Handlers answer with HTTP statuses. POST /node/flash: 202 after staging, 400
+ *               invalid IDs, 411 empty, 413 oversized, 408 timeout, 500 flash failure, 503
+ *               unavailable. POST /node/recover: 202 accepted, 400 invalid IDs, 503 CAN
+ *               unavailable. GET /node/status includes recovering, success and failed states.
+ *               INFO retries can take over 8 s when no node responds.
+ *
+ * @see     node_flash.c, http_ota_server.h, docs/testing/bench/brain-can-flash.md
+ */
 #ifndef NODE_FLASH_H
 #define NODE_FLASH_H
 

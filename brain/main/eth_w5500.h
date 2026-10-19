@@ -1,10 +1,17 @@
-/* =============================================================================
- * eth_w5500.h — Brain Ethernet: W5500 on SPI2, DHCP client
- * =============================================================================
- * Brings up the brain's W5500 (esp_eth raw-MAC driver under lwIP), attaches
- * it to esp_netif with DHCP, and reports when an IPv4 address is held.
- * Pins are fixed by the brain's schematic (see eth_w5500.c).
- * ============================================================================= */
+/**
+ * @file    eth_w5500.h
+ * @brief   Brain Ethernet: W5500 on SPI2, DHCP client.
+ *
+ * Brings up the brain's W5500 (esp_eth raw-MAC driver under lwIP), attaches it to esp_netif with
+ * DHCP, and reports when an IPv4 address is held.
+ *
+ * Owns:         The SPI2 bus, the W5500 and its netif. Pins are fixed by the brain's schematic
+ *               (see eth_w5500.c).
+ * Invariants:   eth_w5500_start() runs once, before the default event loop exists.
+ * Errors:       Calls return esp_err_t; eth_w5500_wait_for_ip() returns false on timeout.
+ *
+ * @see     eth_w5500.c, brain_ota.c
+ */
 
 #ifndef ETH_W5500_H
 #define ETH_W5500_H

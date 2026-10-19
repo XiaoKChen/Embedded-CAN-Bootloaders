@@ -1,9 +1,12 @@
-/* =============================================================================
- * eth_w5500.c — Brain Ethernet: W5500 on SPI2, DHCP client
- * =============================================================================
- * See eth_w5500.h for the public interface. Follows ESP-IDF v5.3's
- * examples/ethernet/basic (ethernet_init.c), reduced to one W5500.
- * ============================================================================= */
+/**
+ * @file    eth_w5500.c
+ * @brief   Brain Ethernet: W5500 on SPI2, DHCP client (see eth_w5500.h for the contract).
+ *
+ * Implementation notes: follows ESP-IDF v5.3's examples/ethernet/basic (ethernet_init.c), reduced
+ * to one W5500.
+ *
+ * @see     eth_w5500.h
+ */
 
 #include "eth_w5500.h"
 

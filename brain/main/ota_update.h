@@ -1,19 +1,25 @@
-/* =============================================================================
- * ota_update.h — Transport-independent A/B self-update of the running app
- * =============================================================================
- * Writes an app image, chunk by chunk, into the inactive OTA slot and, once
- * the whole image is in and validated, makes that slot the boot partition.
- * It knows nothing about where the bytes come from: the HTTP handler
- * (http_ota_server.c) is one caller; Wi-Fi, BLE or CAN can be others.
+/**
+ * @file    ota_update.h
+ * @brief   Transport-independent A/B self-update of the running app.
  *
- *   ota_update_begin(size)       once, with the exact image size
- *   ota_update_write(chunk, len) any number of times, in order
- *   ota_update_finish()          validates, then switches the boot slot
- *   ota_update_abort()           on any transport error; a no-op when idle
+ * Writes an app image, chunk by chunk, into the inactive OTA slot and, once the whole image is in
+ * and validated, makes that slot the boot partition. It knows nothing about where the bytes come
+ * from: the HTTP handler (http_ota_server.c) is one caller; Wi-Fi, BLE or CAN can be others.
  *
- * Any failure inside write/finish ends the session itself (the caller only
- * reports it); the boot partition changes only in a successful finish.
+ * Owns:         The OTA session: target slot, handle and byte counts.
+ * Invariants:   ota_update_begin(size) once, with the exact image size; ota_update_write(chunk,
+ *               len) any number of times, in order; ota_update_finish() validates, then switches
+ *               the boot slot; ota_update_abort() on any transport error, a no-op when idle. The
+ *               boot partition changes only in a successful finish (power-loss table below).
+ * Concurrency:  Not thread-safe: one caller at a time. The HTTP server serializes mutations with
+ *               node staging/flashing on its single update worker.
+ * Errors:       Calls return esp_err_t. Any failure inside write/finish ends the session itself
+ *               (the caller only reports it).
  *
+ * @see     ota_update.c, http_ota_server.h
+ */
+
+/*
  * Power loss at each step (rules/bootloader.md, fail-safe):
  *   begin / write   only the inactive slot is erased and written, sector by
  *                   sector; otadata is untouched, so the running image boots.
@@ -23,10 +29,7 @@
  *                   the bootloader uses the other sector: the old image.
  *   after finish    the new image boots PENDING_VERIFY; if it resets before
  *                   it is marked valid, the bootloader rolls back.
- *
- * Not thread-safe: one caller at a time. The HTTP server serializes mutations
- * with node staging/flashing on its single update worker.
- * ============================================================================= */
+ */
 
 #ifndef OTA_UPDATE_H
 #define OTA_UPDATE_H

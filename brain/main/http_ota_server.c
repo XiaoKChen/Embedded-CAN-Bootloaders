@@ -1,22 +1,14 @@
-/* =============================================================================
- * http_ota_server.c — Status page and image upload over HTTP
- * =============================================================================
- * See http_ota_server.h for the routes. The upload handler is only a
- * transport: it moves the request body into ota_update in fixed chunks
- * (never the whole image in RAM) and maps the outcome to an HTTP status.
- * GET /node/app_info also runs on the worker (APP_INFO on the node's IDs).
- * Node recovery uses this same worker: 202 accepted, 400 invalid IDs,
- * 409 busy, 503 CAN unavailable; /node/status stays responsive. An absent
- * node can take over 8 s to fail INFO because the host retries internally.
+/**
+ * @file    http_ota_server.c
+ * @brief   Status page and image upload over HTTP (see http_ota_server.h for the contract).
  *
- * A failed upload never changes the boot partition:
- *   no / zero Content-Length   411, nothing written
- *   image larger than the slot 413, nothing written
- *   running image unconfirmed  409 (PENDING_VERIFY refuses esp_ota_begin)
- *   peer closed mid-body       aborted; no reply possible
- *   no data for RECV_TIMEOUT_S aborted (e.g. cable pulled); 408 attempted
- *   flash write / bad image    aborted; 400 or 500
- * ============================================================================= */
+ * Implementation notes: the upload handler is only a transport — it moves the request body into
+ * ota_update in fixed chunks (never the whole image in RAM) and maps the outcome to an HTTP
+ * status. GET /node/app_info and node recovery run on the same worker as every other job; an
+ * absent node can take over 8 s to fail INFO because the host retries internally.
+ *
+ * @see     http_ota_server.h, ota_update.h, node_flash.h, package_update.h
+ */
 
 #include "http_ota_server.h"
 

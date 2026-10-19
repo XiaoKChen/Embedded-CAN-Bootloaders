@@ -1,16 +1,26 @@
-/* =============================================================================
- * main.c — ESP32-S3 CAN (TWAI) updater: the `factory` app
- * =============================================================================
- * The node's ESP-IDF 2nd-stage bootloader runs this app when no OTA app is
- * selected: on a fresh board, after an app called can_updater_client (which
- * points the boot partition here), or when every OTA app failed validation /
- * was rolled back. Recovery counters also select factory without changing
- * otadata (no GPIO recovery: GPIO4 is TWAI TX). In all those cases the user wants
- * the updater, so it always parks serving CAN Update Protocol v1 — the only
- * exits are a completed update (GO) or a re-flash over USB/UART.
+/**
+ * @file    main.c
+ * @brief   ESP32-S3 CAN (TWAI) updater: the `factory` app.
  *
- * The protocol engine is the shared pure-logic core (src/boot/can_update.c);
- * this file supplies its slot HAL over the ESP-IDF OTA API:
+ * The node's ESP-IDF 2nd-stage bootloader runs this app when no OTA app is selected: on a fresh
+ * board, after an app called can_updater_client (which points the boot partition here), or when
+ * every OTA app failed validation / was rolled back. Recovery counters also select factory
+ * without changing otadata (no GPIO recovery: GPIO4 is TWAI TX).
+ *
+ * Owns:         The slot HAL of the shared pure-logic engine (src/boot/can_update.c) over the
+ *               ESP-IDF OTA API, the INFO reply and the node's CAN IDs from `cancfg`.
+ * Not here:     The protocol itself (can_update.h); the recovery-counter decision
+ *               (node_updater/bootloader_components/main/boot.c).
+ * Invariants:   In all those cases the user wants the updater, so it always parks serving CAN
+ *               Update Protocol v1 — the only exits are a completed update (GO) or a re-flash over
+ *               USB/UART. The factory partition (this app) is never written by anything here.
+ * Depends on:   can_link.h, can_update.h, dfu_config.h, can_updater_client.h.
+ *
+ * @see     can_update.h, docs/testing/bench/node-updater.md, docs/concepts/recovery.md
+ */
+
+/*
+ * Slot HAL over the ESP-IDF OTA API:
  *   ERASE  -> esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES) on the inactive slot
  *   DATA   -> esp_ota_write + esp_partition_read read-back verify
  *   VERIFY -> engine CRC over esp_partition_read, then esp_ota_end
@@ -32,8 +42,7 @@
  * can return to that app and require recovery again. Pending rollback may
  * return to a prior valid OTA image instead of factory. A GO clear interrupted
  * before otadata changes never selects the new image. Clear failure rejects GO.
- * The factory partition (this app) is never written by anything here.
- * ============================================================================= */
+ */
 
 #include <string.h>
 

@@ -1,19 +1,23 @@
-/* =============================================================================
- * slcan_bridge.c — USB <-> CAN adapter speaking SLCAN, for the brain board
- * =============================================================================
- * Turns the brain (ESP32-S3-WROOM-1U-N16R8, TCAN332DR on TWAI TX GPIO6 /
- * RX GPIO7) into an SLCAN (Lawicel) adapter on its native USB-Serial-JTAG
- * port, so tools/can-flash drives the node's updater unchanged:
- *   can_flash.py app.bin --interface slcan --channel COMx --bitrate 250000
+/**
+ * @file    slcan_bridge.c
+ * @brief   USB <-> CAN adapter speaking SLCAN, for the brain board.
+ *
+ * Turns the brain (ESP32-S3-WROOM-1U-N16R8, TCAN332DR on TWAI TX GPIO6 / RX GPIO7) into an SLCAN
+ * (Lawicel) adapter on its native USB-Serial-JTAG port, so tools/can-flash drives the node's
+ * updater unchanged (`can_flash.py app.bin --interface slcan --channel COMx --bitrate 250000`).
  * The command subset is python-can's (components/slcan_codec).
  *
- * Two tasks on one core:
- *   usb_to_can  splits the USB byte stream into CR-terminated lines, runs
- *               them (C/O/L, Sn, t/T/r/R, V, N) and answers ACK/NAK;
- *   can_to_usb  forwards every received frame as a t/T/r/R line, and logs
- *               bus-state changes and frame loss.
- * The USB port carries SLCAN only; ESP_LOG goes to UART0 (sdkconfig.defaults).
+ * Owns:         Two tasks on one core: usb_to_can splits the USB byte stream into CR-terminated
+ *               lines, runs them (C/O/L, Sn, t/T/r/R, V, N) and answers ACK/NAK; can_to_usb
+ *               forwards every received frame as a t/T/r/R line, and logs bus-state changes and
+ *               frame loss. Also the buffer sizing below.
+ * Invariants:   The USB port carries SLCAN only; ESP_LOG goes to UART0 (sdkconfig.defaults).
+ * Depends on:   can_link.h, node_reset.h, slcan_codec.h.
  *
+ * @see     slcan_codec.h, docs/guides/slcan-bridge.md
+ */
+
+/*
  * Buffering: python-can has no flow control, and the v5.3 USB-Serial-JTAG
  * driver drops host bytes when its RX ring is full rather than NAKing USB.
  *   USB RX ring  16 KB  one can-flash DATA window is 342 lines of 22 bytes
@@ -22,7 +26,7 @@
  *   USB TX ring   8 KB  ~370 received frames while the host is not reading.
  *   TWAI RX queue 256   more frames while that ring is full; beyond that the
  *                       driver counts them as missed, and they are logged.
- * ============================================================================= */
+ */
 
 #include <inttypes.h>
 #include <stdbool.h>

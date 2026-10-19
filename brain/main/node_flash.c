@@ -1,15 +1,13 @@
-/* =============================================================================
- * node_flash.c — Brain staging, CAN host, and node recovery
- * =============================================================================
- * POST /node/flash: 202 after staging, 400 invalid IDs, 411 empty, 413 oversized,
- *                   408 timeout, 500 flash failure, 503 unavailable.
- * POST /node/recover: 202 accepted, 400 invalid IDs, 503 CAN unavailable.
- * GET /node/status: includes recovering, success and failed states.
- * GET /node/app_info: identifies a running node app (see node_flash.h).
- * /node/flash sends ENTER_UPDATER before HELLO: a running app parks itself
- * (then the updater gets its boot time), the updater NAKs it at once.
- * INFO has four built-in 2 s retries; an absent node can take over 8 s to fail.
- * ============================================================================= */
+/**
+ * @file    node_flash.c
+ * @brief   Brain staging, CAN host, and node recovery (see node_flash.h for the contract).
+ *
+ * Implementation notes: /node/flash sends ENTER_UPDATER before HELLO: a running app parks itself
+ * (then the updater gets its boot time), the updater NAKs it at once. INFO has four built-in 2 s
+ * retries; an absent node can take over 8 s to fail.
+ *
+ * @see     node_flash.h, can_flash_host.h, node_reset.h
+ */
 #include "node_flash.h"
 
 #include <inttypes.h>

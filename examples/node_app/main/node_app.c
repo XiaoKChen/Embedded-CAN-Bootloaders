@@ -1,7 +1,19 @@
-/* =============================================================================
- * node_app.c — Reference node application (Phase 6, issue #11)
- * =============================================================================
- * Start real node firmware from this file. Boot sequence, in order:
+/**
+ * @file    node_app.c
+ * @brief   Reference node application (Phase 6, issue #11).
+ *
+ * Start real node firmware from this file. Updating this node: the brain (POST /package or
+ * /node/flash) or tools/can-flash sends ENTER_UPDATER; the service ACKs it and restarts into the
+ * updater, which then takes the image. No GPIO3 pulse is needed.
+ *
+ * Owns:         Boot order (below), ending in app_run(): YOUR APPLICATION HERE.
+ * Depends on:   can_service.h, can_updater_client.h, dfu_config.h.
+ *
+ * @see     can_service.h, docs/guides/writing-a-node-app.md, docs/testing/bench/node-app.md
+ */
+
+/*
+ * Boot sequence, in order:
  *   1. can_updater_client_start_health()  Phase 3 recovery: marks deliberate
  *      restarts clean and clears the crash counters after 10 s of uptime.
  *   2. The node's CAN update IDs: `cancfg` when provisioned, else 0x79E/0x79F
@@ -13,11 +25,7 @@
  *      self-test leaves a freshly CAN-flashed image PENDING_VERIFY, so the
  *      next reset rolls back (to the previous app or the updater).
  *   5. app_run(): YOUR APPLICATION HERE.
- *
- * Updating this node: the brain (POST /package or /node/flash) or
- * tools/can-flash sends ENTER_UPDATER; the service ACKs it and restarts into
- * the updater, which then takes the image. No GPIO3 pulse is needed.
- * ============================================================================= */
+ */
 
 #include <stdbool.h>
 

@@ -1,20 +1,26 @@
-/* =============================================================================
- * can_updater_client.h — App-side entry into the ESP32-S3 CAN updater
- * =============================================================================
- * The application's counterpart of `can_flash.py --enter-bootloader`: when
- * the app receives its "enter bootloader" request (on the Airform boards, the
- * /enter_bootloader route sent over ISO-TP), it calls
- * can_updater_client_enter_updater(). That points the boot partition at the
- * `factory` partition (the CAN updater) and restarts — the ESP32 equivalent
- * of the RA4M1 app writing the CAN-update handoff magic and resetting.
+/**
+ * @file    can_updater_client.h
+ * @brief   App-side entry into the ESP32-S3 CAN updater, and the app's recovery-counter health.
  *
- * Difference from the RA4M1: esp_ota_set_boot_partition(factory) erases
- * otadata, so the board stays in the updater across resets until an image
- * is flashed over CAN (or by esptool). It is never bricked: the updater is
- * always reachable.
+ * The application's counterpart of `can_flash.py --enter-bootloader`: when the app receives its
+ * "enter bootloader" request (on the Airform boards, the /enter_bootloader route sent over
+ * ISO-TP), it calls can_updater_client_enter_updater(). That points the boot partition at the
+ * `factory` partition (the CAN updater) and restarts — the ESP32 equivalent of the RA4M1 app
+ * writing the CAN-update handoff magic and resetting.
  *
- * Requires the updater's partition table (partitions.csv) on the device.
- * ============================================================================= */
+ * Owns:         The app's clean-restart mark and the clearing of both recovery counters (after
+ *               stable uptime, or after a verified image in the factory updater).
+ * Not here:     The counter logic (src/boot/boot_counter.h); the reset-time recovery decision
+ *               (node_updater/bootloader_components/main/boot.c).
+ * Invariants:   Difference from the RA4M1: esp_ota_set_boot_partition(factory) erases otadata, so
+ *               the board stays in the updater across resets until an image is flashed over CAN
+ *               (or by esptool). It is never bricked: the updater is always reachable.
+ * Errors:       Every call returns esp_err_t; can_updater_client_enter_updater() returns only on
+ *               failure, and the app keeps running.
+ * Depends on:   The updater's partition table (partitions.csv) on the device.
+ *
+ * @see     can_updater_client.c, recovery.c, docs/concepts/recovery.md
+ */
 
 #ifndef CAN_UPDATER_CLIENT_H
 #define CAN_UPDATER_CLIENT_H

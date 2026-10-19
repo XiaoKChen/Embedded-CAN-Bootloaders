@@ -1,9 +1,13 @@
-/* =============================================================================
- * can_updater_client.c — App-side entry into the ESP32-S3 CAN updater
- * =============================================================================
- * See can_updater_client.h. esp_restart() resets the CPU and the digital
- * peripherals, so the caller's TWAI/other drivers need no explicit deinit.
- * ============================================================================= */
+/**
+ * @file    can_updater_client.c
+ * @brief   App-side entry into the ESP32-S3 CAN updater (see can_updater_client.h for the
+ *          contract).
+ *
+ * Implementation notes: esp_restart() resets the CPU and the digital peripherals, so the caller's
+ * TWAI/other drivers need no explicit deinit.
+ *
+ * @see     can_updater_client.h, recovery.c
+ */
 
 #include "can_updater_client.h"
 

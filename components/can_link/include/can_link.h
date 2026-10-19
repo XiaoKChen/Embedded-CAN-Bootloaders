@@ -1,17 +1,22 @@
-/* =============================================================================
- * can_link.h — Public interface for the TWAI (classic CAN) link driver
- * =============================================================================
- * Thin wrapper over the ESP-IDF v5.3 legacy TWAI driver (driver/twai.h),
- * shared by the updater and the SLCAN bridge (examples/slcan_bridge).
- * The updater's view: one standard 11-bit RX ID filtered in hardware,
- * DLC-8 frames out (can_link_receive / can_link_send). The bridge's view:
- * every frame in and out (accept_all, can_link_*_frame). Bus-off recovery is
- * handled inside receive/send either way, so callers never have to know.
- * No IDF types leak through this header.
+/**
+ * @file    can_link.h
+ * @brief   Public interface for the TWAI (classic CAN) link driver.
  *
- * Not reentrant across init/deinit: the caller must keep every other call out
- * while one of those two runs (deinit frees the queue a receive blocks on).
- * ============================================================================= */
+ * Thin wrapper over the ESP-IDF v5.3 legacy TWAI driver (driver/twai.h), shared by the updater and
+ * the SLCAN bridge (examples/slcan_bridge). The updater's view: one standard 11-bit RX ID filtered
+ * in hardware, DLC-8 frames out (can_link_receive / can_link_send). The bridge's view: every frame
+ * in and out (accept_all, can_link_*_frame).
+ *
+ * Owns:         The TWAI driver instance and bus-off recovery, which is handled inside
+ *               receive/send either way, so callers never have to know.
+ * Invariants:   No IDF types leak through this header.
+ * Concurrency:  Not reentrant across init/deinit: the caller must keep every other call out while
+ *               one of those two runs (deinit frees the queue a receive blocks on).
+ * Errors:       Calls return can_link_status_t; no (matching) frame within the wait is
+ *               CAN_LINK_STATUS_TIMEOUT.
+ *
+ * @see     can_link.c
+ */
 
 #ifndef CAN_LINK_H
 #define CAN_LINK_H

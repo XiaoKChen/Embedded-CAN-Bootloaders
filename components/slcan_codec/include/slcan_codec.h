@@ -1,12 +1,21 @@
-/* =============================================================================
- * slcan_codec.h — Pure-logic SLCAN (Lawicel) line parser and encoder
- * =============================================================================
- * Exactly the subset python-can's `slcan` backend (can/interfaces/slcan.py,
- * python-can 4.x) sends and parses. Lines are terminated by CR, which is not
- * part of the `line` handed to slcan_parse_line(). Opening with a bitrate,
- * python-can 4.6 sends "C", "S5", "" (its empty FD data-bitrate code), "O",
- * "O"; shutdown sends "C".
+/**
+ * @file    slcan_codec.h
+ * @brief   Pure-logic SLCAN (Lawicel) line parser and encoder.
  *
+ * Exactly the subset python-can's `slcan` backend (can/interfaces/slcan.py, python-can 4.x) sends
+ * and parses (below), so the SLCAN bridge serves tools/can-flash unchanged.
+ *
+ * Not here:     The USB and TWAI I/O (examples/slcan_bridge).
+ * Invariants:   Lines are terminated by CR, which is not part of the `line` handed to
+ *               slcan_parse_line(). Opening with a bitrate, python-can 4.6 sends "C", "S5", ""
+ *               (its empty FD data-bitrate code), "O", "O"; shutdown sends "C".
+ * Errors:       Calls return slcan_status_t; anything outside the subset is SLCAN_STATUS_ERROR.
+ * Depends on:   Pure C over byte buffers: no ESP-IDF includes, host-tested in tests/.
+ *
+ * @see     slcan_codec.c, test_slcan_codec.c, docs/guides/slcan-bridge.md
+ */
+
+/*
  *   host -> adapter            adapter -> host
  *   ""   (bare CR)             SLCAN_ACK; python-can sends one after Sn
  *   C  O  L                    SLCAN_ACK / SLCAN_NAK
@@ -21,9 +30,7 @@
  * malformed hex, out-of-range IDs, DLC > 8, trailing bytes) parses as
  * SLCAN_STATUS_ERROR and is answered with SLCAN_NAK. python-can ignores every
  * reply byte, so a NAK only ever matters to a human on a terminal.
- *
- * Pure C over byte buffers: no ESP-IDF includes, host-tested in tests/.
- * ============================================================================= */
+ */
 
 #ifndef SLCAN_CODEC_H
 #define SLCAN_CODEC_H

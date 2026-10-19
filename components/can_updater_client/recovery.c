@@ -1,4 +1,15 @@
-/* recovery.c — Explicit app-side health tracking for the node bootloader. */
+/**
+ * @file    recovery.c
+ * @brief   Explicit app-side health tracking for the node bootloader (see can_updater_client.h for
+ *          the contract).
+ *
+ * Implementation notes: a shutdown handler sets the one-use clean-restart mark in RTC retained
+ * memory; a static task pinned to CPU0 (which owns that memory) clears both counters after
+ * BOOT_COUNTER_STABLE_MS. Clears are serialized by a mutex and read-back verified, and a latched
+ * trip is cleared only by the factory updater.
+ *
+ * @see     can_updater_client.h, boot_counter.h, node_updater/bootloader_components/main/boot.c
+ */
 #include "can_updater_client.h"
 
 #include <string.h>

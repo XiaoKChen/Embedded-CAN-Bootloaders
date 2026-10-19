@@ -1,9 +1,12 @@
-/* =============================================================================
- * node_reset.c — the brain's reset line to the node
- * =============================================================================
- * See node_reset.h for the public interface. Recovery pulses HIGH to reset,
- * LOW to run, and the final GPIO operation releases the node.
- * ============================================================================= */
+/**
+ * @file    node_reset.c
+ * @brief   The brain's reset line to the node (see node_reset.h for the contract).
+ *
+ * Implementation notes: recovery pulses HIGH to reset, LOW to run, and the final GPIO operation
+ * releases the node.
+ *
+ * @see     node_reset.h
+ */
 
 #include "node_reset.h"
 

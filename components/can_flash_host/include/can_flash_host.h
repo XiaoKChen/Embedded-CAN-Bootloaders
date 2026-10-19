@@ -1,10 +1,24 @@
-/* =============================================================================
- * can_flash_host.h — Allocation-free CAN Update Protocol v1 host
- * =============================================================================
- * Blocking, single-owner API. Use one context per bus and serialize operations.
- * The transport must deliver standard frames from ANY reply ID for discovery.
- * No ESP-IDF types; constants/CRC are shared with the real node engine.
- * ============================================================================= */
+/**
+ * @file    can_flash_host.h
+ * @brief   Allocation-free CAN Update Protocol v1 host: discovery, flashing and app control.
+ *
+ * Drives nodes over injected bus, clock and image callbacks: INFO, scan and discovery, the
+ * HELLO -> GO flash sequence and the app-control requests. Constants and CRC are shared with the
+ * real node engine, which the host tests run it against.
+ *
+ * Owns:         The host-side timeouts, retries and window rewinds, and the last operation's
+ *               result (can_flash_host_t.result).
+ * Not here:     The CAN transport, clock and image storage (the caller's callbacks); the node
+ *               engine (can_update.h) and the app-control codec (app_control.h).
+ * Invariants:   The transport must deliver standard frames from ANY reply ID for discovery. No
+ *               ESP-IDF types.
+ * Concurrency:  Blocking, single-owner API. Use one context per bus and serialize operations.
+ * Errors:       Every operation returns can_flash_host_status_t and records the step, NAK and
+ *               window in result; can_flash_host_result_text() renders it.
+ * Depends on:   app_control.h, can_update.h, dfu_config.h.
+ *
+ * @see     can_flash_host.c, test_can_flash_host.c, docs/reference/can-protocol.md
+ */
 #ifndef CAN_FLASH_HOST_H
 #define CAN_FLASH_HOST_H
 

@@ -1,11 +1,15 @@
-/* =============================================================================
- * can_link.c — TWAI link driver over the ESP-IDF v5.3 legacy TWAI API
- * =============================================================================
- * The driver's own ISR fills an RX queue; this module only blocks on that
- * queue, so no ISR lives here. Hardware filtering (single-filter mode, the
- * 11-bit ID compared, RTR and data bytes don't-care) keeps unrelated bus
- * traffic from ever reaching the RX queue, unless accept_all opens it up.
- * ============================================================================= */
+/**
+ * @file    can_link.c
+ * @brief   TWAI link driver over the ESP-IDF v5.3 legacy TWAI API (see can_link.h for the
+ *          contract).
+ *
+ * Implementation notes: the driver's own ISR fills an RX queue; this module only blocks on that
+ * queue, so no ISR lives here. Hardware filtering (single-filter mode, the 11-bit ID compared, RTR
+ * and data bytes don't-care) keeps unrelated bus traffic from ever reaching the RX queue, unless
+ * accept_all opens it up.
+ *
+ * @see     can_link.h
+ */
 
 #include "can_link.h"
 

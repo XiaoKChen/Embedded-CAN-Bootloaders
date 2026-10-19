@@ -57,6 +57,8 @@ static can_flash_host_status_t send_frame(can_flash_host_t *h, uint16_t id, cons
            outcome(h, CAN_FLASH_HOST_STATUS_TRANSPORT);
 }
 
+static can_flash_host_status_t flush_queued(can_flash_host_t *h);
+
 static can_flash_host_status_t drain(can_flash_host_t *h, uint32_t quiet)
 {
     can_flash_host_frame_t f;
@@ -126,7 +128,8 @@ static can_flash_host_status_t info_probe(can_flash_host_t *h, uint16_t cmd_id,
     const uint32_t tries = scan ? 1u : CAN_FLASH_HOST_ATTEMPTS;
     for (uint32_t attempt = 1u; attempt <= tries; ++attempt) {
         h->result.attempts = attempt;
-        if (drain(h, scan ? 0u : CAN_FLASH_HOST_QUIET_MS) != CAN_FLASH_HOST_STATUS_OK ||
+        /* A scan must not wait for a quiet bus: running apps never offer one. */
+        if ((scan ? flush_queued(h) : drain(h, CAN_FLASH_HOST_QUIET_MS)) != CAN_FLASH_HOST_STATUS_OK ||
             send_frame(h, cmd_id, p) != CAN_FLASH_HOST_STATUS_OK) { return h->result.status; }
         const uint32_t start = h->clock_ms(h->user);
         can_flash_host_frame_t f;
@@ -163,6 +166,15 @@ can_flash_host_status_t can_flash_host_info(can_flash_host_t *h, uint16_t cmd_id
     return info_probe(h, cmd_id, reply_id, false, info);
 }
 
+static bool scan_candidate(uint16_t id, uint16_t from, uint16_t to)
+{
+    if ((id >= from && id <= to) || id == CAN_ID_HOST_TO_BOOT) { return true; }
+    for (size_t i = 0u; i < sizeof(s_known_cmd_ids) / sizeof(s_known_cmd_ids[0]); ++i) {
+        if (id == s_known_cmd_ids[i]) { return true; }
+    }
+    return false;
+}
+
 can_flash_host_status_t can_flash_host_scan(can_flash_host_t *h, uint16_t from, uint16_t to,
                                            can_flash_host_info_t results[], uint32_t max, uint32_t *count)
 {
@@ -173,11 +185,7 @@ can_flash_host_status_t can_flash_host_scan(can_flash_host_t *h, uint16_t from, 
     *count = 0u;
     bool full = false;
     for (uint16_t id = 0u; id <= DFU_CONFIG_CAN_ID_MAX; ++id) {
-        bool known = false;
-        for (size_t i = 0u; i < sizeof(s_known_cmd_ids) / sizeof(s_known_cmd_ids[0]); ++i) {
-            if (id == s_known_cmd_ids[i]) { known = true; break; }
-        }
-        if (!(id >= from && id <= to) && id != CAN_ID_HOST_TO_BOOT && !known) { continue; }
+        if (!scan_candidate(id, from, to)) { continue; }
         can_flash_host_info_t info;
         const can_flash_host_status_t status = info_probe(h, id, 0u, true, &info);
         if (status == CAN_FLASH_HOST_STATUS_TIMEOUT) { continue; }
@@ -323,10 +331,10 @@ static can_flash_host_status_t flush_queued(can_flash_host_t *h)
 /* Next standard data frame on reply_id before the attempt deadline. Frames on
  * other IDs belong to other traffic and are skipped. */
 static can_flash_host_status_t app_frame(can_flash_host_t *h, uint16_t reply_id, uint32_t start,
-                                         can_flash_host_frame_t *f)
+                                         uint32_t timeout, can_flash_host_frame_t *f)
 {
     for (;;) {
-        const uint32_t left = remaining(h, start, CAN_FLASH_HOST_APP_MS);
+        const uint32_t left = remaining(h, start, timeout);
         if (left == 0u) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
         const can_flash_host_io_t io = h->receive(h->user, f, left);
         if (io == CAN_FLASH_HOST_IO_TIMEOUT) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
@@ -340,13 +348,14 @@ static can_flash_host_status_t app_frame(can_flash_host_t *h, uint16_t reply_id,
 /* The 8 APP_INFO body frames after an accepted header, then the codec's
  * complete-burst checks. */
 static can_flash_host_status_t app_info_body(can_flash_host_t *h, uint16_t reply_id, uint32_t start,
-                                             const can_flash_host_frame_t *header, app_control_info_t *info)
+                                             uint32_t timeout, const can_flash_host_frame_t *header,
+                                             app_control_info_t *info)
 {
     uint8_t frames[APP_CONTROL_INFO_BYTES];
     memcpy(frames, header->data, CAN_FLASH_HOST_DLC);
     for (uint32_t off = CAN_FLASH_HOST_DLC; off < sizeof(frames); off += CAN_FLASH_HOST_DLC) {
         can_flash_host_frame_t f;
-        const can_flash_host_status_t status = app_frame(h, reply_id, start, &f);
+        const can_flash_host_status_t status = app_frame(h, reply_id, start, timeout, &f);
         if (status != CAN_FLASH_HOST_STATUS_OK) { return status; }
         memcpy(&frames[off], f.data, CAN_FLASH_HOST_DLC);
     }
@@ -370,7 +379,7 @@ static can_flash_host_status_t app_request(can_flash_host_t *h, uint16_t cmd_id,
         app_control_reply_t kind = APP_CONTROL_REPLY_FOREIGN;
         can_flash_host_status_t status;
         do {
-            status = app_frame(h, reply_id, start, &f);
+            status = app_frame(h, reply_id, start, CAN_FLASH_HOST_APP_MS, &f);
             if (status == CAN_FLASH_HOST_STATUS_OK) {
                 kind = app_control_classify_reply(cmd, f.data);
                 /* Our echo with nonsense is malformed; other replies on the
@@ -389,7 +398,7 @@ static can_flash_host_status_t app_request(can_flash_host_t *h, uint16_t cmd_id,
         if (kind == APP_CONTROL_REPLY_UPDATER_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_IN_UPDATER); }
         if (kind == APP_CONTROL_REPLY_APP_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_NAK); }
         if (info == NULL) { return outcome(h, CAN_FLASH_HOST_STATUS_OK); }
-        status = app_info_body(h, reply_id, start, &f, info);
+        status = app_info_body(h, reply_id, start, CAN_FLASH_HOST_APP_MS, &f, info);
         if (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_TRANSPORT) {
             return outcome(h, status);
         }
@@ -418,6 +427,73 @@ can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *h, uint16
     if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
     memset(&h->result, 0, sizeof(h->result));
     return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_ENTER_UPDATER, NULL);
+}
+
+/* One scan probe: APP_INFO on any reply ID within one SCAN_MS window. TIMEOUT
+ * means nothing usable answered. */
+static can_flash_host_status_t discover_probe(can_flash_host_t *h, uint16_t cmd_id,
+                                              can_flash_host_node_t *node)
+{
+    uint8_t request[CAN_FLASH_HOST_DLC];
+    app_control_encode_request(CAN_UPDATE_CMD_APP_INFO, request);
+    h->result.step = CAN_FLASH_HOST_STEP_APP_INFO;
+    h->result.attempts = 1u;
+    if (flush_queued(h) != CAN_FLASH_HOST_STATUS_OK ||
+        send_frame(h, cmd_id, request) != CAN_FLASH_HOST_STATUS_OK) { return h->result.status; }
+    const uint32_t start = h->clock_ms(h->user);
+    for (;;) {
+        can_flash_host_frame_t f;
+        const can_flash_host_io_t io = h->receive(h->user, &f, remaining(h, start, CAN_FLASH_HOST_SCAN_MS));
+        if (io == CAN_FLASH_HOST_IO_TIMEOUT) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
+        if (io != CAN_FLASH_HOST_IO_OK) { return outcome(h, CAN_FLASH_HOST_STATUS_TRANSPORT); }
+        if (!data_frame(&f)) { continue; }
+        const app_control_reply_t kind = app_control_classify_reply(CAN_UPDATE_CMD_APP_INFO, f.data);
+        if (kind == APP_CONTROL_REPLY_UPDATER_NAK) {
+            can_flash_host_info_t updater;
+            const can_flash_host_status_t status = info_probe(h, cmd_id, 0u, true, &updater);
+            if (status != CAN_FLASH_HOST_STATUS_OK) { return status; }
+            node->mode = CAN_FLASH_HOST_NODE_UPDATER;
+            node->reply_id = updater.reply_id;
+            node->protocol_version = updater.protocol_version;
+            node->name_len = updater.name_len;
+            memcpy(node->name, updater.name, sizeof(node->name));
+            return status;
+        }
+        if (kind != APP_CONTROL_REPLY_APP_ACK) { continue; }
+        app_control_info_t app;
+        const can_flash_host_status_t status =
+            app_info_body(h, (uint16_t)f.id, start, CAN_FLASH_HOST_SCAN_MS, &f, &app);
+        if (status == CAN_FLASH_HOST_STATUS_TRANSPORT) { return status; }
+        if (status != CAN_FLASH_HOST_STATUS_OK) { return CAN_FLASH_HOST_STATUS_TIMEOUT; }
+        node->mode = CAN_FLASH_HOST_NODE_APP;
+        node->reply_id = (uint16_t)f.id;
+        node->protocol_version = app.protocol_version;
+        memcpy(node->project, app.project_name, sizeof(node->project));
+        memcpy(node->version, app.version, sizeof(node->version));
+        return outcome(h, CAN_FLASH_HOST_STATUS_OK);
+    }
+}
+
+can_flash_host_status_t can_flash_host_discover(can_flash_host_t *h, uint16_t from, uint16_t to,
+                                               can_flash_host_node_t results[], uint32_t max, uint32_t *count)
+{
+    if (!valid_host(h) || count == NULL || (max != 0u && results == NULL) || from > to || to > DFU_CONFIG_CAN_ID_MAX) {
+        return CAN_FLASH_HOST_STATUS_INVALID_ARG;
+    }
+    memset(&h->result, 0, sizeof(h->result));
+    *count = 0u;
+    bool full = false;
+    for (uint16_t id = 0u; id <= DFU_CONFIG_CAN_ID_MAX; ++id) {
+        if (!scan_candidate(id, from, to)) { continue; }
+        can_flash_host_node_t node;
+        memset(&node, 0, sizeof(node));
+        node.cmd_id = id;
+        const can_flash_host_status_t status = discover_probe(h, id, &node);
+        if (status == CAN_FLASH_HOST_STATUS_TIMEOUT) { continue; }
+        if (status != CAN_FLASH_HOST_STATUS_OK) { return status; }
+        if (*count < max) { results[(*count)++] = node; } else { full = true; }
+    }
+    return outcome(h, full ? CAN_FLASH_HOST_STATUS_CAPACITY : CAN_FLASH_HOST_STATUS_OK);
 }
 
 void can_flash_host_result_text(const can_flash_host_result_t *r, char *buf, size_t len)

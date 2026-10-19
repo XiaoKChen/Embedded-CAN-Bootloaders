@@ -51,7 +51,7 @@ static bool s_link_ready;
 static can_flash_host_t s_host;
 static uint8_t s_chunk[STAGE_CHUNK_BYTES];
 static uint8_t s_readback[STAGE_CHUNK_BYTES];
-static can_flash_host_info_t s_found[SCAN_MAX_NODES];
+static can_flash_host_node_t s_found[SCAN_MAX_NODES];
 static uint16_t s_cmd_id, s_reply_id;
 static uint32_t s_image_size;
 
@@ -189,6 +189,8 @@ bool node_flash_transport(can_flash_host_t *host)
     return true;
 }
 
+static void json_escape(const char *text, char *out, size_t capacity);
+
 esp_err_t node_flash_scan(httpd_req_t *req)
 {
     if (!s_link_ready) { return respond(req, "503 Service Unavailable", "CAN link unavailable\n"); }
@@ -197,7 +199,7 @@ esp_err_t node_flash_scan(httpd_req_t *req)
         return respond(req, "400 Bad Request", "Expected 0 <= from <= to <= 0x7FF\n");
     }
     uint32_t count;
-    const can_flash_host_status_t status = can_flash_host_scan(&s_host, from, to, s_found, SCAN_MAX_NODES, &count);
+    const can_flash_host_status_t status = can_flash_host_discover(&s_host, from, to, s_found, SCAN_MAX_NODES, &count);
     if (status != CAN_FLASH_HOST_STATUS_OK && status != CAN_FLASH_HOST_STATUS_CAPACITY) {
         char text[NODE_STATUS_BYTES];
         can_flash_host_result_text(&s_host.result, text, sizeof(text));
@@ -215,9 +217,19 @@ esp_err_t node_flash_scan(httpd_req_t *req)
                            "\\u%04x", byte < 0x80u ? byte : 0xFFFDu);
         }
         name[s_found[i].name_len * JSON_ESCAPE_BYTES] = '\0';
-        char json[NODE_JSON_BYTES];
-        (void)snprintf(json, sizeof(json), "%s{\"cmd_id\":%u,\"reply_id\":%u,\"name\":\"%s\",\"protocol\":%u}",
-                       i == 0u ? "" : ",", s_found[i].cmd_id, s_found[i].reply_id, name, s_found[i].protocol_version);
+        char json[APP_JSON_BYTES];
+        if (s_found[i].mode == CAN_FLASH_HOST_NODE_APP) {
+            char project[APP_TEXT_BYTES], version[APP_TEXT_BYTES];
+            json_escape(s_found[i].project, project, sizeof(project));
+            json_escape(s_found[i].version, version, sizeof(version));
+            (void)snprintf(json, sizeof(json), "%s{\"cmd_id\":%u,\"reply_id\":%u,\"mode\":\"app\",\"protocol\":%u,"
+                           "\"project\":\"%s\",\"version\":\"%s\"}",
+                           i == 0u ? "" : ",", s_found[i].cmd_id, s_found[i].reply_id, s_found[i].protocol_version,
+                           project, version);
+        } else {
+            (void)snprintf(json, sizeof(json), "%s{\"cmd_id\":%u,\"reply_id\":%u,\"mode\":\"updater\",\"name\":\"%s\",\"protocol\":%u}",
+                           i == 0u ? "" : ",", s_found[i].cmd_id, s_found[i].reply_id, name, s_found[i].protocol_version);
+        }
         err = httpd_resp_sendstr_chunk(req, json);
     }
     if (err == ESP_OK) {

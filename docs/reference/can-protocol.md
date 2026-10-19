@@ -58,9 +58,13 @@ incomplete/foreign burst is retried (or a scan miss), not guessed.
 Provisioned names are ASCII, at most 32 bytes; unprovisioned boards answer
 with an empty name.
 
-A scan sends INFO to each candidate command ID and listens on **any**
-standard reply ID, because a board's reply ID is arbitrary; it requires the
-header plus four name frames on the same ID. Default candidates: the band
+A scan (`can_flash_host_scan`, updaters only) sends INFO to each candidate
+command ID and listens on **any** standard reply ID, because a board's reply
+ID is arbitrary; it requires the header plus four name frames on the same ID.
+The discovery scan (`can_flash_host_discover`, used by the brain's
+`/node/scan`) also finds **running apps**: see
+[Discovering apps and updaters](#discovering-apps-and-updaters). Default
+candidates: the band
 `0x700..0x71F`, plus `0x79E`, plus the known-device command IDs
 `0x01, 0x03, 0x05, 0x07, 0x09`. Multiple parked nodes need distinct command
 IDs and unambiguous reply IDs. Brain specifics:
@@ -99,6 +103,23 @@ touching its session. So:
 | ACK/NAK with arg `0xA5` | a running app with the CAN service |
 | NAK err `0x05`, arg `0x00` | the updater (already parked) |
 | silence | neither: no node on those IDs, or an app without the CAN service (e.g. `examples/bench_app`) |
+
+### Discovering apps and updaters
+
+`can_flash_host_discover` probes each candidate command ID (same set as the
+INFO scan) with **APP_INFO** once, listening on any standard reply ID for one
+300 ms window, ignoring extended, RTR and error frames:
+
+| First valid frame | Result |
+|---|---|
+| APP_INFO ACK header (arg `0xA5`) followed by a complete, check-valid 9-frame burst on the same ID | `app`: project, version, protocol; reply ID = that burst's ID |
+| NAK err `0x05`, arg `0x00` | `updater`: the usual INFO exchange follows on the same ID for name and protocol |
+| nothing, or a partial/corrupt/foreign burst | skipped |
+
+Silent IDs cost one window, so a default scan is still about 38 x 300 ms
+(11.4 s); responders cost no extra waiting except a parked updater's INFO
+round trip. Stale frames are flushed without waiting for a quiet bus, since
+running apps keep the bus busy. Nodes still need distinct command IDs.
 
 Hosts send ENTER_UPDATER (up to three 0.5 s attempts) and, on an app ACK, wait
 1.5 s for the updater to boot before INFO/HELLO.

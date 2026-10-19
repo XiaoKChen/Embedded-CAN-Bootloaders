@@ -109,7 +109,8 @@ instance) can then only be replaced over USB.
 
 ## `GET /node/scan`
 
-Discovers parked node updaters with INFO.
+Discovers nodes on the CAN bus, both **parked updaters** and **running
+apps** with the CAN service (`examples/node_app`).
 
 ```sh
 curl.exe http://<ip>/node/scan
@@ -118,14 +119,24 @@ curl.exe "http://<ip>/node/scan?from=0x700&to=0x73F"
 
 Default scan: sorted unique `0x700..0x71F`, plus `0x79E` and known command
 IDs `1,3,5,7,9`. Overrides replace only the range; the extra IDs are always
-probed. Each probe has a **300 ms total INFO deadline**, listens on any
-standard reply ID, and requires the header plus four name frames on the
-same ID. An empty/default scan takes about **11.4 s**. With one unprovisioned
-node, expect:
+probed. Each ID is probed once with APP_INFO within a **300 ms total
+deadline**, listening on any standard reply ID. A running app answers with its
+complete 9-frame reply (`mode:"app"`); an updater NAKs it, then answers an
+INFO exchange for its name (`mode:"updater"`, the header plus four name frames
+on the same ID). Silent IDs cost one window, so an empty/default scan still
+takes about **11.4 s**. With one parked, unprovisioned node and one running
+app, expect:
 
 ```json
-{"nodes":[{"cmd_id":1950,"reply_id":1951,"name":"","protocol":1}],"truncated":false}
+{"nodes":[{"cmd_id":5,"reply_id":6,"mode":"app","protocol":1,"project":"node_app","version":"v2.4.1"},{"cmd_id":1950,"reply_id":1951,"mode":"updater","name":"","protocol":1}],"truncated":false}
 ```
+
+Each entry always has `cmd_id`, `reply_id`, `mode` and `protocol`. `updater`
+entries add `name` (as before); `app` entries add `project` and `version`
+instead of a name. Clients that only know updaters should skip entries whose
+`mode` is not `updater`, and treat a missing `mode` as `updater` (older
+firmware). Flash an `app` with the same IDs: `/node/flash` sends ENTER_UPDATER
+first.
 
 | Status | Cause |
 |---|---|
@@ -137,8 +148,10 @@ node, expect:
 
 The brain stores at most 64 scan results; `truncated:true` asks you to narrow
 the range. Names are JSON-escaped (including embedded control characters):
-every name byte is sent as a `\uXXXX` escape, non-ASCII as U+FFFD. A running
-app does not answer INFO, so it is not listed.
+every name byte is sent as a `\uXXXX` escape, non-ASCII as U+FFFD. `project`
+and `version` are JSON-escaped like `/node/app_info` (printable ASCII as is,
+other bytes as `\uXXXX`). An app without the CAN service (for example
+`examples/bench_app`) stays silent and is not listed.
 
 ## `POST /node/flash`
 

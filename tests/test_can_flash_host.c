@@ -16,23 +16,24 @@
 #define IMAGE_BYTES (2u * CAN_UPDATE_WINDOW_SIZE + 1003u)
 #define LARGE_BYTES (132u * CAN_UPDATE_WINDOW_SIZE + 19u)
 #define QUEUE_FRAMES 64u
-#define NODES 3u
+#define NODES 3u      /* the three-node updater scans use nodes 0..2 */
+#define NODES_MAX 5u  /* nodes 3..4 add custom IDs for mixed app/updater scans */
 #define NO_FAULT UINT32_MAX
 
 static uint8_t s_image[SLOT_BYTES];
 static uint8_t s_slot[SLOT_BYTES];
-static can_update_state_t s_nodes[NODES];
-static const uint16_t s_cmd[NODES] = { CAN_ID_HOST_TO_BOOT, 0x705u, 7u };
-static const uint16_t s_reply[NODES] = { CAN_ID_BOOT_TO_HOST, 0x7ABu, 0x7CDu };
-static char s_names[NODES][DFU_CONFIG_STR_MAX + 1u];
-static uint8_t s_name_len[NODES];
+static can_update_state_t s_nodes[NODES_MAX];
+static const uint16_t s_cmd[NODES_MAX] = { CAN_ID_HOST_TO_BOOT, 0x705u, 7u, 0x05u, 0x701u };
+static const uint16_t s_reply[NODES_MAX] = { CAN_ID_BOOT_TO_HOST, 0x7ABu, 0x7CDu, 0x06u, 0x702u };
+static char s_names[NODES_MAX][DFU_CONFIG_STR_MAX + 1u];
+static uint8_t s_name_len[NODES_MAX];
 static can_flash_host_frame_t s_queue[QUEUE_FRAMES];
 static uint32_t s_head, s_tail, s_now, s_node_count, s_data_count, s_progress;
 static uint32_t s_drop_data, s_drop_ack_window, s_duplicate_data, s_reset_data;
 static uint32_t s_fail_programs, s_verify_count, s_commands[UINT8_MAX + 1u];
 static uint8_t s_drop_command_ack;
 static bool s_corrupt, s_reject, s_activated, s_fail_send, s_bad_dlc;
-static bool s_app_mode[NODES], s_app_noise, s_app_corrupt, s_drop_enter_ack, s_app_refuse;
+static bool s_app_mode[NODES_MAX], s_app_ext_noise, s_app_noise, s_app_corrupt, s_drop_enter_ack, s_app_refuse;
 static uint32_t s_app_drop_frame, s_app_restarts;
 #define NOISE_ID 0x123u
 #define APP_VERSION "v2.4.1-node"
@@ -81,6 +82,14 @@ static void dispatch_app(uint32_t node, const can_flash_host_frame_t *frame)
         uint8_t frames[APP_CONTROL_INFO_BYTES];
         app_control_encode_info(APP_VERSION, APP_PROJECT, frames);
         if (s_app_corrupt) { frames[10] ^= 1u; }
+        if (s_app_ext_noise) {  /* valid-looking header that is not a standard data frame */
+            enqueue(s_reply[node], frames);
+            s_queue[(s_tail - 1u) % QUEUE_FRAMES].extended = true;
+            enqueue(s_reply[node], frames);
+            s_queue[(s_tail - 1u) % QUEUE_FRAMES].remote = true;
+            enqueue(s_reply[node], frames);
+            s_queue[(s_tail - 1u) % QUEUE_FRAMES].error = true;
+        }
         for (uint32_t i = 0u; i < APP_CONTROL_INFO_FRAMES; ++i) {
             if (s_app_noise) {
                 const uint8_t noise[8] = { CAN_UPDATE_REPLY_MARKER, CAN_UPDATE_CMD_APP_INFO, 0, 0, 0, 0, 0, 0 };
@@ -204,14 +213,14 @@ void setUp(void)
     s_drop_command_ack = 0u;
     s_corrupt = s_reject = s_activated = s_fail_send = s_bad_dlc = false;
     memset(s_app_mode, 0, sizeof(s_app_mode));
-    s_app_noise = s_app_corrupt = s_drop_enter_ack = s_app_refuse = false;
+    s_app_ext_noise = s_app_noise = s_app_corrupt = s_drop_enter_ack = s_app_refuse = false;
     s_app_drop_frame = NO_FAULT;
     s_app_restarts = 0u;
     memset(s_commands, 0, sizeof(s_commands));
     memset(s_names, 0, sizeof(s_names));
     memset(s_name_len, 0, sizeof(s_name_len));
     for (uint32_t i = 0u; i < SLOT_BYTES; ++i) { s_image[i] = (uint8_t)((i * 37u) ^ (i >> 8u)); }
-    for (uint32_t i = 0u; i < NODES; ++i) { can_update_init(&s_nodes[i], &s_hal, s_cmd[i]); }
+    for (uint32_t i = 0u; i < NODES_MAX; ++i) { can_update_init(&s_nodes[i], &s_hal, s_cmd[i]); }
     s_host = (can_flash_host_t){ .send = bus_send, .receive = bus_receive,
         .clock_ms = clock_ms, .read = read_image, .progress = progress };
 }
@@ -505,6 +514,134 @@ static void test_app_control_invalid_args(void)
     TEST_ASSERT_EQUAL_UINT32(0u, s_commands[CAN_UPDATE_CMD_APP_INFO] + s_commands[CAN_UPDATE_CMD_ENTER_UPDATER]);
 }
 
+static void name_node(uint32_t node, const char *name)
+{
+    s_name_len[node] = (uint8_t)strlen(name);
+    memcpy(s_names[node], name, s_name_len[node]);
+}
+/* Bus: updater 0x79E, app 0x705, updater 0x07, app 0x05, updater 0x701. */
+static void mixed_bus(void)
+{
+    s_node_count = NODES_MAX;
+    s_app_mode[1] = true;
+    s_app_mode[3] = true;
+    name_node(0u, "Legacy");
+    name_node(2u, "Known-C");
+    name_node(4u, "Custom-E");
+}
+static void assert_updater(const can_flash_host_node_t *n, uint32_t node)
+{
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_NODE_UPDATER, n->mode);
+    TEST_ASSERT_EQUAL_UINT16(s_cmd[node], n->cmd_id);
+    TEST_ASSERT_EQUAL_UINT16(s_reply[node], n->reply_id);
+    TEST_ASSERT_EQUAL_UINT8(CAN_UPDATE_PROTOCOL_VERSION, n->protocol_version);
+    TEST_ASSERT_EQUAL_UINT8(s_name_len[node], n->name_len);
+    TEST_ASSERT_EQUAL_STRING(s_names[node], n->name);
+    TEST_ASSERT_EQUAL_STRING("", n->project);
+    TEST_ASSERT_EQUAL_STRING("", n->version);
+}
+static void assert_app(const can_flash_host_node_t *n, uint32_t node)
+{
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_NODE_APP, n->mode);
+    TEST_ASSERT_EQUAL_UINT16(s_cmd[node], n->cmd_id);
+    TEST_ASSERT_EQUAL_UINT16(s_reply[node], n->reply_id);
+    TEST_ASSERT_EQUAL_UINT8(CAN_UPDATE_PROTOCOL_VERSION, n->protocol_version);
+    TEST_ASSERT_EQUAL_STRING(APP_PROJECT, n->project);
+    TEST_ASSERT_EQUAL_STRING(APP_VERSION, n->version);
+    TEST_ASSERT_EQUAL_UINT8(0u, n->name_len);
+    TEST_ASSERT_EQUAL_STRING("", n->name);
+}
+static can_flash_host_status_t discover(can_flash_host_node_t *found, uint32_t max, uint32_t *count)
+{
+    return can_flash_host_discover(&s_host, CAN_FLASH_HOST_SCAN_FROM, CAN_FLASH_HOST_SCAN_TO, found, max, count);
+}
+static void assert_mixed_found(const can_flash_host_node_t found[NODES_MAX])
+{
+    assert_app(&found[0], 3u);      /* 0x05 / 0x06 */
+    assert_updater(&found[1], 2u);  /* 0x07 / 0x7CD */
+    assert_updater(&found[2], 4u);  /* 0x701 / 0x702 */
+    assert_app(&found[3], 1u);      /* 0x705 / 0x7AB */
+    assert_updater(&found[4], 0u);  /* 0x79E / 0x79F */
+}
+static void test_discover_mixed_apps_and_updaters(void)
+{
+    mixed_bus();
+    can_flash_host_node_t found[NODES_MAX];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, discover(found, NODES_MAX, &count));
+    TEST_ASSERT_EQUAL_UINT32(NODES_MAX, count);
+    assert_mixed_found(found);
+    /* One APP_INFO probe per ID; INFO only follows an updater's NAK. */
+    TEST_ASSERT_EQUAL_UINT32(38u, s_commands[CAN_UPDATE_CMD_APP_INFO]);
+    TEST_ASSERT_EQUAL_UINT32(3u, s_commands[CAN_UPDATE_CMD_INFO]);
+    /* Only silent IDs consume a window: no slower than a plain scan. */
+    TEST_ASSERT_EQUAL_UINT32((38u - NODES_MAX) * CAN_FLASH_HOST_SCAN_MS, s_now);
+    TEST_ASSERT_TRUE(s_now <= 38u * CAN_FLASH_HOST_SCAN_MS);
+}
+static void test_discover_silence_costs_one_window_per_id(void)
+{
+    can_flash_host_node_t found[1];
+    uint32_t count = 99u;
+    s_node_count = 0u;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, discover(found, 1u, &count));
+    TEST_ASSERT_EQUAL_UINT32(0u, count);
+    TEST_ASSERT_EQUAL_UINT32(38u * CAN_FLASH_HOST_SCAN_MS, s_now);
+}
+static void test_discover_ignores_non_standard_and_foreign_frames(void)
+{
+    mixed_bus();
+    s_app_ext_noise = true;
+    s_app_noise = true;
+    can_flash_host_node_t found[NODES_MAX];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, discover(found, NODES_MAX, &count));
+    TEST_ASSERT_EQUAL_UINT32(NODES_MAX, count);
+    assert_mixed_found(found);
+}
+static void test_discover_skips_corrupt_and_partial_app_bursts(void)
+{
+    mixed_bus();
+    s_app_corrupt = true;
+    can_flash_host_node_t found[NODES_MAX];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, discover(found, NODES_MAX, &count));
+    TEST_ASSERT_EQUAL_UINT32(3u, count);  /* the three updaters only */
+    for (uint32_t i = 0u; i < count; ++i) { TEST_ASSERT_EQUAL(CAN_FLASH_HOST_NODE_UPDATER, found[i].mode); }
+    s_app_corrupt = false;
+    s_app_drop_frame = 4u;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, discover(found, NODES_MAX, &count));
+    TEST_ASSERT_EQUAL_UINT32(4u, count);  /* the first app burst lost a frame */
+}
+static void test_discover_capacity_and_invalid_args(void)
+{
+    mixed_bus();
+    can_flash_host_node_t found[2];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_CAPACITY, discover(found, 2u, &count));
+    TEST_ASSERT_EQUAL_UINT32(2u, count);
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_discover(&s_host, 5u, 4u, found, 2u, &count));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_discover(&s_host, 0u, 0x800u, found, 2u, &count));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_discover(&s_host, 0u, 1u, NULL, 2u, &count));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_discover(&s_host, 0u, 1u, found, 2u, NULL));
+}
+static void test_discover_transport_error(void)
+{
+    s_fail_send = true;
+    can_flash_host_node_t found[1];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TRANSPORT, discover(found, 1u, &count));
+}
+static void test_scan_still_lists_updaters_only(void)
+{
+    mixed_bus();
+    can_flash_host_info_t found[NODES_MAX];
+    uint32_t count;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, can_flash_host_scan(&s_host, CAN_FLASH_HOST_SCAN_FROM,
+                      CAN_FLASH_HOST_SCAN_TO, found, NODES_MAX, &count));
+    TEST_ASSERT_EQUAL_UINT32(3u, count);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_commands[CAN_UPDATE_CMD_APP_INFO]);
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -555,5 +692,12 @@ int main(int argc, char **argv)
     RUN_TEST(test_enter_updater_timeout);
     RUN_TEST(test_enter_updater_malformed);
     RUN_TEST(test_app_control_invalid_args);
+    RUN_TEST(test_discover_mixed_apps_and_updaters);
+    RUN_TEST(test_discover_silence_costs_one_window_per_id);
+    RUN_TEST(test_discover_ignores_non_standard_and_foreign_frames);
+    RUN_TEST(test_discover_skips_corrupt_and_partial_app_bursts);
+    RUN_TEST(test_discover_capacity_and_invalid_args);
+    RUN_TEST(test_discover_transport_error);
+    RUN_TEST(test_scan_still_lists_updaters_only);
     return UNITY_END();
 }

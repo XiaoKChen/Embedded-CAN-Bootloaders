@@ -12,7 +12,7 @@ uv run esp-prog2-flasher --flash-solo idu --port COM8 --bundle path/to/unzipped-
 uv run esp-prog2-flasher --flash-solo --port COM8 --bundle path/to/unzipped-bundle
 ```
 
-The bundle is `esp32s3-can-updater-<version>.zip`, containing one bootloader, one updater, both partition tables, blank `otadata` and `manifest.json`. From the first published release (`c-cpp-esp32-v1.2.0`, **not yet tagged** on this branch), use `--bundle-tag c-cpp-esp32-v1.2.0` instead of `--bundle` to fetch it with authenticated `gh`. Until then, use a locally built, unzipped [bundle](../getting-started/build.md#outputs). Do not pass both options. `--manufacturer NAME` overrides the preset manufacturer; preset product and IDs cannot be overridden. `--migrate-stock` first erases `0x10000..0x1FFFF` when moving from a stock Arduino layout. `--app app.bin` additionally writes an app to `ota_0` and selects it in `otadata`; without it the factory updater boots.
+The bundle is `esp32s3-can-updater-<version>.zip`, containing one bootloader, one updater, both partition tables, blank `otadata` and `manifest.json`. From the first good release (`c-cpp-esp32-v1.2.1`), use `--bundle-tag c-cpp-esp32-v1.2.1` instead of `--bundle` to fetch it with authenticated `gh`; or use a locally built, unzipped [bundle](../getting-started/build.md#outputs). Do not pass both options. `--manufacturer NAME` overrides the preset manufacturer; preset product and IDs cannot be overridden. `--migrate-stock` first erases `0x10000..0x1FFFF` when moving from a stock Arduino layout. `--app app.bin` additionally writes an app to `ota_0` and selects it in `otadata`; without it the factory updater boots.
 
 | Preset | Layout | TWAI TX/RX | Hold LOW | v2 product | CAN command/reply |
 |---|---|---|---|---|---|

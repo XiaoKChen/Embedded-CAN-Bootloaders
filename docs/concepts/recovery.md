@@ -31,7 +31,10 @@ an IDU with no app shows `SOLO IDU Controller`, and an ODU shows
 `SOLO ODU Controller`; its serial is the MAC as 12 uppercase hex digits.
 The updater logs to UART0 only. Selecting **1200 baud** on the updater's CDC
 port triggers a software strap and restarts into ROM download, whose USB
-identity is Espressif's, not the board's. On a blank board or with no working
+identity is Espressif's, not the board's. The updater first hands USB back to
+USB-Serial-JTAG (as Arduino-ESP32 does) so the ROM port enumerates; releases
+before `c-cpp-esp32-v1.2.1` skipped this and stayed unreachable until an EN
+reset (issue #24). On a blank board or with no working
 updater USB, use BOOT during reset to enter ROM download.
 
 The validated [board profile](../reference/board-profile.md) holds selected

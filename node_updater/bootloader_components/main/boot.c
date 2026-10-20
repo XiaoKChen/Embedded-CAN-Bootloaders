@@ -3,10 +3,11 @@
  */
 /**
  * @file    boot.c
- * @brief   Node recovery selection before IDF touches otadata or loads an app.
+ * @brief   Board safety holds and recovery selection before IDF loads an app.
  *
  * Overrides the ESP-IDF 2nd-stage bootloader entry (call_start_cpu0) to classify the reset,
- * advance the recovery counters and, once either trips, load the factory CAN updater. Based on
+ * apply validated cancfg GPIO holds, advance recovery counters and, once either trips,
+ * load the factory CAN updater. Based on
  * ESP-IDF v5.3.6 examples/custom_bootloader/bootloader_override.
  *
  * Owns:         The bootloader's copy of the recovery counters: the RTC retained record and the
@@ -22,6 +23,8 @@
  * @see     boot_counter.h, docs/concepts/recovery.md
  */
 #include "boot_counter.h"
+#include "board_profile.h"
+#include "../../cancfg.h"
 
 #include <string.h>
 #include "bootloader_common.h"
@@ -30,6 +33,9 @@
 #include "bootloader_utility.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_rom_gpio.h"
+#include "hal/gpio_ll.h"
+#include "soc/gpio_sig_map.h"
 #include "soc/reset_reasons.h"
 
 static const char *TAG = "recovery";
@@ -72,6 +78,42 @@ static uint32_t counter_offset(void)
         }
     }
     return 0u;
+}
+
+/* Called immediately after the table is validated, before recovery bookkeeping.
+ * No flash mutation, heap, RTOS or application driver calls in this path. */
+static void apply_board_holds(void)
+{
+    esp_partition_info_t entry;
+    for (size_t i = 0; i < ESP_PARTITION_TABLE_MAX_ENTRIES; ++i) {
+        if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET + i * sizeof(entry),
+                                   &entry, sizeof(entry), true) != ESP_OK ||
+            entry.magic != ESP_PARTITION_MAGIC) {
+            return;
+        }
+        if (entry.type != PART_TYPE_DATA || entry.subtype != CAN_CFG_PARTITION_SUBTYPE ||
+            memcmp(entry.label, CAN_CFG_PARTITION_LABEL, sizeof(CAN_CFG_PARTITION_LABEL)) != 0 ||
+            entry.pos.size < BOARD_PROFILE_CANCFG_OFFSET + BOARD_PROFILE_SIZE || entry.flags != 0u) {
+            continue;
+        }
+        uint32_t record[BOARD_PROFILE_SIZE / sizeof(uint32_t)];
+        board_profile_t profile;
+        if (bootloader_flash_read(entry.pos.offset + BOARD_PROFILE_CANCFG_OFFSET,
+                                   record, sizeof(record), false) != ESP_OK ||
+            board_profile_parse((const uint8_t *)record, sizeof(record), &profile) != BOARD_PROFILE_OK) {
+            return;  /* Older provisioning has no holds. */
+        }
+        for (uint32_t pin = 0u; pin <= BOARD_PROFILE_MAX_GPIO; ++pin) {
+            if ((profile.hold_low_mask & (1ull << pin)) != 0u) {
+                /* GPIO_OUT latch precedes mux/output enable to avoid a high pulse. */
+                gpio_ll_set_level(&GPIO, pin, 0u);
+                esp_rom_gpio_pad_select_gpio(pin);
+                esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
+                gpio_ll_output_enable(&GPIO, pin);
+            }
+        }
+        return;
+    }
 }
 
 static bool append_record(uint32_t offset, size_t slot)
@@ -136,6 +178,7 @@ void __attribute__((noreturn)) call_start_cpu0(void)
     if (!bootloader_utility_load_partition_table(&state)) {
         bootloader_reset();
     }
+    apply_board_holds();
     const boot_counter_reset_t reset = classify_reset();
     boot_counter_rtc_t rtc;
     memcpy(&rtc, bootloader_common_get_rtc_retain_mem()->custom, sizeof(rtc));

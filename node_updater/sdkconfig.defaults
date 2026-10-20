@@ -1,7 +1,7 @@
 # ESP32-S3 CAN updater — committed defaults (sdkconfig itself is generated).
 CONFIG_IDF_TARGET="esp32s3"
 
-# 4 MB layout shared by every supported board (see partitions.csv).
+# Build-time 4 MB layout (the IDU provisions partitions_idu_16MB.csv instead).
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -22,3 +22,10 @@ CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=0x10
 
 # A hung updater resets (back into itself) instead of only logging.
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# TinyUSB owns the internal PHY; UART0 remains the only logging console.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=1

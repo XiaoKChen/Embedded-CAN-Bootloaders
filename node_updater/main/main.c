@@ -1,20 +1,24 @@
 /**
  * @file    main.c
- * @brief   ESP32-S3 CAN (TWAI) updater: the `factory` app.
+ * @brief   Board-profiled ESP32-S3 CAN updater: the shared `factory` app.
  *
  * The node's ESP-IDF 2nd-stage bootloader runs this app when no OTA app is selected: on a fresh
  * board, after an app called can_updater_client (which points the boot partition here), or when
  * every OTA app failed validation / was rolled back. Recovery counters also select factory
- * without changing otadata (no GPIO recovery: GPIO4 is TWAI TX).
+ * without changing otadata. Provisioned GPIO holds precede services; cancfg also
+ * selects TWAI wiring and USB CDC identity, with a 1200-baud ROM-download exit.
  *
  * Owns:         The slot HAL of the shared pure-logic engine (src/boot/can_update.c) over the
- *               ESP-IDF OTA API, the INFO reply and the node's CAN IDs from `cancfg`.
+ *               ESP-IDF OTA API, the INFO reply, CAN IDs and board profile from `cancfg`.
  * Not here:     The protocol itself (can_update.h); the recovery-counter decision
  *               (node_updater/bootloader_components/main/boot.c).
  * Invariants:   In all those cases the user wants the updater, so it always parks serving CAN
  *               Update Protocol v1 — the only exits are a completed update (GO) or a re-flash over
  *               USB/UART. The factory partition (this app) is never written by anything here.
- * Depends on:   can_link.h, can_update.h, dfu_config.h, can_updater_client.h.
+ *               Safety holds always win: default TWAI fallback is skipped if either default
+ *               pin is held LOW; no failed-link recovery may reconfigure a held pin.
+ * Depends on:   can_link.h, can_update.h, dfu_config.h, board_profile.h, cancfg.h,
+ *               can_updater_client.h, usb_cdc.h.
  *
  * @see     can_update.h, docs/testing/bench/node-updater.md, docs/concepts/recovery.md
  */
@@ -60,16 +64,18 @@
 #include "can_link.h"
 #include "can_update.h"
 #include "dfu_config.h"
+#include "board_profile.h"
+#include "../cancfg.h"
+#include "driver/gpio.h"
+#include "usb_cdc.h"
 
 
 /* -----------------------------------------------------------------------------
- * Constants (partition names mirror partitions.csv, the source of truth)
+ * Service timing (partition identity lives in cancfg.h)
  * ----------------------------------------------------------------------------- */
-#define CAN_CFG_PARTITION_LABEL    "cancfg"
-#define CAN_CFG_PARTITION_SUBTYPE  ((esp_partition_subtype_t)0x40)
-
 #define RX_POLL_TIMEOUT_MS         1000u  /* bounds the watchdog-feed period */
-#define LINK_RETRY_DELAY_MS        1000u  /* TWAI bring-up retry interval    */
+#define RECOVERY_POLL_DELAY_MS     1000u  /* feed watchdog while USB-only   */
+#define LINK_START_ATTEMPTS        2u     /* profile, then at most defaults */
 
 static const char *TAG = "can_updater";
 
@@ -83,7 +89,9 @@ static bool                   s_ota_open;
 static uint32_t               s_ota_written;  /* bytes accepted by s_ota       */
 static uint8_t                s_readback[CAN_UPDATE_WINDOW_SIZE];
 
-static uint8_t            s_cfg_block[DFU_CONFIG_SIZE];
+static uint8_t            s_cfg_block[BOARD_PROFILE_CANCFG_OFFSET + BOARD_PROFILE_SIZE];
+static board_profile_t    s_profile;
+static bool               s_profile_from_record;
 static uint16_t           s_cmd_id;
 static uint16_t           s_reply_id;
 static can_update_hal_t   s_hal;
@@ -190,6 +198,24 @@ static void load_config_block(void)
         ESP_LOGW(TAG, "config partition unreadable; using default CAN IDs");
     }
 
+    s_profile_from_record = board_profile_parse(
+        s_cfg_block + BOARD_PROFILE_CANCFG_OFFSET, BOARD_PROFILE_SIZE, &s_profile) == BOARD_PROFILE_OK;
+    /* Set the output latch before enabling output: never pulse a held EN high. */
+    for (uint32_t pin = 0u; pin <= BOARD_PROFILE_MAX_GPIO; ++pin) {
+        if ((s_profile.hold_low_mask & (1ull << pin)) != 0u) {
+            ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)pin, 0));
+        }
+    }
+    if (s_profile.hold_low_mask != 0u) {
+        const gpio_config_t holds = {
+            .pin_bit_mask = s_profile.hold_low_mask,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&holds));
+    }
     dfu_config_can_ids(s_cfg_block, &s_cmd_id, &s_reply_id);
 }
 
@@ -231,20 +257,38 @@ static void serve_info(void)
     }
 }
 
-static void bring_up_link(void)
+static bool bring_up_link(void)
 {
-    const can_link_config_t link_cfg = {
-        .tx_gpio     = CONFIG_CAN_UPDATER_TWAI_TX_GPIO,
-        .rx_gpio     = CONFIG_CAN_UPDATER_TWAI_RX_GPIO,
-        .bitrate_bps = CONFIG_CAN_UPDATER_BITRATE_BPS,
-        .accept_id   = s_cmd_id,
-    };
-    while (can_link_init(&link_cfg) != CAN_LINK_STATUS_OK) {
-        ESP_LOGE(TAG, "TWAI init failed (TX GPIO %d, RX GPIO %d); retrying",
-                 CONFIG_CAN_UPDATER_TWAI_TX_GPIO, CONFIG_CAN_UPDATER_TWAI_RX_GPIO);
-        (void)esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(LINK_RETRY_DELAY_MS));
+    const uint64_t held_low_mask = s_profile.hold_low_mask;
+    for (uint32_t attempt = 0u; attempt < LINK_START_ATTEMPTS; ++attempt) {
+        ESP_LOGI(TAG, "TWAI profile %s: TX %u RX %u, %lu bit/s; safety holds 0x%llX",
+                 s_profile_from_record ? "record" : "defaults",
+                 s_profile.twai_tx_gpio, s_profile.twai_rx_gpio,
+                 (unsigned long)board_profile_bitrate_bps(s_profile.bitrate),
+                 (unsigned long long)held_low_mask);
+        const can_link_config_t link_cfg = {
+            .tx_gpio = s_profile.twai_tx_gpio,
+            .rx_gpio = s_profile.twai_rx_gpio,
+            .bitrate_bps = board_profile_bitrate_bps(s_profile.bitrate),
+            .accept_id = s_cmd_id,
+        };
+        if (can_link_init(&link_cfg) == CAN_LINK_STATUS_OK) {
+            return true;
+        }
+        ESP_LOGE(TAG, "TWAI init failed (TX %u RX %u)", s_profile.twai_tx_gpio, s_profile.twai_rx_gpio);
+        if (attempt == 0u) {
+            if ((held_low_mask & ((1ull << BOARD_PROFILE_DEFAULT_TX_GPIO) |
+                                  (1ull << BOARD_PROFILE_DEFAULT_RX_GPIO))) != 0u) {
+                ESP_LOGE(TAG, "default TWAI retry skipped: default pins are held LOW");
+                return false;
+            }
+            ESP_LOGW(TAG, "retrying once with defaults; safety holds remain asserted");
+        }
+        /* Keep the already-driven safety holds; fallback must not release EN. */
+        board_profile_defaults(&s_profile);
+        s_profile_from_record = false;
     }
+    return false;
 }
 
 static void serve_can_forever(void)
@@ -284,8 +328,12 @@ static void serve_can_forever(void)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
+    load_config_block();  /* Holds come before health, USB or CAN services. */
     ESP_ERROR_CHECK(can_updater_client_start_health());
-    load_config_block();
+    const esp_err_t usb_err = updater_usb_cdc_init(s_cfg_block);
+    if (usb_err != ESP_OK) {
+        ESP_LOGE(TAG, "USB CDC unavailable: %s; CAN remains available", esp_err_to_name(usb_err));
+    }
 
     /* The slot otadata does NOT select: ota_0 while the factory app is the
      * boot partition, otherwise the other one. Writing it never touches the
@@ -308,7 +356,7 @@ void app_main(void)
         ESP_LOGE(TAG, "no OTA partition in the partition table");
     }
     ESP_LOGI(TAG, "parked: cmd ID 0x%03X, reply ID 0x%03X, %u bit/s, slot %s (%lu bytes)",
-             s_cmd_id, s_reply_id, (unsigned)CONFIG_CAN_UPDATER_BITRATE_BPS,
+             s_cmd_id, s_reply_id, (unsigned)board_profile_bitrate_bps(s_profile.bitrate),
              (s_target != NULL) ? s_target->label : "none",
              (unsigned long)s_hal.slot_size);
 
@@ -318,6 +366,12 @@ void app_main(void)
         ESP_LOGW(TAG, "task watchdog subscription failed");
     }
 
-    bring_up_link();
+    if (!bring_up_link()) {
+        /* Keep USB recovery alive, without hammering a failed TWAI driver. */
+        for (;;) {
+            (void)esp_task_wdt_reset();  /* best effort if subscription failed */
+            vTaskDelay(pdMS_TO_TICKS(RECOVERY_POLL_DELAY_MS));
+        }
+    }
     serve_can_forever();
 }

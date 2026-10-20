@@ -240,13 +240,23 @@ and [first flash](../../getting-started/first-flash.md).
       IDU GPIO3 hold is LOW from 2nd-stage initialization, before partition
       logging, and remains LOW in updater. Use a scope for the startup timing;
       GPIO3 may float during ROM boot.
-- [ ] Enumerate each updater's native USB: VID:PID `303A:1001`, manufacturer
+- [x] Enumerate each updater's native USB: VID:PID `303A:1001`, manufacturer
       `Normal Corporation`, product `SOLO ODU Controller` or
       `SOLO IDU Controller`, and a 12-uppercase-hex MAC serial. Confirm logs
       appear on UART0, not on the updater's CDC port.
-- [ ] Open the updater CDC port at 1200 baud and close it. Check the board
+      **2026-10-19, ODU:** Windows showed the bus-reported name
+      "SOLO ODU Controller", serial `98C37761CE3C`. The IDU updater is not run yet.
+- [x] Open the updater CDC port at 1200 baud and close it. Check the board
       restarts into ROM download with **Espressif** USB identity, then esptool
       connects without holding BOOT. Reset normally back into the updater.
+      **2026-10-19, ODU, after #24:** two runs. The updater disconnected, and
+      about 2 s later the ROM port enumerated (serial `98:C3:77:61:CE:3C`).
+      `esptool chip-id` connected, and a watchdog reset booted the app (first
+      run) or the updater (second run, boot counter still latched from the
+      recovery pulses).
+
+      Before #24 the chip did enter ROM, but USB stayed on OTG: no ROM port,
+      Win32 error 31 on every open, CAN silent until an EN reset.
 - [ ] On a disposable install, test an erased or CRC-corrupt profile without
       damaging the v2 block. Confirm all profile defaults (TX4/RX5, 250k,
       no holds), record/default log, and continued USB enumeration. Restore

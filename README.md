@@ -50,8 +50,9 @@ updater's `esp_tinyusb` 1.7.6 managed component, then builds the universal
 updater bundles and separate `brain/` example. Details:
 [build.md](docs/getting-started/build.md). Flash the IDU first, then ODU,
 with ESP-PROG-2-PY-CLI and the universal bundle:
-[first-flash.md](docs/getting-started/first-flash.md). The first planned
-release for the bundle is `c-cpp-esp32-v1.2.0` (not yet tagged).
+[first-flash.md](docs/getting-started/first-flash.md). The bundle
+is published from `c-cpp-esp32-v1.2.1` (the first release whose updater's
+1200-baud touch reaches the ROM port).
 
 ## Documentation
 
@@ -102,6 +103,7 @@ release for the bundle is `c-cpp-esp32-v1.2.0` (not yet tagged).
 The base ESP32 line is `version/c-cpp/esp32`; this issue #20 work is on
 `feat/20-one-updater-board-profile`. Other targets have their own branches
 (`version/c-cpp/ra4m1`, `version/embassy/ra4m1`). CI builds pushes; a
-`c-cpp-esp32-v*` tag publishes a GitHub Release. The first planned tag with
-the universal bundle is `c-cpp-esp32-v1.2.0` (not created yet). See
+`c-cpp-esp32-v*` tag publishes a GitHub Release. The universal bundle is
+published as `c-cpp-esp32-v1.2.1` (first good release; v1.2.0's updater
+1200-baud touch left the ROM port unreachable, issue #24). See
 [build.md](docs/getting-started/build.md#ci-and-releases).

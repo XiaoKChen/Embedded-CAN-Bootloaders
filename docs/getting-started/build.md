@@ -172,8 +172,9 @@ A successful updater build also creates `partition-table-node-4MB.bin` and
 - `esp32s3-node-updater-<version>.zip`: the retained legacy 4 MB node bundle,
   with its original paths and flashing metadata.
 
-Use the universal bundle for both SOLO boards. The first planned release
-carrying it is `c-cpp-esp32-v1.2.0` (not tagged yet). A local `<version>`
+Use the universal bundle for both SOLO boards. The first good release
+carrying it is `c-cpp-esp32-v1.2.1` (v1.2.0's updater left the ROM port
+unreachable after a 1200-baud touch; issue #24). A local `<version>`
 comes from `git describe`; on a release tag it is the tag's version suffix.
 
 The brain's firmware has the same set in `brain/build/`, with `brain_ota.bin`
@@ -192,8 +193,8 @@ and `./build.sh` (node updater + brain), then builds both examples, on every
 push / PR to `version/c-cpp/esp32`. It uploads three artifacts: legacy `esp32s3-node-updater`, universal
 `esp32s3-can-updater`, and `esp32s3-brain` (the separate example). A
 **`c-cpp-esp32-v*`** tag publishes versioned zips for all three, plus the
-two app images. The first **planned** universal-bundle tag is
-`c-cpp-esp32-v1.2.0`; it has not been created on this branch. Other targets
+two app images. The first good universal-bundle release is
+`c-cpp-esp32-v1.2.1` (v1.2.0 predates the 1200-baud touch fix, issue #24). Other targets
 use their own `<lang>-<target>-v*` tags (`c-cpp-ra4m1-v*`,
 `embassy-ra4m1-v*`).
 

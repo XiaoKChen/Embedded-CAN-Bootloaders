@@ -3,9 +3,9 @@
  * @brief   Provisioned USB CDC identity and 1200-baud ROM-download entry.
  *
  * Exposes the updater as a CDC-ACM device using the frozen v2 configuration's
- * names and the chip MAC. A 1200-baud DTR falling edge restarts into ROM download.
+ * names and the chip MAC. Selecting 1200 baud restarts into ROM download.
  *
- * Owns:         USB descriptors and CDC line-state callbacks.
+ * Owns:         USB descriptors and the CDC line-coding callback.
  * Not here:     UART0 logging and CAN firmware transfer (main.c).
  * Invariants:   Descriptor storage lives for the lifetime of the USB driver.
  * Concurrency:  Call init once from app_main; callbacks run in TinyUSB's task.

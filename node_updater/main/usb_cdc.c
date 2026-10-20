@@ -2,7 +2,7 @@
  * @file    usb_cdc.c
  * @brief   Provisioned USB CDC and ROM-download touch (see usb_cdc.h).
  *
- * Implementation notes: only TinyUSB's task changes the touch state. USB
+ * Implementation notes: USB
  * strings are copied out of the length-delimited v2 block into static buffers.
  * UART0 remains the console: CDC never blocks CAN service or log producers.
  *
@@ -37,8 +37,6 @@ static char s_serial[USB_SERIAL_LENGTH + 1u];
 static const char *s_strings[] = {
     "\x09\x04", s_manufacturer, s_product, s_serial, "CAN Updater CDC",
 };
-static bool s_touch_armed;
-static bool s_dtr;
 
 static const tusb_desc_device_t s_device = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -62,31 +60,18 @@ static const uint8_t s_configuration[] = {
                        USB_CDC_OUT_EP, USB_CDC_IN_EP, USB_PACKET_SIZE),
 };
 
+/* Same trigger as Arduino-ESP32's TinyUSB CDC: the host selecting 1200 baud is
+ * the touch, whatever DTR does, so the documented "open at 1200 with DTR low,
+ * then close" recipe and esptool/IDE resets both work. */
 static void line_coding_changed(int itf, cdcacm_event_t *event)
 {
     (void)itf;
-    s_touch_armed = event->line_coding_changed_data.p_line_coding->bit_rate == USB_TOUCH_BAUD;
-}
-
-static void line_state_changed(int itf, cdcacm_event_t *event)
-{
-    (void)itf;
-    const bool dtr = event->line_state_changed_data.dtr;
-    const bool download = s_touch_armed && s_dtr && !dtr;
-    s_dtr = dtr;
-    if (download) {
+    if (event->line_coding_changed_data.p_line_coding->bit_rate == USB_TOUCH_BAUD) {
         /* ESP32-S3 TRM RTC_CNTL_OPTION1: software strap into the ROM loader.
          * No flash/otadata write: interruption leaves the updater bootable. */
         REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_restart();
     }
-}
-
-/* Do not let stale touch state survive a USB unplug/re-enumeration. */
-void tud_umount_cb(void)
-{
-    s_touch_armed = false;
-    s_dtr = false;
 }
 
 esp_err_t updater_usb_cdc_init(const uint8_t config[DFU_CONFIG_SIZE])
@@ -123,7 +108,6 @@ esp_err_t updater_usb_cdc_init(const uint8_t config[DFU_CONFIG_SIZE])
     const tinyusb_config_cdcacm_t cdc = {
         .usb_dev = TINYUSB_USBDEV_0,
         .cdc_port = TINYUSB_CDC_ACM_0,
-        .callback_line_state_changed = line_state_changed,
         .callback_line_coding_changed = line_coding_changed,
     };
     return tusb_cdc_acm_init(&cdc);

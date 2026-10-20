@@ -51,7 +51,7 @@ char firmware_product[] = "";
 // The sector and task storage never occupy the app's stack or heap.
 uint32_t boot_counter_sector[BOOT_COUNTER_FLASH_BYTES / sizeof(uint32_t)];
 StaticTask_t update_task_storage;
-StackType_t update_task_stack[kDefaultTaskStackSizeBytes / sizeof(StackType_t)];
+StackType_t update_task_stack[kTaskStackSizeBytes / sizeof(StackType_t)];
 TaskHandle_t update_task_handle = nullptr;
 std::atomic<uint8_t> malformed_cmd{0};
 
@@ -67,10 +67,6 @@ void load_firmware_identity()
         while (version_sep > firmware_product && version_sep[-1] == ' ')
             *--version_sep = '\0';
     }
-    if (settings.label != nullptr)
-        firmware_label = settings.label;
-    if (settings.version != nullptr)
-        firmware_version = settings.version;
 }
 
 // Unreadable data must look erased to the shared parsers, exactly as on an
@@ -295,9 +291,6 @@ esp_err_t begin(const Config &config)
         return ESP_ERR_INVALID_STATE;
     if (config.task_core < 0 || config.task_core >= portNUM_PROCESSORS ||
         config.task_priority >= configMAX_PRIORITIES ||
-        config.task_stack_size_bytes < configMINIMAL_STACK_SIZE ||
-        config.task_stack_size_bytes % sizeof(StackType_t) != 0 ||
-        (config.task_stack == nullptr && config.task_stack_size_bytes > sizeof(update_task_stack)) ||
         config.reply_tx_wait_ms == 0 || pdMS_TO_TICKS(config.reply_tx_wait_ms) == 0 ||
         pdMS_TO_TICKS(config.reply_tx_wait_ms) == portMAX_DELAY)
     {
@@ -311,8 +304,8 @@ esp_err_t begin(const Config &config)
     load_firmware_identity();
     log_running_image();
     update_task_handle = xTaskCreateStaticPinnedToCore(
-        update_task, "can_update", settings.task_stack_size_bytes, nullptr, settings.task_priority,
-        settings.task_stack != nullptr ? settings.task_stack : update_task_stack,
+        update_task, "can_update", sizeof(update_task_stack), nullptr, settings.task_priority,
+        update_task_stack,
         &update_task_storage, settings.task_core);
     if (update_task_handle == nullptr)
     {

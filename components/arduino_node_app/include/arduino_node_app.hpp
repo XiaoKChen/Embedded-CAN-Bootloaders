@@ -37,22 +37,13 @@ namespace arduino_node_app {
 
 constexpr BaseType_t kDefaultTaskCore = 0;
 constexpr UBaseType_t kDefaultTaskPriority = 1;
-constexpr uint32_t kDefaultTaskStackSizeBytes = 4096;
+constexpr uint32_t kTaskStackSizeBytes = 4096;
 constexpr uint32_t kDefaultReplyTxWaitMs = 50;
 constexpr uint32_t kDefaultAckDrainMs = 20;
 
 struct Config {
-    // nullptr uses USB_PRODUCT split at its last space, just like the SOLO ODU
-    // (empty when USB_PRODUCT is undefined). Overrides must remain valid and
-    // unchanged for the lifetime of the helper.
-    const char *label = nullptr;
-    const char *version = nullptr;
     BaseType_t task_core = kDefaultTaskCore;
     UBaseType_t task_priority = kDefaultTaskPriority;
-    uint32_t task_stack_size_bytes = kDefaultTaskStackSizeBytes;
-    // nullptr uses the internal 4096-byte stack (size must not exceed it). To use a
-    // larger stack, supply a static StackType_t array of task_stack_size_bytes bytes.
-    StackType_t *task_stack = nullptr;
     uint32_t stable_uptime_ms = BOOT_COUNTER_STABLE_MS;
     uint32_t reply_tx_wait_ms = kDefaultReplyTxWaitMs;
     uint32_t ack_drain_ms = kDefaultAckDrainMs;
@@ -60,6 +51,7 @@ struct Config {
     bool owns_image_confirmation = true;
 };
 
+// APP_INFO reports USB_PRODUCT split at its last space ("<label> <version>").
 [[nodiscard]] esp_err_t begin(const Config &config = Config{});
 void on_standard_frame(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 uint16_t command_id();

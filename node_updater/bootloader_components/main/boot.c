@@ -6,7 +6,8 @@
  * @brief   Board safety holds and recovery selection before IDF loads an app.
  *
  * Overrides the ESP-IDF 2nd-stage bootloader entry (call_start_cpu0) to classify the reset,
- * apply validated cancfg GPIO holds, advance recovery counters and, once either trips,
+ * apply validated cancfg GPIO holds immediately after initialization (before table logging),
+ * advance recovery counters and, once either trips,
  * load the factory CAN updater. Based on
  * ESP-IDF v5.3.6 examples/custom_bootloader/bootloader_override.
  *
@@ -80,10 +81,21 @@ static uint32_t counter_offset(void)
     return 0u;
 }
 
-/* Called immediately after the table is validated, before recovery bookkeeping.
+/* Verify silently before the regular table loader prints its UART table.
  * No flash mutation, heap, RTOS or application driver calls in this path. */
 static void apply_board_holds(void)
 {
+    const esp_partition_info_t *table = bootloader_mmap(
+        ESP_PARTITION_TABLE_OFFSET, ESP_PARTITION_TABLE_MAX_LEN);
+    if (table == NULL) {
+        return;
+    }
+    int num_partitions;
+    const esp_err_t verified = esp_partition_table_verify(table, false, &num_partitions);
+    bootloader_munmap(table);
+    if (verified != ESP_OK) {
+        return;  /* The normal loader below will reject the damaged table. */
+    }
     esp_partition_info_t entry;
     for (size_t i = 0; i < ESP_PARTITION_TABLE_MAX_ENTRIES; ++i) {
         if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET + i * sizeof(entry),
@@ -174,11 +186,11 @@ void __attribute__((noreturn)) call_start_cpu0(void)
     if (bootloader_init() != ESP_OK) {
         bootloader_reset();
     }
+    apply_board_holds();
     bootloader_state_t state = {0};
     if (!bootloader_utility_load_partition_table(&state)) {
         bootloader_reset();
     }
-    apply_board_holds();
     const boot_counter_reset_t reset = classify_reset();
     boot_counter_rtc_t rtc;
     memcpy(&rtc, bootloader_common_get_rtc_retain_mem()->custom, sizeof(rtc));

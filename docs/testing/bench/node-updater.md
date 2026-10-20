@@ -219,33 +219,33 @@ rollback, the USB `otadata` erase on `COM7`):
 [recovery.md](../../concepts/recovery.md). Recovery tests:
 [node-recovery.md](node-recovery.md).
 
-## One updater, board profile and USB checklist (not yet run)
+## One updater, board profile and USB checklist
 
-**Status: not run.** This checks issue #20, not the earlier 4 MB node pass.
-Use current local universal-bundle binaries or the planned
-`c-cpp-esp32-v1.2.0` release once published. Record bundle version, board,
-port, flash size, profile bytes, UART0 log and measured GPIO levels for each
-step. Do not run destructive flash steps while either board is serving an
-update. See [provisioning](../../guides/provisioning-can-ids.md),
+This checks issue #20 on the SOLO boards, not the earlier 4 MB node pass.
+The shared updater was installed with v1.2.0 on 2026-10-19, then the v1.2.1
+factory binary was hash-verified on both boards; ESP-PROG-2-PY-CLI's v1.2.1
+one-bundle install also passed on the ODU. Do not run destructive flash steps
+while either board is serving an update. See
+[provisioning](../../guides/provisioning-can-ids.md),
 [profile vectors](../../reference/board-profile.md#solo-presets-and-golden-bytes)
 and [first flash](../../getting-started/first-flash.md).
 
-- [ ] Provision ODU `node-4MB` and IDU `idu-16MB` through their own USB ports
-      using the **same** `bootloader.bin` and `can_updater.bin`; verify selected
-      table, `--flash-size 4MB`/`16MB`, factory offset `0x20000`/`0xFA0000`
-      and full 4 KB `cancfg` read-back against each preset's golden bytes.
-- [ ] With no app installed, power-cycle each board. Confirm factory boot,
-      UART0 `TWAI profile record` with ODU 4/5 and IDU 6/7 at 250 kbit/s,
-      and CAN INFO on `0x05/0x06` and `0x07/0x08` respectively. Verify the
-      IDU GPIO3 hold is LOW from 2nd-stage initialization, before partition
-      logging, and remains LOW in updater. Use a scope for the startup timing;
-      GPIO3 may float during ROM boot.
+- [x] Provision ODU `node-4MB` and IDU `idu-16MB` through their own USB ports,
+      verifying their tables, factory offsets and `cancfg` records.
+      **2026-10-19:** first installs wrote/hash-verified bootloader, table,
+      updater and profile; the v1.2.1 factory binary was later hash-verified.
+- [ ] On a blank board, verify factory boot, UART0 `TWAI profile record` and
+      CAN INFO for both `0x05/0x06` and `0x07/0x08`; the IDU's parked-updater
+      INFO needs a third CAN host. Measure GPIO3 LOW timing from 2nd-stage
+      initialization and through ROM/updater on a scope.
 - [x] Enumerate each updater's native USB: VID:PID `303A:1001`, manufacturer
       `Normal Corporation`, product `SOLO ODU Controller` or
       `SOLO IDU Controller`, and a 12-uppercase-hex MAC serial. Confirm logs
       appear on UART0, not on the updater's CDC port.
       **2026-10-19, ODU:** Windows showed the bus-reported name
-      "SOLO ODU Controller", serial `98C37761CE3C`. The IDU updater is not run yet.
+      "SOLO ODU Controller", serial `98C37761CE3C`.
+      **2026-10-20, IDU:** Windows showed "SOLO IDU Controller" while parked
+      in its factory updater.
 - [x] Open the updater CDC port at 1200 baud and close it. Check the board
       restarts into ROM download with **Espressif** USB identity, then esptool
       connects without holding BOOT. Reset normally back into the updater.
@@ -254,6 +254,10 @@ and [first flash](../../getting-started/first-flash.md).
       `esptool chip-id` connected, and a watchdog reset booted the app (first
       run) or the updater (second run, boot counter still latched from the
       recovery pulses).
+
+      **2026-10-20, IDU:** after 1200-baud touch on v1.2.1, ROM enumerated
+      (serial `94:A9:90:F0:DB:1C`) and esptool connected. Erasing `bootcnt`
+      at 0x12000 from ROM, then a watchdog reset, restored `ota_0` VALID.
 
       Before #24 the chip did enter ROM, but USB stayed on OTG: no ROM port,
       Win32 error 31 on every open, CAN silent until an EN reset.
@@ -266,11 +270,21 @@ and [first flash](../../getting-started/first-flash.md).
       with a valid profile that holds GPIO4 or GPIO5 LOW: the updater must
       **skip** default retry and keep USB available without CAN. Do not use
       refused GPIOs or hold a TWAI pin in the profile; restore preset after.
-- [ ] Install a matching IDU app and check APP_INFO/ENTER_UPDATER on its
-      `0x07/0x08` pair as well as its brain role. Check an ODU app on
-      `0x05/0x06`; test rollback/re-entry without overwriting either factory
-      slot. If using the stock Arduino helper, confirm delayed image marking
-      and flash-counter clear after stable uptime separately.
+- [x] Confirm the ODU app on `0x05/0x06` and its factory updater without
+      overwriting the factory slot. **2026-10-19:** `/node/flash` entered via
+      CAN and from the parked updater; the unconfirmed rollback build returned
+      to factory and was restored over CAN. App-only uploads preserved the
+      bootloader, table, `cancfg` and factory on both boards; `/ota` and two
+      `/package` paths passed on the IDU.
+- [x] Confirm boot-counter trip and clear on both boards. **2026-10-20:** ODU
+      four normal ≥15 s cycles returned to app and three ~1 s boots parked it
+      in factory; IDU three normal ≥40 s cycles returned `ota_0` VALID and quick
+      boots parked it in factory. IDU-only cycles did not reset the ODU.
+- [ ] Check APP_INFO/ENTER_UPDATER on the IDU `0x07/0x08` pair and INFO from
+      its parked updater with a third CAN host; then test its CAN-installed
+      rollback without overwriting factory.
+- [ ] Capture GPIO3 on a scope during IDU boot/ROM; no ODU reset was observed
+      during IDU-only cycles, but this does not measure the line.
 
 No checkmark above is evidence of a pass until it has been run and recorded.
 

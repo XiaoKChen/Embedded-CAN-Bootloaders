@@ -53,8 +53,8 @@
 - **Responsibility:** Board-level procedures for updater operation, brain OTA and CAN flashing, recovery, packages, and app-driven entry.
 - **Key files:** `README.md`, `node-updater.md`, `brain-ota.md`, `brain-can-flash.md`, `node-recovery.md`, `update-package.md`, `node-app.md`.
 - **Relationships:** Exercises real ODU/IDU wiring, CAN, USB, Ethernet, reset timing, and update outcomes; the issue #20 shared-updater profile/USB checklist has not been run yet.
-- **README.md** — Bench index, common hardware and network setup, provisioned-ID caveats, and the pending status of the issue #20 validation.
-- **node-updater.md** — PC-to-node CAN flashing, rollback and interrupted transfers, plus the not-yet-run dual-board profile, GPIO, USB identity and ROM-entry checklist.
+- **README.md** — Bench index, common hardware and network setup, provisioned-ID caveats, and the issue #20 validation status (bench-run on both SOLO boards 2026-10-19/20).
+- **node-updater.md** — PC-to-node CAN flashing, rollback and interrupted transfers, plus the dual-board profile, GPIO, USB identity and ROM-entry checklist (run 2026-10-19/20 except the IDU's own pair and a GPIO3 scope check).
 - **brain-ota.md** — Ethernet self-update, confirmation, rollback, interrupted uploads, and GPIO3 effects during brain reboots.
 - **brain-can-flash.md** — Brain-side CAN discovery, image staging and flashing, status, concurrent-job isolation, and failure cases.
 - **node-recovery.md** — USB recovery installation, crash-loop and GPIO3 pulse entry, stable clearing, and interruption behavior.

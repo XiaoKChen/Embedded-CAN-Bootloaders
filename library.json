@@ -44,6 +44,7 @@
       "brain/main/ota_update.h",
       "brain/partitions.csv",
       "node_updater/partitions.csv",
+      "node_updater/partitions_idu_16MB.csv",
       "docs/guides/platformio-arduino.md"
     ]
   }

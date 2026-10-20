@@ -5,15 +5,16 @@ menu "Node app CAN"
         range 0 48
         default 4
         help
-            Must match the node updater (CONFIG_CAN_UPDATER_TWAI_TX_GPIO): the
-            app and the updater share one transceiver.
+            Must match the TX pin the updater uses: the board profile in
+            cancfg, or GPIO4 when the board has none. The app and the
+            updater share one transceiver.
 
     config NODE_APP_TWAI_RX_GPIO
         int "TWAI RX GPIO (from transceiver RXD)"
         range 0 48
         default 5
         help
-            Must match the node updater (CONFIG_CAN_UPDATER_TWAI_RX_GPIO).
+            Must match the updater's RX pin (board profile, or GPIO5).
 
     config NODE_APP_CAN_BITRATE_BPS
         int "CAN bitrate (bit/s)"

@@ -21,16 +21,15 @@ The bundle is `esp32s3-can-updater-<version>.zip`, containing one bootloader, on
 
 The tool optionally erases the stock region, then writes bootloader `0x0`, selected table `0x8000`, blank `otadata` `0xE000`, updater at the layout's `factory`, and 4 KB `cancfg` at `0x11000` in one `write-flash` with `dio`, `80m` and the layout's flash size. It reads back and compares `cancfg`. An optional app is written at the layout's `ota_0` with an OTA selection entry. It finishes with `--after watchdog-reset`; USB RTS hard reset did not reboot these boards on the bench. See [first flash](../getting-started/first-flash.md).
 
-For a **legacy existing** install, `--provision-node --port COM7 --product
-"My Node" --boot-cmd-id 0x700 --boot-reply-id 0x711` writes and verifies
-**only the 80-byte v2 block**. `--manufacturer` is optional.
-`--read-node-config --port COM7` shows those v2 settings, not the profile.
-**Do not run `--provision-node` on an already profiled SOLO install:** the
-current tool writes only 80 bytes to the `cancfg` flash sector, which erases
-the profile at `+0x50` instead of preserving it. Without the profile, the
-updater falls back to ODU GPIOs and no holds; on the IDU this removes the
-GPIO3 hold. Use `--flash-solo` for the full preset profile or the complete
-manual 4 KB image below. This limitation is in ESP-PROG-2-PY-CLI PR #16.
+To re-provision an existing install without reflashing the updater, use
+`--provision-node --port COM7 --product <name>`. For `SOLO ODU Controller` and
+`SOLO IDU Controller` it writes and verifies the full 4 KB `cancfg` image (v2
+block + that preset's board profile). For any other product it writes the
+80-byte v2 block only, with the pair from `--boot-cmd-id`/`--boot-reply-id`
+(`--manufacturer` is optional). esptool erases the whole 4 KB sector, so a
+v2-only write leaves no profile: the updater then uses the defaults (GPIO4/5,
+no holds). `--read-node-config --port COM7` shows the v2 settings, not the
+profile.
 
 ## Manual esptool recipe (v2 + profile)
 

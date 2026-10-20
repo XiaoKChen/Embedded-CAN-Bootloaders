@@ -35,8 +35,8 @@ must be an exact unsigned ESP-IDF application `.bin`. The envelope check is not
 proof the firmware will boot: ESP-IDF verifies the full image in its destination
 slot. BRAIN must be a **Phase-5-capable brain_ota build**, not just any S3 app.
 
-Limits: BRAIN 3,145,728 bytes; each NODE 1,835,008 bytes; entire package 8,257,536
-bytes including manifest/alignment. Eight maximum-size nodes plus a maximum-size
+Limits: BRAIN 3,145,728 bytes; each NODE 1,835,008 bytes; entire package 7,864,320
+bytes (0x780000, the IDU table's `pkg`) including manifest/alignment. Eight maximum-size nodes plus a maximum-size
 brain do not fit. `info` rechecks the manifest/ranges and every payload SHA-256,
 then prints entry metadata as JSON. Errors print `ecb_pkg: ...` to stderr and exit
 2; successful commands exit 0. No signing or encryption is performed.

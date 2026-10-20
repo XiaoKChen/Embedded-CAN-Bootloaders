@@ -36,6 +36,7 @@ add_library(boot_core STATIC
     ${BOOT_DIR}/image_validate.c
     ${BOOT_DIR}/can_update.c
     ${BOOT_DIR}/dfu_config.c
+    ${BOOT_DIR}/board_profile.c
     ${BOOT_DIR}/app_control.c
 )
 target_include_directories(boot_core PUBLIC ${BOOT_DIR})
@@ -59,6 +60,7 @@ add_host_test(test_crc32)
 add_host_test(test_image_validate)
 add_host_test(test_can_update)
 add_host_test(test_dfu_config)
+add_host_test(test_board_profile)
 add_host_test(test_slcan_codec)
 add_host_test(test_app_control)
 

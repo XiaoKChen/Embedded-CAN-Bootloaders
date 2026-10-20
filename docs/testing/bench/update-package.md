@@ -14,11 +14,15 @@ History: Phase 5, issue #10. Common setup: [README.md](README.md).
 
 ## One-time partition-table installation and package build
 
-The brain has `pkg` (data subtype `0x43`) at `0x820000`, size `0x7E0000`:
-**8,257,536 bytes total**, including header, manifest, gaps and all payloads.
-A BRAIN payload is at most 3 MiB and each NODE at most 1,835,008 bytes. One
-maximum-size brain plus eight maximum-size nodes does **not** fit. The host
-tool and brain reject overflow ([flash-layout.md](../../concepts/flash-layout.md#brain-16-mb-brainpartitionscsv)).
+The separate `brain/` example has a physical `pkg` region (data subtype
+`0x43`) at `0x820000`, 8,257,536 bytes through the end of 16 MB flash.
+**The supported complete package cap is smaller: `0x780000`, 7,864,320
+bytes (7.5 MiB)**, including header, manifest, gaps and payloads. The SOLO
+IDU 16 MB layout reserves exactly that supported size before its factory
+updater. A BRAIN payload is at most 3 MiB and each NODE at most 1,835,008
+bytes. One maximum-size brain plus eight maximum-size nodes does **not** fit.
+The host tool and brain reject overflow
+([flash layout](../../concepts/flash-layout.md#brain-example-16-mb-brainpartitionscsv)).
 
 Build normally, then **USB-reflash the brain once** with its table. A normal
 `/ota` upload alone cannot install that table. Use the actual brain USB port,

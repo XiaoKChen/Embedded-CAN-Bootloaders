@@ -1,6 +1,6 @@
 # =============================================================================
 # esp32-build.yml — Host tests + ESP32-S3 node updater and brain builds;
-#                   release on c-cpp-esp32-v*
+#                   universal provisioning bundle; release on c-cpp-esp32-v*
 # =============================================================================
 # The firmware is built with ./build.sh, the same one-command script users
 # run, so CI and local builds share the ESP-IDF pin in idf-version.txt. Each
@@ -9,6 +9,8 @@
 # Release tags follow <lang>-<target>-v* across branches (c-cpp-ra4m1-v*,
 # embassy-ra4m1-v*): this one is c-cpp-esp32-v*, and the release/artifact
 # version is the tag minus that prefix (c-cpp-esp32-v1.0.0 -> v1.0.0).
+# The common updater bundle is assembled by the build script, with a manifest
+# and both board tables; CI fetches esp_tinyusb using the managed-component pin.
 # =============================================================================
 
 name: esp32-build
@@ -28,6 +30,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Snapshot bundle versions use the nearest ESP32 release tag.
 
       - uses: actions/setup-python@v5
         id: python
@@ -77,6 +81,12 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
+          name: esp32s3-can-updater
+          path: node_updater/build/esp32s3-can-updater-*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
           name: esp32s3-brain
           path: dist/brain/
           if-no-files-found: error
@@ -98,6 +108,11 @@ jobs:
           name: esp32s3-brain
           path: dist/brain
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: esp32s3-can-updater
+          path: dist/universal
+
       # One zip per board, each with its own bootloader, partition table,
       # otadata and flash_args. The loose assets are the two app images (OTA
       # over CAN for the node, over HTTP for the brain); the other files
@@ -112,4 +127,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --title "ESP32-S3 node updater + brain ${version}" --generate-notes \
             "esp32s3-node-updater-${version}.zip" "esp32s3-brain-${version}.zip" \
+            dist/universal/esp32s3-can-updater-*.zip \
             dist/node/can_updater.bin dist/brain/brain_ota.bin

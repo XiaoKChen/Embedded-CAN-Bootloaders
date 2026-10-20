@@ -6,12 +6,16 @@ own (bench tests only).
 
 ## The reference app
 
-`examples/node_app` is an OTA app on the node's 4 MB table that calls
-`can_updater_client_start_health()`, loads the node's update IDs from
-`cancfg` (else `0x79E`/`0x79F`), starts TWAI at 250 kbit/s on GPIO4/GPIO5,
-self-tests, marks itself valid, and runs a CAN task (`main/can_service.c`)
-answering APP_INFO and ENTER_UPDATER on those IDs
-([can-protocol.md](../reference/can-protocol.md#app-control-app_info-and-enter_updater)).
+`examples/node_app` is an OTA app for the **4 MB reference node**. It calls
+`can_updater_client_start_health()`, loads the v2 CAN IDs from `cancfg`
+(default `0x79E/0x79F`), and starts TWAI on its own example Kconfig defaults
+GPIO4/GPIO5 at 250 kbit/s. Those app settings must match the board's
+[provisioned profile](../reference/board-profile.md), which independently
+configures the factory updater. The reference app self-tests, marks itself
+valid, and answers APP_INFO/ENTER_UPDATER on its own pair
+([CAN protocol](../reference/can-protocol.md#app-control-app_info-and-enter_updater)).
+The SOLO IDU instead uses the `idu-16MB` layout and its `0x07/0x08` pair:
+it is both brain and node, and its app must answer on that pair.
 With it, the brain's package relay and `/node/flash`, and
 `can_flash.py --enter-updater`, park a running node over CAN without the
 GPIO3 reset line. History: #11.
@@ -24,18 +28,21 @@ powershell -ExecutionPolicy Bypass -File build.ps1 examples/node_app
 ./build.sh examples/node_app          # Linux / macOS
 ```
 
-The OTA image is `examples/node_app/build/node_app.bin`. Its TWAI pins and
-bitrate (**Node app CAN** menu) must match the updater
+The OTA image is `examples/node_app/build/node_app.bin`. The example's TWAI pins and bitrate (**Node app CAN** menu) must match its
+physical board/profile; they are not updater Kconfig values
 ([configuration.md](../reference/configuration.md#node-app-examplesnode_app--node-app-can)).
+For a stock-core Arduino-ESP32 app that already owns TWAI, prefer the
+opt-in [Arduino node-app helper](platformio-arduino.md#stock-arduino-node-app-helper)
+(`custom_arduino_node_app = yes`) to hand-writing APP_INFO, ENTER_UPDATER,
+profile holds and the stable flash-counter clear.
 
 ## Integrating an existing application
 
 An application that should be updatable over CAN (an Arduino-ESP32 / PlatformIO
 app: [platformio-arduino.md](platformio-arduino.md)):
 
-1. **Use the updater's layout.** Copy `node_updater/partitions.csv` (or point
-   at it, as `examples/bench_app` does) and set, in the app's
-   `sdkconfig.defaults`:
+1. **Use the board's layout.** For a 4 MB node copy
+   `node_updater/partitions.csv` (as `examples/bench_app` does), and set:
 
    ```
    CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
@@ -44,7 +51,10 @@ app: [platformio-arduino.md](platformio-arduino.md)):
    CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
    ```
 
-   plus the [recovery contract](#recovery-contract) below.
+   Put these in the ESP-IDF app's `sdkconfig.defaults`, plus the
+   [recovery contract](#recovery-contract). On the 16 MB IDU use
+   `node_updater/partitions_idu_16MB.csv`, 16 MB flash size and `ota_0`
+   at `0x20000` instead.
 
 2. **Add the client component.** Point the app at it (or copy the folder):
 
@@ -82,17 +92,20 @@ app: [platformio-arduino.md](platformio-arduino.md)):
 5. **Build and flash it over CAN** — `build/<app>.bin` is the OTA image
    ([updating-nodes.md](updating-nodes.md)).
 
-Do **not** `idf.py flash` an application onto an updater board: it would
-rewrite the bootloader with the app's configuration and put the app into the
-first app partition, which is `factory` — overwriting the updater. Deliver
-applications over CAN (or with esptool to `ota_0` at `0x80000` plus a matching
-`otadata`).
+Do **not** `idf.py flash` an application onto a provisioned updater board:
+it writes the app project's bootloader and table, which may replace the
+recovery bootloader and the selected board layout. On a 4 MB node a full
+flash can also put the app in the first app partition, `factory`, overwriting
+the updater. Deliver apps over CAN, or use the provisioning tool's `--app`
+option with the matching layout (4 MB `ota_0` at `0x80000`; IDU `ota_0`
+at `0x20000`) and matching `otadata`.
 
 ## Recovery contract
 
-Call `can_updater_client_start_health()` once early in `app_main`, check its
+For ESP-IDF apps using `can_updater_client`, call
+`can_updater_client_start_health()` once early in `app_main`, check its
 result, and keep the main task/deliberate restart caller on CPU0. The updater,
-`examples/node_app` and the bench variants already do this. All app builds
+`examples/node_app` and the bench variants already do this. These builds
 must reserve the same 16 custom RTC bytes as `node_updater/sdkconfig.defaults`:
 
 ```ini
@@ -104,4 +117,8 @@ CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=0x10
 Older app binaries retain flash-layout compatibility but lack the
 clean-restart mark and stable clear and may use the reserved RTC area;
 rebuild them for full recovery support. Flash-bit recovery itself does not
-require their cooperation. Why: [recovery.md](../concepts/recovery.md).
+require their cooperation. A stock Arduino app using the
+[helper](platformio-arduino.md#stock-arduino-node-app-helper) does not reserve
+these RTC bytes. It retains flash-counter clearing and pending-image rollback,
+but not the custom RTC crash-loop or clean-restart contract. Why:
+[recovery.md](../concepts/recovery.md).

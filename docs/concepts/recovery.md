@@ -1,11 +1,9 @@
 # Recovery: how a node gets into its updater
 
-**No recovery pin.** ESP-IDF's GPIO factory reset
-(`CONFIG_BOOTLOADER_FACTORY_RESET`) is off: GPIO4 is the node's TWAI TX, and
-the bootloader would sample the transceiver's D line at reset. Instead, the
-node bootloader (`node_updater/bootloader_components/main`) implements
-software recovery: an RTC crash-loop counter, plus a flash boot counter the
-brain can trip with EN pulses over its existing GPIO3-to-EN inverting stage.
+**No GPIO factory-reset pin.** ESP-IDF's GPIO factory reset
+(`CONFIG_BOOTLOADER_FACTORY_RESET`) is off; the ODU's GPIO4 is TWAI TX, not a
+button. The shared bootloader instead uses RTC crash-loop and flash boot
+counters. Brain GPIO3 can pulse the ODU's EN through an inverting stage.
 No PCB change, signing, or CAN protocol change. History: #9.
 
 ## Entry paths
@@ -17,14 +15,31 @@ No PCB change, signing, or CAN protocol change. History: #9.
 | **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
 | **Software recovery** | three unclean SW/panic/WDT resets in RTC, or three power-on/EN boots in a flash bit log, without 10 seconds of stable uptime, force `factory` without changing `otadata`. Trips remain latched until 10 s of updater uptime or a verified GO. Normal `esp_restart()` is marked clean by the client shutdown handler |
 | **Brain-forced recovery** | `POST /node/recover`, or a package's automatic recovery: four pulses, each **GPIO3 HIGH 100 ms** (node held reset), then **LOW 400 ms** (node runs), finally leaving LOW — three power-on/EN boots trip the flash counter. Only the node physically wired to GPIO3 |
-| **USB fallback** | erase only `otadata`: `python -m esptool --chip esp32s3 erase_region 0xe000 0x2000` (add `-p <port>`); factory then remains selected until another image is flashed |
+| **USB fallback** | Select 1200 baud on the updater's TinyUSB CDC port: it restarts into ROM download for esptool, without BOOT. Or erase only `otadata`: `uv run --with esptool -m esptool --chip esp32s3 -p <port> erase-region 0xe000 0x2000`; factory then remains selected until another image is flashed |
 
 ```sh
-python -m esptool --chip esp32s3 -p COM7 erase_region 0xe000 0x2000
+uv run --with esptool -m esptool --chip esp32s3 -p COM7 erase-region 0xe000 0x2000
 ```
 
 Hosts and the brain try the CAN request first; GPIO3 pulses run only when
 nothing answers ([updating-nodes.md](../guides/updating-nodes.md)).
+
+The factory updater is a TinyUSB CDC-ACM device (VID:PID `303A:1001`). Its
+manufacturer/product strings come from a valid v2 `cancfg` block; absent or
+invalid v2 uses `Normal Corporation` / `CAN Updater`. With SOLO provisioning,
+an IDU with no app shows `SOLO IDU Controller`, and an ODU shows
+`SOLO ODU Controller`; its serial is the MAC as 12 uppercase hex digits.
+The updater logs to UART0 only. Selecting **1200 baud** on the updater's CDC
+port triggers a software strap and restarts into ROM download, whose USB
+identity is Espressif's, not the board's. On a blank board or with no working
+updater USB, use BOOT during reset to enter ROM download.
+
+The validated [board profile](../reference/board-profile.md) holds selected
+GPIOs LOW immediately after 2nd-stage `bootloader_init()` and again at the
+start of the updater. The IDU preset holds GPIO3 (ODU reset); ROM boot is
+earlier and may still leave GPIO3 floating. On TWAI start failure, the updater
+retries once with TX4/RX5 defaults unless either default pin is held LOW.
+Holds win over CAN: it skips the retry and continues on USB without CAN.
 
 ## Parked behaviour and stable clear
 
@@ -60,12 +75,16 @@ immediately by a flash; no 10 s wait is needed.
   evidence. The node records before app validation/loading, with no
   intentional delay and normally no erase.
 
-Apps must call `can_updater_client_start_health()` once early in `app_main`
-and reserve the same 16 custom RTC bytes as `node_updater/sdkconfig.defaults`
+ESP-IDF node apps using `can_updater_client` must call
+`can_updater_client_start_health()` once early in `app_main` and reserve the
+same 16 custom RTC bytes as `node_updater/sdkconfig.defaults`
 ([writing-a-node-app.md](../guides/writing-a-node-app.md#recovery-contract)).
-Rebuild older apps for clean-restart and stable-clear support. Existing nodes
-need a one-time USB bootloader/table/updater flash; CAN cannot replace the
-bootloader ([install once](../testing/bench/node-recovery.md#install-once-over-usb)).
+The opt-in [stock Arduino helper](../guides/platformio-arduino.md#stock-arduino-node-app-helper)
+clears the flash counter after stable uptime without that RTC reservation;
+stock-core apps do **not** retain the RTC crash-loop or clean-restart marks.
+Rebuild older ESP-IDF apps for full clean-restart and stable-clear support.
+Existing nodes need a one-time USB bootloader/table/updater flash; CAN cannot
+replace the bootloader ([install once](../testing/bench/node-recovery.md#install-once-over-usb)).
 
 ## Fail-safe and power loss
 

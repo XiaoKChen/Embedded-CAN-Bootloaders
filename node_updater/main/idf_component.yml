@@ -1,0 +1,5 @@
+# Purpose: Pin the updater's USB CDC device driver.
+# Summary: esp_tinyusb 1.7.6 supports IDF >=5.0, including the repository's 5.3.6.
+dependencies:
+  espressif/esp_tinyusb:
+    version: "1.7.6"

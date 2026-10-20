@@ -262,6 +262,9 @@ counters, dropped frames). Package progress is not reported here; see
 ## `POST /package`
 
 Uploads a v1 update package ([package-format.md](package-format.md)).
+The maximum complete request body is **`0x780000` (7,864,320 bytes,
+7.5 MiB)**, even when the running brain's physical `pkg` partition is larger.
+The IDU layout's `pkg` partition is exactly this size.
 
 ```sh
 curl.exe -i --data-binary "@update.ecbpkg" http://<ip>/package

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build.sh - One-command build of the ESP32-S3 firmware, node updater + brain
+# Purpose: Build ESP32-S3 firmware and board-independent updater bundles
 #            (Linux / macOS)
 # =============================================================================
 #   ./build.sh [project dir [idf.py arguments]]
 #
 # With no arguments it builds both boards' firmware, node_updater then brain
 # (`idf.py build` each), and prints each binary and its flash offset. A
-# failure in either stops the script with an error.
+# failure in either stops the script with an error. The updater build also
+# generates both provisioning tables and legacy-node/universal release zips
+# in node_updater/build, using the release tag (or local git describe).
 #
 # A first argument naming an ESP-IDF project directory, relative to the repo
 # root (`node_updater`, `brain`, `examples/bench_app`, ...), builds that
@@ -186,6 +188,11 @@ build_project() (
     step "idf.py $action"
     idf.py "$action" || fail "idf.py $action failed"
 
+    if [ "$project_dir" = "$node_updater_dir" ]; then
+        step "Generating node/IDU partition tables and updater bundles"
+        python "$repo_root/tools/pkg/updater_bundle.py" --repo "$repo_root" --idf-path "$idf_path" \
+            || fail "updater bundle generation failed"
+    fi
     if [ "$ota_app" = 1 ]; then
         # An application reaches the board over CAN. Its flasher args would
         # put it in the first app partition, `factory`, replacing the updater.

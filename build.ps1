@@ -1,13 +1,15 @@
 <#
 .SYNOPSIS
-    One-command build of the ESP32-S3 firmware (node updater + brain) on Windows.
+    Build ESP32-S3 firmware and board-independent updater bundles on Windows.
 
 .DESCRIPTION
     powershell -ExecutionPolicy Bypass -File build.ps1 [project dir [idf.py arguments]]
 
     With no arguments it builds both boards' firmware, node_updater then
     brain (`idf.py build` each), and prints each binary and its flash offset.
-    A failure in either stops the script with an error.
+    A failure in either stops the script with an error. The updater build also
+    generates both provisioning tables and the legacy-node/universal release
+    zips in node_updater/build, using the release tag (or local git describe).
 
     A first argument naming an ESP-IDF project directory, relative to the
     repo root (`node_updater`, `brain`, `examples/bench_app`, ...), builds
@@ -285,6 +287,11 @@ function Build-Project([string]$ProjectDir, [object[]]$CliArgs) {
 
     if ($CliArgs.Count -gt 0) {
         return  # custom idf.py command: its own output says what it did
+    }
+    if ($ProjectDir -eq $NodeUpdaterDir) {
+        Step 'Generating node/IDU partition tables and updater bundles'
+        & python (Join-Path $RepoRoot 'tools/pkg/updater_bundle.py') --repo $RepoRoot --idf-path $IdfPath
+        if ($LASTEXITCODE -ne 0) { Fail 'Updater bundle generation failed.' }
     }
     $flasher = Get-Content -LiteralPath (Join-Path $BuildDir 'flasher_args.json') -Raw | ConvertFrom-Json
     if ($IsOtaApp) {

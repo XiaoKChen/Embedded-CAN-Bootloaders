@@ -1,7 +1,7 @@
 {
   "name": "can-update-esp32",
   "version": "1.0.0",
-  "description": "Shared C code of the ESP32-S3 brain/node CAN updater for Arduino-ESP32 apps: CAN Update Protocol codecs, package parser, recovery counters, node flashing host, brain self-OTA and the node app's updater client. See docs/guides/platformio-arduino.md.",
+  "description": "Shared C/C++ code of the ESP32-S3 brain/node CAN updater for Arduino-ESP32 apps: CAN Update Protocol codecs, board profiles, recovery counters, node flashing host, brain self-OTA and opt-in node-app helpers. See docs/guides/platformio-arduino.md.",
   "keywords": ["can", "ota", "bootloader", "esp32", "twai"],
   "repository": {
     "type": "git",
@@ -19,12 +19,14 @@
       "+<src/boot/dfu_config.c>",
       "+<src/boot/update_pkg.c>",
       "+<src/boot/boot_counter.c>",
+      "+<src/boot/board_profile.c>",
       "+<components/can_flash_host/can_flash_host.c>",
       "+<brain/main/ota_update.c>"
     ],
     "flags": [
       "-Icomponents/can_flash_host/include",
       "-Icomponents/can_updater_client/include",
+      "-Icomponents/arduino_node_app/include",
       "-Ibrain/main"
     ],
     "extraScript": "platformio/library_build.py"
@@ -37,10 +39,12 @@
       "src/boot",
       "components/can_flash_host",
       "components/can_updater_client",
+      "components/arduino_node_app",
       "brain/main/ota_update.c",
       "brain/main/ota_update.h",
       "brain/partitions.csv",
       "node_updater/partitions.csv",
+      "node_updater/partitions_idu_16MB.csv",
       "docs/guides/platformio-arduino.md"
     ]
   }

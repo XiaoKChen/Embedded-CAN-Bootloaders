@@ -4,7 +4,8 @@
  *
  * Decodes and validates the header and entry table of a brain + nodes update package so the
  * brain can stage it and relay each payload. Package v1 wire layout is specified in
- * docs/reference/package-format.md.
+ * docs/reference/package-format.md. Deployment limits fit both the legacy brain
+ * layout and the smaller shared-updater IDU package partition.
  *
  * Owns:         The v1 format constants and the decoded manifest (update_pkg_t).
  * Not here:     Payload reads and SHA-256 checks (brain/main/package_update.c); the deployment
@@ -43,7 +44,7 @@ extern "C" {
 /* Current ESP32-S3 deployment limits, checked by the caller, not the parser. */
 #define UPDATE_PKG_NODE_SLOT_SIZE 0x1C0000u
 #define UPDATE_PKG_BRAIN_SLOT_SIZE 0x300000u
-#define UPDATE_PKG_PARTITION_SIZE 0x7E0000u
+#define UPDATE_PKG_PARTITION_SIZE 0x780000u
 
 typedef struct {
     uint8_t type;

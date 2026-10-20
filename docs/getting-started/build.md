@@ -11,15 +11,19 @@ options and build variants: [configuration.md](../reference/configuration.md).
 powershell -ExecutionPolicy Bypass -File build.ps1      # Windows (PowerShell 5.1 or 7)
 ```
 
-With no argument this builds both boards' firmware, in this order:
+With no argument this builds the factory updater and the separate brain
+firmware example, in this order:
 
-| Project | Board | Output |
+| Project | Layout at build time | Output |
 |---|---|---|
-| `node_updater/` | the node (ESP32-S3FH4R2) | the CAN updater, `can_updater.bin` (`factory`), 4 MB table |
-| `brain/` | the brain (ESP32-S3-WROOM-1U-N16R8) | Ethernet OTA firmware, `brain_ota.bin` (`ota_0`), 16 MB table |
+| `node_updater/` | 4 MB node; bundle also generates IDU 16 MB table | common bootloader/updater, both partition tables, legacy and universal updater zips |
+| `brain/` | separate brain 16 MB table (no factory) | Ethernet OTA example `brain_ota.bin` (`ota_0`) |
 
-A failure in either stops the script with an error. The scripts print each
-binary and its flash offset.
+The updater uses the managed ESP-IDF component `espressif/esp_tinyusb`
+**1.7.6** for its CDC-ACM device. Its first build fetches this dependency
+from the component registry, so a first build needs network access even when
+ESP-IDF was already installed. Later builds use the cached component.
+A failure in either project or in bundle generation stops the script.
 
 **Requirements:** only **Git**, and **Python 3.8–3.13** (on Windows:
 python.org, the `py` launcher, or a uv-managed interpreter; on Debian/Ubuntu
@@ -37,7 +41,9 @@ What the first run does (later runs skip straight to the build):
    it to start over.
 3. Exports that environment and, in each project, runs `idf.py set-target
    esp32s3` (only when there is no `sdkconfig` yet) and `idf.py build`.
-4. Prints every binary with its flash offset, per project.
+4. Builds the updater (then generates two partition-table binaries and both
+   updater bundles) and the separate brain example; prints each project's
+   binary offsets.
 
 Changing the pin in `idf-version.txt` makes the next run replace
 `.tools/esp-idf` with the new tag. CI (`.github/workflows/esp32-build.yml`)
@@ -62,7 +68,7 @@ ESP-IDF. Any further arguments are passed to `idf.py` instead of the default
 build:
 
 ```sh
-./build.sh node_updater menuconfig                    # Kconfig (pins, bitrate, ...)
+./build.sh node_updater menuconfig                    # general IDF settings; updater TWAI comes from cancfg
 ./build.sh node_updater -p /dev/ttyUSB0 flash monitor # first flash over USB/UART
 powershell -ExecutionPolicy Bypass -File build.ps1 node_updater -p COM64 flash monitor
 powershell -ExecutionPolicy Bypass -File build.ps1 brain -p COM63 flash
@@ -72,6 +78,11 @@ More examples: `./build.sh node_updater`, `./build.sh brain -p /dev/ttyACM0 flas
 the bench-test app `./build.sh examples/bench_app`, the brain's USB-CAN bridge
 `./build.sh examples/slcan_bridge`; on Windows `build.ps1 node_updater -p COM64 flash`,
 `build.ps1 brain -p COM63 flash`.
+
+`./build.sh node_updater -p /dev/ttyUSB0 flash` uses the project's default
+4 MB table and **does not write `cancfg`**. It is a legacy/unprovisioned node
+flash, not the IDU flash or a complete SOLO preset. For either SOLO board use
+the [bundle and provisioning tool](first-flash.md#recommended-the-universal-bundle-and-tool).
 
 idf.py arguments always follow a project. Without one (`build.ps1 -p COM5
 flash`) the scripts stop with an error naming the projects, because the
@@ -141,14 +152,29 @@ the scripts the next time they run natively; it is only build output.
 
 ## Outputs
 
-The node updater, in `node_updater/build/`:
+The updater, in `node_updater/build/`:
 
-| Offset | File | What |
+| Offset (4 MB build) | File | What |
 |---|---|---|
-| `0x0` | `bootloader/bootloader.bin` | stock 2nd-stage bootloader (app rollback) |
-| `0x8000` | `partition_table/partition-table.bin` | `node_updater/partitions.csv` |
+| `0x0` | `bootloader/bootloader.bin` | common recovery 2nd-stage bootloader (header patched by esptool for selected flash size) |
+| `0x8000` | `partition_table/partition-table.bin` | default build's 4 MB node table |
 | `0xE000` | `ota_data_initial.bin` | empty `otadata` → boots `factory` |
-| `0x20000` | `can_updater.bin` | the CAN updater (`factory`) |
+| `0x20000` | `can_updater.bin` | common CAN updater (factory offset differs on IDU) |
+
+A successful updater build also creates `partition-table-node-4MB.bin` and
+`partition-table-idu-16MB.bin`, then both:
+
+- `esp32s3-can-updater-<version>.zip`: `bootloader.bin`, `can_updater.bin`,
+  `ota_data_initial.bin`, both named partition tables, and `manifest.json`.
+  Manifest format 1 identifies the `node-4MB` and `idu-16MB` layouts,
+  flash sizes and flash offsets; it contains **no per-board `cancfg`**.
+  [Provisioning](../guides/provisioning-can-ids.md) generates that image.
+- `esp32s3-node-updater-<version>.zip`: the retained legacy 4 MB node bundle,
+  with its original paths and flashing metadata.
+
+Use the universal bundle for both SOLO boards. The first planned release
+carrying it is `c-cpp-esp32-v1.2.0` (not tagged yet). A local `<version>`
+comes from `git describe`; on a release tag it is the tag's version suffix.
 
 The brain's firmware has the same set in `brain/build/`, with `brain_ota.bin`
 at `0x20000` (`ota_0`) and its 16 MB `brain/partitions.csv` (bootloader `0x0`,
@@ -163,14 +189,13 @@ print them from there. Partition tables: [flash-layout.md](../concepts/flash-lay
 
 `.github/workflows/esp32-build.yml` runs the [host tests](../testing/host-tests.md)
 and `./build.sh` (node updater + brain), then builds both examples, on every
-push / PR to `version/c-cpp/esp32`. It uploads one artifact per board, each
-with its bootloader, partition table, `otadata` image, app and `flash_args`:
-`esp32s3-node-updater` (`can_updater.bin`) and `esp32s3-brain`
-(`brain_ota.bin`). Pushing a **`c-cpp-esp32-v*`** tag publishes a GitHub
-Release versioned by the tag minus its prefix (`c-cpp-esp32-v1.0.0` →
-`v1.0.0`), with `esp32s3-node-updater-v1.0.0.zip`,
-`esp32s3-brain-v1.0.0.zip` and the two app images. Every branch uses
-`<lang>-<target>-v*` (`c-cpp-ra4m1-v*`, `embassy-ra4m1-v*`).
+push / PR to `version/c-cpp/esp32`. It uploads three artifacts: legacy `esp32s3-node-updater`, universal
+`esp32s3-can-updater`, and `esp32s3-brain` (the separate example). A
+**`c-cpp-esp32-v*`** tag publishes versioned zips for all three, plus the
+two app images. The first **planned** universal-bundle tag is
+`c-cpp-esp32-v1.2.0`; it has not been created on this branch. Other targets
+use their own `<lang>-<target>-v*` tags (`c-cpp-ra4m1-v*`,
+`embassy-ra4m1-v*`).
 
 ```sh
 git tag c-cpp-esp32-v1.0.0 && git push origin c-cpp-esp32-v1.0.0

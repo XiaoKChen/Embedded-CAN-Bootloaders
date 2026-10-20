@@ -4,7 +4,8 @@ Tests the **node**'s CAN updater from a PC with `tools/can-flash`, using the
 **brain** board as the USB-CAN adapter: the brain runs the SLCAN bridge
 (`examples/slcan_bridge`), so python-can talks to it as an ordinary `slcan`
 adapter. The node is the custom **ESP32-S3FH4R2** board (4 MB in-package
-flash) with a **TCAN332DR** on TWAI **TX = GPIO4, RX = GPIO5**; the brain is
+flash) with a **TCAN332DR** on TWAI **TX = GPIO4, RX = GPIO5** under its
+ODU profile; the brain is
 the **ESP32-S3-WROOM-1U-N16R8** board with a TCAN332DR on **TX = GPIO6,
 RX = GPIO7**. The bus runs at **250 kbit/s**. A commercial USB-CAN adapter
 works in the brain's place ([below](#alternative-a-usb-can-adapter-instead-of-the-brain)).
@@ -60,15 +61,17 @@ short: on Windows, a longer one pushes object paths past `MAX_PATH`.)
    [slcan-bridge.md, flash it](../../guides/slcan-bridge.md#flash-it), then
    [check it](../../guides/slcan-bridge.md#check-it) (`(1, 1) 1A2B`).
 2. **The node: the updater** —
-   [first-flash.md, the node](../../getting-started/first-flash.md#the-node-the-updater)
-   (`erase-flash flash monitor` on `COM7`), until the console shows the
-   `parked:` line.
+   [first-flash.md, the node](../../getting-started/first-flash.md#the-node-the-updater).
+   The commands below assume a **legacy unprovisioned v2 block** and default
+   IDs `0x79E/0x79F`; a SOLO ODU preset instead uses `0x05/0x06` and product
+   `SOLO ODU Controller`. For a provisioned ODU, pass
+   `--id-tx 0x05 --id-rx 0x06` to can-flash commands and expect its name.
 
-Keep `monitor` open on the node (`COM7`) through the tests: it reconnects
-across resets (Ctrl+] quits; Ctrl+T then Ctrl+R resets the node). Reopening
-it resets the node, unless you add `--no-reset`. To see the bench app's logs
-with its symbols, run the monitor from its project:
-`build.ps1 examples/bench_app -p COM7 monitor`.
+Read the updater's `parked:` line on **UART0**. Its TinyUSB CDC port is not
+a console. The separate bench app still uses its own USB console for `u` and
+logs. Reopening an app monitor can reset the board; use `--no-reset` when
+appropriate. To see the bench app's logs with symbols, run the monitor from
+its project: `build.ps1 examples/bench_app -p COM7 monitor`.
 
 ## 4. Tests
 
@@ -215,6 +218,52 @@ All ways back into the updater (crash-loop and EN-pulse counters, `u`,
 rollback, the USB `otadata` erase on `COM7`):
 [recovery.md](../../concepts/recovery.md). Recovery tests:
 [node-recovery.md](node-recovery.md).
+
+## One updater, board profile and USB checklist (not yet run)
+
+**Status: not run.** This checks issue #20, not the earlier 4 MB node pass.
+Use current local universal-bundle binaries or the planned
+`c-cpp-esp32-v1.2.0` release once published. Record bundle version, board,
+port, flash size, profile bytes, UART0 log and measured GPIO levels for each
+step. Do not run destructive flash steps while either board is serving an
+update. See [provisioning](../../guides/provisioning-can-ids.md),
+[profile vectors](../../reference/board-profile.md#solo-presets-and-golden-bytes)
+and [first flash](../../getting-started/first-flash.md).
+
+- [ ] Provision ODU `node-4MB` and IDU `idu-16MB` through their own USB ports
+      using the **same** `bootloader.bin` and `can_updater.bin`; verify selected
+      table, `--flash-size 4MB`/`16MB`, factory offset `0x20000`/`0xFA0000`
+      and full 4 KB `cancfg` read-back against each preset's golden bytes.
+- [ ] With no app installed, power-cycle each board. Confirm factory boot,
+      UART0 `TWAI profile record` with ODU 4/5 and IDU 6/7 at 250 kbit/s,
+      and CAN INFO on `0x05/0x06` and `0x07/0x08` respectively. Verify the
+      IDU GPIO3 hold is LOW from 2nd-stage initialization, before partition
+      logging, and remains LOW in updater. Use a scope for the startup timing;
+      GPIO3 may float during ROM boot.
+- [ ] Enumerate each updater's native USB: VID:PID `303A:1001`, manufacturer
+      `Normal Corporation`, product `SOLO ODU Controller` or
+      `SOLO IDU Controller`, and a 12-uppercase-hex MAC serial. Confirm logs
+      appear on UART0, not on the updater's CDC port.
+- [ ] Open the updater CDC port at 1200 baud and close it. Check the board
+      restarts into ROM download with **Espressif** USB identity, then esptool
+      connects without holding BOOT. Reset normally back into the updater.
+- [ ] On a disposable install, test an erased or CRC-corrupt profile without
+      damaging the v2 block. Confirm all profile defaults (TX4/RX5, 250k,
+      no holds), record/default log, and continued USB enumeration. Restore
+      the board preset afterward.
+- [ ] With a controlled TWAI-init failure on valid nondefault profile pins,
+      verify a single retry on TX4/RX5 while holds remain asserted. Repeat
+      with a valid profile that holds GPIO4 or GPIO5 LOW: the updater must
+      **skip** default retry and keep USB available without CAN. Do not use
+      refused GPIOs or hold a TWAI pin in the profile; restore preset after.
+- [ ] Install a matching IDU app and check APP_INFO/ENTER_UPDATER on its
+      `0x07/0x08` pair as well as its brain role. Check an ODU app on
+      `0x05/0x06`; test rollback/re-entry without overwriting either factory
+      slot. If using the stock Arduino helper, confirm delayed image marking
+      and flash-counter clear after stable uptime separately.
+
+No checkmark above is evidence of a pass until it has been run and recorded.
+
 
 ## Alternative: a USB-CAN adapter instead of the brain
 

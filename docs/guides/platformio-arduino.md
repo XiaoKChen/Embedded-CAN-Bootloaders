@@ -25,16 +25,21 @@ account installing it also needs read access to the repo's `.claude`
 submodule. For a local checkout use `symlink://<path>`; `file://<path>` copies
 the whole working tree, build outputs included.
 
-Always compiled: `src/boot/{app_control,crc32,dfu_config,update_pkg,boot_counter}.c`,
+Always compiled: `src/boot/{app_control,crc32,dfu_config,update_pkg,boot_counter,board_profile}.c`,
 `components/can_flash_host/can_flash_host.c`, `brain/main/ota_update.c`. With
 `custom_can_updater_client = yes` in the environment, the library's
 `platformio/library_build.py` also compiles
 `components/can_updater_client/{can_updater_client,recovery}.c` (node apps
 only: `recovery.c` stops with `#error` without the RTC contract below).
+With `custom_arduino_node_app = yes`, it compiles
+`components/arduino_node_app/arduino_node_app.cpp` instead: an optional
+stock-core helper for apps that own their TWAI controller. Do not enable
+`custom_can_updater_client` for the stock-core path.
 
 The app's own sources can then include, from C or C++: `app_control.h`,
-`can_update.h`, `dfu_config.h`, `crc32.h`, `update_pkg.h`, `boot_counter.h`,
-`can_flash_host.h`, `can_updater_client.h`, `ota_update.h`.
+`can_update.h`, `dfu_config.h`, `board_profile.h`, `crc32.h`, `update_pkg.h`,
+`boot_counter.h`, `can_flash_host.h`, `can_updater_client.h`, `ota_update.h`;
+C++ apps opting in can include `arduino_node_app.hpp`.
 
 ## Node apps
 
@@ -95,19 +100,14 @@ custom_sdkconfig =
     mode 1 (the chip's USB-Serial-JTAG) works.
 
   **Stock-core alternative.** Skip `custom_sdkconfig` and
-  `custom_can_updater_client`, and implement in the app what needs no RTC
-  state: after `BOOT_COUNTER_STABLE_MS` of uptime, scan the `bootcnt`
-  partition with `boot_counter_log_scan()` and, unless it tripped, erase and
-  verify it (the flash half of `clear_counters()` in
-  `components/can_updater_client/recovery.c`); enter the updater by selecting
-  `factory` and restarting, as `can_updater_client_enter_updater()` does.
-  This keeps power-cycle bursts from stranding the node and keeps the
-  brain's GPIO3 recovery working. It gives up the RTC crash-loop counter and
-  the clean-restart mark: the stock core does not reserve the 16 RTC bytes,
-  so the app may overwrite them (the bootloader then reads them as zero), and
-  an already-confirmed image that later crash-loops is not caught. A new
-  unconfirmed image still rolls back. Reference:
-  `Airform-SOLO-ODU-Controller/src/can_update/can_update.cpp`.
+  `custom_can_updater_client`; set `custom_arduino_node_app = yes` instead.
+  The [helper below](#stock-arduino-node-app-helper) clears the flash boot
+  counter after stable uptime, answers APP_INFO and ENTER_UPDATER, and applies
+  provisioned LOW holds. It does not reserve the custom RTC bytes: the stock
+  core may overwrite them, so RTC crash-loop counting and clean-restart marks
+  are unavailable. Flash power-cycle recovery, a pending image's rollback and
+  the factory updater still work. For an IDU, use the 16 MB IDU partition
+  table, not the 4 MB node table.
 - **Defer mark-valid.** Arduino's `initArduino()` marks a PENDING_VERIFY image
   valid before `setup()`, which defeats rollback into the updater. Opt out and
   confirm after the app's own self-test:
@@ -144,7 +144,7 @@ custom_sdkconfig =
   plus a matching `otadata` with esptool. The SOLO ODU overrides its upload
   recipe to write only `otadata` and `ota_0`; its `pio run -t upload` was
   verified not to touch `0x0`, `0x8000`, or `0x20000`.
-- **USB-Serial-JTAG reset tip.** After a USB flash the board may stay in the
+- **Stock Arduino app USB reset tip (not the factory updater).** After an app USB flash the board may stay in the
   flasher stub even when esptool says `Hard resetting via RTS pin`. Boot the
   app with `esptool --chip esp32s3 -p <ROM port> --before no_reset --after watchdog-reset chip-id`
   (esptool 5.x).
@@ -158,6 +158,78 @@ custom_sdkconfig =
   queue space (the SOLO ODU uses a 50 ms per-frame wait). A zero-wait send
   inside the CAN receive path lost reply frames immediately after the app's
   own publish bursts (SOLO ODU #30/#31).
+
+## Stock Arduino node-app helper
+
+For an Arduino-ESP32 app that already installs/receives TWAI frames, set
+`custom_arduino_node_app = yes` in **that PlatformIO environment**. The library
+then compiles `components/arduino_node_app/` (C++); without the flag, it does
+not. Copy the matching [partition table](../concepts/flash-layout.md), set
+`board_upload.flash_size = 4MB` for the ODU or `16MB` for the IDU, and do
+not run PlatformIO's default full-chip upload. The current `library.json`
+export includes the 4 MB CSV but not `partitions_idu_16MB.csv`: copy the IDU
+table from a full repository checkout, not from the installed library
+package. The stock
+core does not need `custom_sdkconfig` or `custom_can_updater_client` for this
+helper.
+
+```ini
+[env:odu]
+framework = arduino
+board_upload.flash_size = 4MB
+board_build.partitions = partitions.csv  ; copy of node_updater/partitions.csv
+custom_arduino_node_app = yes
+```
+
+The app supplies Arduino's rollback hook **before** `setup()` and wires the
+helper into its existing task-level TWAI receive path:
+
+```cpp
+#include <arduino_node_app.hpp>
+#include <driver/twai.h>
+
+extern "C" bool verifyRollbackLater() { return true; }
+
+void setup() {
+    // Install/start the app's own TWAI driver on the board's physical pins.
+    if (arduino_node_app::begin() != ESP_OK) { /* report startup failure */ }
+}
+
+void on_twai_message(const twai_message_t &frame) { // call from a task, not an ISR
+    if (!frame.extd && !frame.rtr)
+        arduino_node_app::on_standard_frame(frame.identifier,
+                                            frame.data_length_code, frame.data);
+}
+
+void on_self_test(bool healthy) {
+    arduino_node_app::confirm_when_healthy(healthy);
+}
+```
+
+Call `begin(Config)` **once early**, before registering RX callbacks. Keep all
+profile hold pins LOW. The helper loads v2 `cancfg` IDs (`command_id()` and
+`reply_id()` expose the pair) and validated profile holds, but **does not
+install TWAI, choose app pins/bitrate, filter frames or receive frames**; the
+app must match its driver to the board's transceiver/profile. Pass only
+standard DATA frames to `on_standard_frame(id, dlc, data)` from one task. It
+parses requests there and answers APP_INFO/ENTER_UPDATER from a core-0 task
+with a bounded TWAI TX wait. APP_INFO takes label/version from `USB_PRODUCT`
+split at the last space, not the ESP app descriptor. ENTER_UPDATER drains its
+ACK before selecting factory and restarting. After `stable_uptime_ms`, it
+clears the untripped flash boot counter, not a latched recovery trip.
+
+`Config` fields are `task_core` (default 0), `task_priority` (default 1),
+`stable_uptime_ms` (default `BOOT_COUNTER_STABLE_MS`),
+`reply_tx_wait_ms` (default 50), `ack_drain_ms` (default 20), and
+`owns_image_confirmation` (default true). `confirm_when_healthy(true)` marks
+a pending image valid once after the app's own health check; set
+`owns_image_confirmation = false` when an existing OTA owner does that. The
+app must define `verifyRollbackLater()` either way to prevent Arduino from
+confirming an untested image during `initArduino()`. Details:
+`components/arduino_node_app/include/arduino_node_app.hpp`. This is an
+opt-in replacement for a stock app's hand-written CAN entry/flash-counter
+path, **not** the full custom-RTC recovery client. The universal updater's
+USB identity is independent of the running app's `USB_PRODUCT`.
 
 ## Brain apps
 

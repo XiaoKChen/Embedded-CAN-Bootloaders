@@ -16,33 +16,36 @@ directly. Tie any standby/silent pin to its active level.
 
 ```
 ESP32-S3                 3.3 V CAN transceiver           bus
-TX GPIO (4) ───────────► TXD                 CANH ───────
-RX GPIO (5) ◄─────────── RXD                 CANL ───────
+TX GPIO (profile) ───────► TXD                 CANH ───────
+RX GPIO (profile) ◄─────── RXD                 CANL ───────
 3V3 ──────────────────── VCC (and VIO)                 120 Ω at both ends
 GND ──────────────────── GND ─── common ground with the host adapter
 ```
 
-TX GPIO, RX GPIO and bitrate are menuconfig options
-([configuration.md](../reference/configuration.md)); the defaults match the
-boards below at **250 kbit/s**.
+TX and RX are per-board values from the [board profile](../reference/board-profile.md)
+written to `cancfg`, not updater menuconfig settings. The defaults (when no
+valid profile exists) are TX4/RX5 at **250 kbit/s** with no hold pins; they
+match the ODU, not the IDU. The application must also configure its own TWAI
+driver for the physical wiring.
 
 ## Pins
 
 | Board | Function | GPIO | Notes |
 |---|---|---|---|
-| node | TWAI TX → TCAN332 `D` | GPIO4 | `CAN_UPDATER_TWAI_TX_GPIO`, `NODE_APP_TWAI_TX_GPIO` |
-| node | TWAI RX ← TCAN332 `R` | GPIO5 | `CAN_UPDATER_TWAI_RX_GPIO`, `NODE_APP_TWAI_RX_GPIO` |
-| node | USB-Serial-JTAG | GPIO19/20 | first flash, console (logs, the bench app's `u`) |
-| node | EN | — | from the brain's GPIO3 (inverted), below |
-| brain | TWAI TX → TCAN332 `D` | GPIO6 | C CAN host (`brain/`) and `SLCAN_BRIDGE_TWAI_TX_GPIO` |
-| brain | TWAI RX ← TCAN332 `R` | GPIO7 | C CAN host and `SLCAN_BRIDGE_TWAI_RX_GPIO` |
-| brain | node reset (EN, inverted) | GPIO3 | `NODE_RESET_GPIO` (`components/node_reset`) |
-| brain | W5500 on SPI2 (IOMUX) | MOSI GPIO11, MISO GPIO13, SCLK GPIO12, CS GPIO10, INTn GPIO9, RSTn GPIO14 | SPI at 20 MHz |
-| brain | USB-Serial-JTAG (native USB) | GPIO19/20 | first flash, console; SLCAN port when running the bridge |
-| brain | UART0 | GPIO43 TX, GPIO44 RX | 115200 baud console |
+| ODU | TWAI TX → TCAN332 `D` | GPIO4 | ODU profile (fallback also TX4); reference app has separate `NODE_APP_TWAI_TX_GPIO` |
+| ODU | TWAI RX ← TCAN332 `R` | GPIO5 | ODU profile (fallback also RX5); reference app has separate `NODE_APP_TWAI_RX_GPIO` |
+| ODU | native USB | GPIO19/20 | updater TinyUSB CDC identity; ROM download or app USB behaviour differs |
+| ODU | EN | — | from IDU GPIO3 (inverted), below |
+| IDU | TWAI TX → TCAN332 `D` | GPIO6 | IDU profile; brain app and SLCAN bridge configure this separately |
+| IDU | TWAI RX ← TCAN332 `R` | GPIO7 | IDU profile; brain app and SLCAN bridge configure this separately |
+| IDU | node reset (EN, inverted) | GPIO3 | IDU profile holds it LOW from 2nd-stage boot onward; brain app may pulse it |
+| IDU | W5500 on SPI2 (IOMUX) | MOSI GPIO11, MISO GPIO13, SCLK GPIO12, CS GPIO10, INTn GPIO9, RSTn GPIO14 | SPI at 20 MHz |
+| IDU | native USB | GPIO19/20 | updater CDC; ROM download or SLCAN bridge has different identity |
+| IDU | UART0 | GPIO43 TX, GPIO44 RX | 115200 baud updater console |
 
-**No recovery pin:** GPIO4 is TWAI TX, so the bootloader's GPIO factory
-reset is off ([recovery.md](../concepts/recovery.md)).
+**No GPIO factory-reset pin:** the ESP-IDF factory-reset Kconfig feature is
+off. Recovery uses counters and CAN entry
+([recovery.md](../concepts/recovery.md)).
 
 ## Brain ↔ node
 
@@ -86,15 +89,16 @@ deliberate reset pulses ([recovery.md](../concepts/recovery.md)).
   `components/node_reset`) drives GPIO3 push-pull LOW as early as possible
   (latching the level before enabling the output, so it never glitches high)
   and pulses it HIGH only to reset the node.
-- **A floating GPIO3 can hold the node in reset.** While the brain is blank,
-  in ROM download mode, being flashed or still booting, GPIO3 is not driven;
-  on these boards that has been observed to keep the node in reset (no USB
-  enumeration). Flash the brain first, then plug in or reset the node.
-- **Brain reboots reset the node.** brain_ota drives GPIO3 LOW first thing in
-  `app_main`. From each brain reset until then (the bootloader plus start-up,
-  well under a second) GPIO3 floats, so **every OTA reboot, rollback and reset
-  of the brain can hold the node in reset briefly, and the node restarts.**
-  That is accepted for this bench. A node connected over USB re-enumerates.
+- **A floating GPIO3 can hold the ODU in reset.** The IDU's valid profile
+  drives GPIO3 LOW after `bootloader_init()`, before the partition table is
+  logged, and the updater keeps the hold. ROM download and a blank IDU run
+  earlier than that; GPIO3 may still float and prevent ODU USB enumeration.
+  Flash the IDU first, then plug in or reset the ODU.
+- **IDU reboots may reset the ODU.** GPIO3 can float during ROM boot even with
+  a valid profile. From 2nd-stage initialization onward the hold is LOW;
+  `brain_ota` also drives GPIO3 LOW in `app_main`. The brief ROM interval can
+  hold EN through the inverting stage and restart the ODU. This is accepted
+  on the bench; a connected ODU may re-enumerate.
 - **GPIO3 stays LOW** except for `/node/recover` or a package's automatic
   recovery (four 100 ms HIGH / 400 ms LOW pulses through the inverting
   stage). Only the physically wired node can be recovered.

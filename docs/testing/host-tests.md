@@ -23,7 +23,9 @@ already runs all CTest suites.
 ## What they cover
 
 - The shared pure-logic core in `src/boot/`: protocol engine, CRC32,
-  config-block parser, app-control codec (`test_app_control`, with golden
+  config-block parser, **`test_board_profile`** (both SOLO golden 24-byte
+  records, default fallback, invalid header/CRC/rules, reserved fields,
+  high GPIOs, encode and bitrate codes), app-control codec (`test_app_control`, with golden
   vectors shared with `can_flash.py --selftest`), package parser
   (`test_update_pkg`), boot counter, and the RA4M1 image validator kept as
   prior art.
@@ -43,7 +45,8 @@ already runs all CTest suites.
   RTC garbage, every single weak programmed bit, erased/garbage logs, and
   full-log wrap ([recovery.md](../concepts/recovery.md)).
 
-Builds and host tests do not prove real EN timing, RTC retention, brownout
+Builds and host tests do not prove real EN timing, early bootloader GPIO
+holds, USB 1200-baud ROM entry, TWAI retry, RTC retention, brownout
 flash behaviour, HTTP task stack headroom, watchdogs, NVS interruption or real
 GPIO/CAN timing: run the [bench tests](bench/README.md) before deployment.
 

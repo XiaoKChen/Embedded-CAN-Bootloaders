@@ -87,26 +87,37 @@ A valid S3 app cannot be identified as the right board firmware from its chip ID
 A BRAIN image without this package-resume code cannot continue the pending relay;
 a self-confirming app without Ethernet can require USB recovery.
 
-The new `pkg` partition is data subtype `0x43`, offset `0x820000`, size
-**`0x7E0000` = 8,257,536 bytes = 7.875 MiB**, ending at `0x1000000`.
-No existing brain partition moves:
+The supported complete package limit is **`0x780000` = 7,864,320 bytes
+(7.5 MiB)**, including header, manifest, alignment gaps and all payloads.
+The IDU 16 MB table reserves exactly that much for `pkg` (subtype `0x43`,
+offset `0x820000`) before the 384 KB factory updater at `0xFA0000`.
+The separate `brain/partitions.csv` is unchanged and physically reserves
+8,257,536 bytes for `pkg` through the end of flash, but its HTTP handler
+also enforces the **smaller** `0x780000` package cap. The new IDU table adds
+`cancfg`/`bootcnt` and `factory`; it is not the brain example's table.
+For the IDU:
 
 | Label | Offset | Size |
 |---|---:|---:|
 | nvs | `0x9000` | `0x5000` |
 | otadata | `0xE000` | `0x2000` |
 | phy_init | `0x10000` | `0x1000` |
+| cancfg | `0x11000` | `0x1000` |
+| bootcnt | `0x12000` | `0x1000` |
 | ota_0 | `0x20000` | `0x300000` (3,145,728 bytes) |
 | ota_1 | `0x320000` | `0x300000` (3,145,728 bytes) |
 | node_fw | `0x620000` | `0x200000` |
-| pkg | `0x820000` | `0x7E0000` |
+| pkg | `0x820000` | `0x780000` |
+| factory | `0xFA0000` | `0x60000` |
 
 Each NODE payload is at most **`0x1C0000` = 1,835,008 bytes**; each BRAIN payload
 must fit a 3 MiB OTA slot. The **entire package** (header, table, gaps, all payloads)
-must fit `pkg`: one maximum-size brain plus eight maximum-size nodes will not fit.
-With nine entries the payload budget is at most **8,256,640 bytes**, minus gaps.
-The tool and brain enforce these limits. Install the new partition table over
-USB once; `/ota` and `/package` do not update partition tables.
+must fit the supported `0x780000` cap (and the physical `pkg` partition):
+one maximum-size brain plus eight maximum-size nodes will not fit.
+With nine entries the payload budget is at most **7,863,424 bytes**, minus gaps.
+The tool and brain enforce the supported cap even on a larger physical
+partition. Install the appropriate table over USB once; `/ota` and
+`/package` do not update partition tables.
 
 ## Brain-first transaction and reboot record
 

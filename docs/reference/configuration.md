@@ -8,20 +8,23 @@ a board-specific configuration in git, put the overrides in that project's
 
 ## Kconfig menus
 
-### Node updater: `./build.sh node_updater menuconfig` → **CAN Updater**
+### Factory updater: board profile, not Kconfig
 
-| Option | Default | Notes |
-|---|---|---|
-| `CAN_UPDATER_TWAI_TX_GPIO` | 4 | to the transceiver's TXD (TCAN332 `D`) |
-| `CAN_UPDATER_TWAI_RX_GPIO` | 5 | from the transceiver's RXD (TCAN332 `R`) |
-| `CAN_UPDATER_BITRATE` | 250 kbit/s | 125 k / 250 k / 500 k / 1 M; must match `can_flash.py --bitrate` |
+The updater has **no TWAI pin/bitrate Kconfig menu**. The 24-byte record at
+`cancfg + 0x50` supplies TWAI TX/RX, bitrate and GPIO hold-LOW mask per board.
+The `BOARD_PROFILE_DEFAULT_*` constants in `src/boot/board_profile.h` are the
+only fallback: TX 4, RX 5, 250 kbit/s, no holds for an absent/invalid record.
+The updater logs `record` or `defaults` at startup. On TWAI init failure it
+retries once with defaults unless a default pin is held LOW; then holds win
+and the updater remains available over USB without CAN. The bootloader reads
+the same record to assert holds before loading an app.
 
-The defaults match the node board (ESP32-S3FH4R2 + TCAN332DR, issue #2).
-
-**Pin choice.** TWAI goes through the GPIO matrix, so any free GPIO works.
-Avoid the strapping pins (0, 3, 45, 46), USB (19, 20), flash/PSRAM pins
-(26–37 on octal-PSRAM modules such as the N16R8) and UART0 (43, 44). On the
-brain also avoid GPIO3 (the node's EN line).
+The record rejects GPIO0, GPIO19/20 and GPIO26..32 for either TWAI or holds,
+and rejects holds on TWAI pins or above GPIO48. For board wiring and exact
+byte format see [board profile](board-profile.md). Choose other pins based on
+the actual PCB: the format's acceptance does not guarantee that a pin is free
+of a board-specific function. The SOLO IDU uses TX6/RX7 and a GPIO3 hold;
+the ODU uses TX4/RX5 with no holds.
 
 ### SLCAN bridge: `build.ps1 examples/slcan_bridge menuconfig` → **SLCAN Bridge**
 
@@ -36,9 +39,13 @@ brain also avoid GPIO3 (the node's EN line).
 
 | Option | Default | Notes |
 |---|---|---|
-| `NODE_APP_TWAI_TX_GPIO` | 4 | must match `CONFIG_CAN_UPDATER_TWAI_TX_GPIO`: app and updater share one transceiver |
-| `NODE_APP_TWAI_RX_GPIO` | 5 | must match `CONFIG_CAN_UPDATER_TWAI_RX_GPIO` |
-| `NODE_APP_CAN_BITRATE_BPS` | 250000 | must match the updater and the brain; `can_link` accepts 10k, 20k, 50k, 100k, 125k, 250k, 500k and 1M |
+| `NODE_APP_TWAI_TX_GPIO` | 4 | reference app only; match the *provisioned profile* and physical transceiver |
+| `NODE_APP_TWAI_RX_GPIO` | 5 | reference app only; match the profile, not an updater Kconfig option |
+| `NODE_APP_CAN_BITRATE_BPS` | 250000 | match the profile and the CAN host; `can_link` accepts 10k, 20k, 50k, 100k, 125k, 250k, 500k and 1M |
+
+These example-app options remain build-time settings. The optional stock-core
+[Arduino node-app helper](../guides/platformio-arduino.md#stock-arduino-node-app-helper)
+loads provisioned IDs and holds; its caller configures the app's TWAI driver.
 
 ### Brain: `brain/` → **Brain OTA** and **Node reset line**
 
@@ -66,7 +73,7 @@ switch it with `build.ps1 examples/bench_app menuconfig` →
 
 | Project | Notable settings |
 |---|---|
-| `node_updater` | `CONFIG_ESPTOOLPY_FLASHSIZE_4MB`, custom `partitions.csv`, `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` (a freshly CAN-flashed app boots `PENDING_VERIFY` and falls back to the updater unless confirmed), no `CONFIG_BOOTLOADER_FACTORY_RESET`, the RTC contract below, `CONFIG_ESP_TASK_WDT_PANIC` (a hung updater resets back into itself) |
+| `node_updater` | build-time 4 MB `partitions.csv` (the universal bundle also generates `partitions_idu_16MB.csv`), rollback, no GPIO factory reset, the RTC contract below, `CONFIG_ESP_TASK_WDT_PANIC`; TinyUSB CDC-ACM, UART0-only console (`CONFIG_ESP_CONSOLE_SECONDARY_NONE`) |
 | `brain` | `CONFIG_ESPTOOLPY_FLASHSIZE_16MB`, its own A/B `partitions.csv`, rollback, `CONFIG_ETH_SPI_ETHERNET_W5500`; octal PSRAM stays disabled; console on UART0 plus USB-Serial-JTAG secondary (`CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`) |
 | `examples/bench_app`, `examples/node_app` | the node's table via `../../node_updater/partitions.csv`, 4 MB, rollback, the RTC contract, console on USB-Serial-JTAG (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`) |
 | `examples/slcan_bridge` | logs and panics to UART0 only: `CONFIG_ESP_CONSOLE_SECONDARY_NONE`, so the USB port carries SLCAN only |

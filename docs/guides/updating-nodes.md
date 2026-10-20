@@ -29,7 +29,7 @@ How a node reaches its updater: [recovery.md](../concepts/recovery.md). In pract
 
 One file, brain image optional, up to eight nodes, power-loss-resumable.
 Install the brain's partition table over USB once
-([flash-layout.md](../concepts/flash-layout.md#brain-16-mb-brainpartitionscsv)).
+([flash-layout.md](../concepts/flash-layout.md#brain-example-16-mb-brainpartitionscsv)).
 
 ```sh
 uv run tools/pkg/ecb_pkg.py build --brain brain/build/brain_ota.bin --node examples/bench_app/build/bench_app.bin -o update.ecbpkg

@@ -7,7 +7,8 @@
  * brain image is written and verified into the inactive slot, the pending record saved, and the
  * brain restarts; after boot, resume() checks the running image against the record before
  * relaying. Per node: ENTER_UPDATER over CAN, then INFO, then the GPIO3 pulse train if nothing
- * answered. NVS is never erased to hide an initialization failure.
+ * answered. NVS is never erased to hide an initialization failure. Uploads and resumed
+ * packages obey the shared IDU limit even on the larger legacy brain partition.
  *
  * @see     package_update.h, update_pkg.h, node_flash.h
  */
@@ -233,7 +234,8 @@ static bool image_header_valid(const update_pkg_entry_t *entry)
 
 static const char *load_manifest(uint32_t total, const uint8_t *expected_manifest)
 {
-    if (s_partition == NULL || total < UPDATE_PKG_HEADER_SIZE || total > s_partition->size) {
+    if (s_partition == NULL || total < UPDATE_PKG_HEADER_SIZE ||
+        total > UPDATE_PKG_PARTITION_SIZE || total > s_partition->size) {
         return "Package size is outside pkg partition";
     }
     const uint32_t count = total < sizeof(s_manifest) ? total : sizeof(s_manifest);
@@ -548,7 +550,9 @@ esp_err_t package_update_stage(httpd_req_t *req, bool *ready)
         return reject(req, "409 Conflict", "Running brain image is not confirmed");
     }
     if (req->content_len == 0u) { return reject(req, "411 Length Required", "Nonempty Content-Length required"); }
-    if (req->content_len > s_partition->size) { return reject(req, "413 Payload Too Large", "Package exceeds pkg partition"); }
+    if (req->content_len > UPDATE_PKG_PARTITION_SIZE || req->content_len > s_partition->size) {
+        return reject(req, "413 Payload Too Large", "Package exceeds supported pkg partition limit");
+    }
     const uint32_t total = (uint32_t)req->content_len;
     portENTER_CRITICAL(&s_lock);
     memset(&s_status, 0, sizeof(s_status));

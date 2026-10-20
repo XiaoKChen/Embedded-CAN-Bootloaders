@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build/inspect unsigned ECB package v1 (Python standard library only)."""
+"""Purpose: Build/inspect unsigned ECB package v1 with the Python standard library.
+
+Summary: Validate images and manifests against slot limits shared by the legacy
+brain and the shared-updater IDU layout (the smaller pkg partition wins).
+"""
 import argparse
 import hashlib
 import json
@@ -15,7 +19,7 @@ CHECK_OFFSET = 24
 BRAIN, NODE = 1, 2
 MAX_NODES, MAX_NAME, MAX_CAN_ID = 8, 32, 0x7FF
 DEFAULT_CMD, DEFAULT_REPLY = 0x79E, 0x79F
-BRAIN_LIMIT, NODE_LIMIT, PACKAGE_LIMIT = 0x300000, 0x1C0000, 0x7E0000
+BRAIN_LIMIT, NODE_LIMIT, PACKAGE_LIMIT = 0x300000, 0x1C0000, 0x780000
 IMAGE_HEADER_SIZE, CHIP_ID_OFFSET, S3_CHIP_ID = 24, 12, 9
 APP_DESC_OFFSET, APP_DESC_MAGIC = 32, 0xABCD5432
 ALIGNMENT = 4

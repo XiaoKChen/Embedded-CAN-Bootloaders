@@ -1,0 +1,13 @@
+# Purpose: Provision the 16 MB SOLO IDU with the common CAN updater.
+# Summary: Preserve brain OTA/staging offsets and reserve the final 384 KB for factory.
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+otadata,    data, ota,     0xe000,   0x2000,
+phy_init,   data, phy,     0x10000,  0x1000,
+cancfg,     data, 0x40,    0x11000,  0x1000,
+bootcnt,    data, 0x42,    0x12000,  0x1000,
+ota_0,      app,  ota_0,   0x20000,  0x300000,
+ota_1,      app,  ota_1,   0x320000, 0x300000,
+node_fw,    data, 0x41,    0x620000, 0x200000,
+pkg,        data, 0x43,    0x820000, 0x780000,
+factory,    app,  factory, 0xFA0000, 0x60000,

@@ -37,6 +37,7 @@ add_library(boot_core STATIC
     ${BOOT_DIR}/can_update.c
     ${BOOT_DIR}/dfu_config.c
     ${BOOT_DIR}/board_profile.c
+    ${BOOT_DIR}/i2c_bitbang.c
     ${BOOT_DIR}/app_control.c
 )
 target_include_directories(boot_core PUBLIC ${BOOT_DIR})
@@ -63,6 +64,7 @@ add_host_test(test_dfu_config)
 add_host_test(test_board_profile)
 target_compile_definitions(test_board_profile PRIVATE
     BOARD_PROFILE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/vectors/board_profile_v2.txt")
+add_host_test(test_i2c_bitbang)
 add_host_test(test_slcan_codec)
 add_host_test(test_app_control)
 

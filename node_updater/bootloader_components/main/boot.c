@@ -6,25 +6,30 @@
  * @brief   Board safety holds and recovery selection before IDF loads an app.
  *
  * Overrides the ESP-IDF 2nd-stage bootloader entry (call_start_cpu0) to classify the reset,
- * apply validated cancfg GPIO holds immediately after initialization (before table logging),
- * advance recovery counters and, once either trips,
+ * apply validated cancfg GPIO holds (LOW and HIGH) and the profile's I2C safe writes immediately
+ * after initialization (before table logging), advance recovery counters and, once either trips,
  * load the factory CAN updater. Based on
  * ESP-IDF v5.3.6 examples/custom_bootloader/bootloader_override.
  *
  * Owns:         The bootloader's copy of the recovery counters: the RTC retained record and the
- *               bootcnt flash log.
+ *               bootcnt flash log; the bootloader's GPIO-register HAL for i2c_bitbang.
  * Not here:     The counter logic (src/boot/boot_counter.h); clearing the counters
- *               (components/can_updater_client/recovery.c). IDF retains responsibility for image
- *               verification, rollback and jumping.
+ *               (components/can_updater_client/recovery.c); the record (board_profile.h) and the
+ *               I2C sequence (i2c_bitbang.h). IDF retains responsibility for image verification,
+ *               rollback and jumping.
  * Invariants:   Only the dedicated writable, unencrypted bootcnt data partition is written, never
  *               app/otadata. A bootcnt failure never blocks the boot: the RTC decision still
- *               applies.
- * Depends on:   boot_counter.h and the IDF bootloader support components.
+ *               applies. The I2C safe writes are best effort and bounded (I2C_BB_WORST_CASE_US):
+ *               a failure is skipped, and both I2C pins are left released inputs for the app.
+ * Depends on:   boot_counter.h, board_profile.h, i2c_bitbang.h and the IDF bootloader support
+ *               components.
  *
- * @see     boot_counter.h, docs/concepts/recovery.md
+ * @see     boot_counter.h, i2c_bitbang.h, docs/concepts/recovery.md,
+ *          docs/reference/board-profile.md
  */
 #include "boot_counter.h"
 #include "board_profile.h"
+#include "i2c_bitbang.h"
 #include "../../cancfg.h"
 
 #include <string.h>
@@ -81,6 +86,75 @@ static uint32_t counter_offset(void)
     return 0u;
 }
 
+/* i2c_bitbang pin HAL over the GPIO registers: the pins are open-drain, so a released line
+ * (output latch 1) is pulled up and only LOW is ever driven. ctx points at {sda, scl}. */
+static void i2c_line_set(uint32_t pin, bool release)
+{
+    gpio_ll_set_level(&GPIO, pin, release ? 1u : 0u);
+}
+
+static void i2c_sda_release(void *ctx, bool release)
+{
+    i2c_line_set(((const uint8_t *)ctx)[0], release);
+}
+
+static void i2c_scl_release(void *ctx, bool release)
+{
+    i2c_line_set(((const uint8_t *)ctx)[1], release);
+}
+
+static bool i2c_sda_read(void *ctx)
+{
+    return gpio_ll_get_level(&GPIO, ((const uint8_t *)ctx)[0]) != 0;
+}
+
+static bool i2c_scl_read(void *ctx)
+{
+    return gpio_ll_get_level(&GPIO, ((const uint8_t *)ctx)[1]) != 0;
+}
+
+static void i2c_delay_us(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    esp_rom_delay_us(us);
+}
+
+static void i2c_line_open_drain(uint32_t pin)
+{
+    gpio_ll_set_level(&GPIO, pin, 1u);  /* released before the driver is enabled */
+    esp_rom_gpio_pad_select_gpio(pin);
+    esp_rom_gpio_pad_pullup_only(pin);
+    gpio_ll_input_enable(&GPIO, pin);
+    gpio_ll_od_enable(&GPIO, pin);
+    esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
+    gpio_ll_output_enable(&GPIO, pin);
+}
+
+static void i2c_line_release(uint32_t pin)
+{
+    gpio_ll_output_disable(&GPIO, pin);
+    gpio_ll_od_disable(&GPIO, pin);
+}
+
+/* Best effort: a missing or wedged chip costs at most I2C_BB_WORST_CASE_US, never the boot. */
+static void apply_i2c_safe_writes(const board_profile_t *profile)
+{
+    if (profile->i2c_sda_gpio == BOARD_PROFILE_I2C_NONE) {
+        return;
+    }
+    uint8_t pins[2] = {profile->i2c_sda_gpio, profile->i2c_scl_gpio};
+    const i2c_bb_hal_t hal = {
+        pins, i2c_sda_release, i2c_scl_release, i2c_sda_read, i2c_scl_read, i2c_delay_us,
+    };
+    i2c_line_open_drain(pins[0]);
+    i2c_line_open_drain(pins[1]);
+    const uint8_t acked = i2c_bb_apply_safe_writes(&hal, profile);
+    i2c_line_release(pins[0]);
+    i2c_line_release(pins[1]);
+    ESP_LOGI(TAG, "I2C safe writes 0x%02X: %u/%u ACKed", (unsigned)profile->i2c_addr7,
+             (unsigned)acked, (unsigned)profile->i2c_write_count);
+}
+
 /* Verify silently before the regular table loader prints its UART table.
  * No flash mutation, heap, RTOS or application driver calls in this path. */
 static void apply_board_holds(void)
@@ -115,15 +189,17 @@ static void apply_board_holds(void)
             board_profile_parse((const uint8_t *)record, sizeof(record), &profile) != BOARD_PROFILE_OK) {
             return;  /* Older provisioning has no holds. */
         }
+        const uint64_t held = profile.hold_low_mask | profile.hold_high_mask;
         for (uint32_t pin = 0u; pin <= BOARD_PROFILE_MAX_GPIO; ++pin) {
-            if ((profile.hold_low_mask & (1ull << pin)) != 0u) {
-                /* GPIO_OUT latch precedes mux/output enable to avoid a high pulse. */
-                gpio_ll_set_level(&GPIO, pin, 0u);
+            if ((held & (1ull << pin)) != 0u) {
+                /* GPIO_OUT latch precedes mux/output enable to avoid a pulse of the wrong level. */
+                gpio_ll_set_level(&GPIO, pin, (profile.hold_high_mask & (1ull << pin)) != 0u ? 1u : 0u);
                 esp_rom_gpio_pad_select_gpio(pin);
                 esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
                 gpio_ll_output_enable(&GPIO, pin);
             }
         }
+        apply_i2c_safe_writes(&profile);
         return;
     }
 }

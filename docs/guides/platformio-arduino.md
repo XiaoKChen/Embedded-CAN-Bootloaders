@@ -206,8 +206,11 @@ void on_self_test(bool healthy) {
 ```
 
 Call `begin(Config)` **once early**, before registering RX callbacks. Keep all
-profile hold pins LOW. The helper loads v2 `cancfg` IDs (`command_id()` and
-`reply_id()` expose the pair) and validated profile holds, but **does not
+profile hold-LOW pins LOW. The helper loads v2 `cancfg` IDs (`command_id()` and
+`reply_id()` expose the pair) and the validated hold-LOW pins of a v1 or v2
+profile. It does not drive a v2 profile's hold-HIGH pins or run its I2C safe
+writes: the bootloader and the factory updater do, and the app owns those pins
+and its I2C bus once it runs. It also **does not
 install TWAI, choose app pins/bitrate, filter frames or receive frames**; the
 app must match its driver to the board's transceiver/profile. Pass only
 standard DATA frames to `on_standard_frame(id, dlc, data)` from one task. It

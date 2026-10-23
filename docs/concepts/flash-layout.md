@@ -1,6 +1,6 @@
 # Flash layout
 
-The universal bundle uses **one bootloader and one factory updater**, with a different partition table per flash size. `esptool write-flash --flash-size 4MB|16MB` patches the common bootloader image header at write time. The updater does not use PSRAM. The first 80 bytes of `cancfg` are the v2 identity/ID block; the 24-byte [board profile](../reference/board-profile.md) follows at `+0x50`.
+The universal bundle uses **one bootloader and one factory updater**, with a different partition table per flash size. `esptool write-flash --flash-size 4MB|16MB` patches the common bootloader image header at write time. The updater does not use PSRAM. The first 80 bytes of `cancfg` are the v2 identity/ID block; the [board profile](../reference/board-profile.md) (24-byte v1 or 56-byte v2) follows at `+0x50`.
 
 ## Node (4 MB, `node_updater/partitions.csv`)
 

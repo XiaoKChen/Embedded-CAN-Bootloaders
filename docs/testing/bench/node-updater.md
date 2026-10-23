@@ -238,6 +238,19 @@ and [first flash](../../getting-started/first-flash.md).
       CAN INFO for both `0x05/0x06` and `0x07/0x08`; the IDU's parked-updater
       INFO needs a third CAN host. Measure GPIO3 LOW timing from 2nd-stage
       initialization and through ROM/updater on a scope.
+- [ ] **v2 profile, SOLO ODU (Airform-One#84), `c-cpp-esp32-v1.3.0`:**
+      provision the ODU v2 record and check on UART0 `I2C safe writes 0x2C:
+      5/5 ACKed` from the bootloader and the updater's `repeating every
+      1000 ms` line. With the fans running under the app, press EN: the fans
+      stop within the bootloader (scope SCL/SDA on GPIO9/8: a STOP, then five
+      writes, about 1.6 ms) and stay stopped while parked in the updater.
+      Power-cycle the whole ODU straight into the updater: no fan reaches
+      full scale at 4 s or later. Re-power only the EMC2305 (or its fan
+      supply) during an update session: it returns to 0 % within about 1 s
+      and the transfer completes. Scope the ten LOW holds and GPIO21 HIGH from
+      2nd-stage init (no wrong-level pulse) and check the app still owns
+      GPIO8/9 after boot. With the EMC2305 absent, boot time grows by under
+      5 ms and the log shows `0/5 ACKed`.
 - [x] Enumerate each updater's native USB: VID:PID `303A:1001`, manufacturer
       `Normal Corporation`, product `SOLO ODU Controller` or
       `SOLO IDU Controller`, and a 12-uppercase-hex MAC serial. Confirm logs

@@ -10,21 +10,27 @@ a board-specific configuration in git, put the overrides in that project's
 
 ### Factory updater: board profile, not Kconfig
 
-The updater has **no TWAI pin/bitrate Kconfig menu**. The 24-byte record at
-`cancfg + 0x50` supplies TWAI TX/RX, bitrate and GPIO hold-LOW mask per board.
+The updater has **no TWAI pin/bitrate Kconfig menu**. The board-profile record
+at `cancfg + 0x50` (24-byte v1 or 56-byte v2) supplies TWAI TX/RX, bitrate and
+the GPIO hold-LOW mask per board; v2 adds a hold-HIGH mask and up to eight I2C
+register writes that force an output chip safe.
 The `BOARD_PROFILE_DEFAULT_*` constants in `src/boot/board_profile.h` are the
-only fallback: TX 4, RX 5, 250 kbit/s, no holds for an absent/invalid record.
-The updater logs `record` or `defaults` at startup. On TWAI init failure it
-retries once with defaults unless a default pin is held LOW; then holds win
-and the updater remains available over USB without CAN. The bootloader reads
-the same record to assert holds before loading an app.
+only fallback: TX 4, RX 5, 250 kbit/s, no holds, no I2C writes for an
+absent/invalid record. The updater logs `record` or `defaults` at startup. On
+TWAI init failure it retries once with the default TWAI pins and bitrate unless
+a default pin is held LOW; then holds win and the updater remains available
+over USB without CAN. The bootloader reads the same record to assert holds and
+run the I2C writes before loading an app; the updater repeats the writes every
+second.
 
-The record rejects GPIO0, GPIO19/20 and GPIO26..32 for either TWAI or holds,
-and rejects holds on TWAI pins or above GPIO48. For board wiring and exact
+The record rejects GPIO0, GPIO19/20 and GPIO26..32 for TWAI, holds or I2C,
+and rejects holds on TWAI pins or above GPIO48, a pin held both LOW and HIGH,
+and I2C pins that are TWAI or held pins. For board wiring and exact
 byte format see [board profile](board-profile.md). Choose other pins based on
 the actual PCB: the format's acceptance does not guarantee that a pin is free
 of a board-specific function. The SOLO IDU uses TX6/RX7 and a GPIO3 hold;
-the ODU uses TX4/RX5 with no holds.
+the ODU uses TX4/RX5, ten LOW holds, a GPIO21 HIGH hold and EMC2305 safe
+writes (v2), or no holds (v1).
 
 ### SLCAN bridge: `build.ps1 examples/slcan_bridge menuconfig` → **SLCAN Bridge**
 

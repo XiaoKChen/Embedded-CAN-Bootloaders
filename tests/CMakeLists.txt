@@ -61,6 +61,8 @@ add_host_test(test_image_validate)
 add_host_test(test_can_update)
 add_host_test(test_dfu_config)
 add_host_test(test_board_profile)
+target_compile_definitions(test_board_profile PRIVATE
+    BOARD_PROFILE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/vectors/board_profile_v2.txt")
 add_host_test(test_slcan_codec)
 add_host_test(test_app_control)
 

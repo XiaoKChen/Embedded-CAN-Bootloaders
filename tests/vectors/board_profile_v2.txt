@@ -1,0 +1,9 @@
+# ESP32 board-profile record v2 golden vectors (56 bytes each, hex, cancfg + 0x50).
+# SHARED CONTRACT with ESP-PROG-2-PY-CLI board_profile.py; layout in src/boot/board_profile.h.
+# Read by tests/test_board_profile.c: one "<name> <112 hex digits>" per line.
+#
+# odu_v2: SOLO ODU. TWAI TX 4 / RX 5, 250 kbit/s; hold LOW GPIO 1,2,6,17,18,33,34,35,47,48;
+#         hold HIGH GPIO 21; EMC2305 at 0x2C on SDA 8 / SCL 9, Fan Setting 0x30..0x70 = 0x00.
+# idu_v2: SOLO IDU. TWAI TX 6 / RX 7, 250 kbit/s; hold LOW GPIO 3; no hold HIGH, no I2C writes.
+odu_v2 d1a7b0df0238ffff040501ff460006000e800100000020000000000008092c0530004000500060007000ffffffffffffffffffff89eb5aaf
+idu_v2 d1a7b0df0238ffff060701ff08000000000000000000000000000000ffffff00ffffffffffffffffffffffffffffffffffffffff46c50b86

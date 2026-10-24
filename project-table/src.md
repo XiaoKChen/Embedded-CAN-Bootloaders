@@ -3,12 +3,12 @@
 
 ### src/boot/
 - **Responsibility:** Defines portable bootloader and CAN-updater logic, data layouts, configuration parsers, and protocol codecs.
-- **Key files:** `can_update.{h,c}`, `board_profile.{h,c}`, `dfu_config.{h,c}`, `image_validate.{h,c}`, `update_pkg.{h,c}`.
+- **Key files:** `can_update.{h,c}`, `board_profile.{h,c}`, `i2c_bitbang.{h,c}`, `dfu_config.{h,c}`, `image_validate.{h,c}`, `update_pkg.{h,c}`.
 - **Relationships:** Called by target-specific bootloader, node-updater, and application components for protocol and configuration behavior; host tests exercise its pure logic; depends on `crc32.{h,c}` for checksums.
 - **app_control.c** — Encodes and decodes CAN app-control requests, replies, and APP_INFO records.
 - **app_control.h** — Declares the shared app-control CAN codec types, constants, and API.
-- **board_profile.c** — Parses, validates, encodes, and supplies defaults for the ESP32 board-profile record (TWAI pins, bitrate, hold-LOW GPIO mask).
-- **board_profile.h** — Defines the board-profile record contract at cancfg + 0x50, layout constants, validation results, defaults, and public API.
+- **board_profile.c** — Parses (v1 or v2), validates, encodes (v2, and v1 for older bootloaders), and supplies defaults for the ESP32 board-profile record: TWAI pins, bitrate, hold-LOW and hold-HIGH GPIO masks, and up to eight I2C safe writes.
+- **board_profile.h** — Defines the board-profile record contract at cancfg + 0x50: the 24-byte v1 and 56-byte v2 layouts (hold-HIGH mask, I2C SDA/SCL/address and write list), layout constants, refused GPIOs, validation results, defaults, and public API. A v2 record is refused by bootloaders up to c-cpp-esp32-v1.2.1.
 - **boot_config.h** — Defines default CAN-update IDs and bitrate plus CAN-update and image-metadata magic values.
 - **boot_counter.c** — Implements RTC-retained and append-only flash recovery-counter logic, including reset accounting and log scanning.
 - **boot_counter.h** — Declares recovery-counter state, limits, reset classifications, flash record, and API.
@@ -18,6 +18,8 @@
 - **crc32.h** — Declares the IEEE CRC-32 API.
 - **dfu_config.c** — Parses and validates v1/v2 DFU configuration blocks and extracts effective per-device CAN IDs with defaults.
 - **dfu_config.h** — Defines the frozen DFU config block layouts, offsets, validation results, and parsing APIs.
+- **i2c_bitbang.c** — Implements the UM10204 bus clear and single-register writes over five open-drain pin callbacks, with a shared clock-stretch budget and a stop at the first bus fault.
+- **i2c_bitbang.h** — Declares the pin HAL, status codes, timing bounds (`I2C_BB_WORST_CASE_US` = 4,475 us) and the bus-clear, write and apply-safe-writes API.
 - **image_header.h** — Defines the 16-byte application image metadata record and CRC coverage.
 - **image_validate.c** — Validates image metadata, bounds, stack pointer, entry point, and application payload CRC from a flash byte buffer.
 - **image_validate.h** — Declares image-validation result codes and the byte-buffer validation API.

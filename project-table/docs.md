@@ -27,7 +27,7 @@
 - **Responsibility:** Specify persisted records, update wire formats, runtime configuration, and brain HTTP behavior.
 - **Key files:** `board-profile.md`, `can-protocol.md`, `brain-http-api.md`, `package-format.md`, `configuration.md`.
 - **Relationships:** Supplies exact contracts for provisioning, updater and host implementations, brain services, app integration, and their tests.
-- **board-profile.md** — The 24-byte `cancfg` GPIO/bitrate/hold record, validation and fallback rules, and SOLO preset golden vectors.
+- **board-profile.md** — The v1 (24-byte) and v2 (56-byte) `cancfg` record: GPIO/bitrate/hold-LOW/hold-HIGH fields, the I2C safe writes (EMC2305 on the SOLO ODU), validation and fallback rules, version compatibility, and SOLO preset golden vectors.
 - **can-protocol.md** — CAN Update Protocol v1 frames, INFO and app-control discovery, transfer windows, and host retry limits.
 - **brain-http-api.md** — Brain HTTP routes, request rules, responses, status schemas, shared-worker conflicts, and error texts.
 - **package-format.md** — `.ecbpkg` v1 header and entries, image and capacity checks (0x780000 cap), the brain-first relay record, and interruption outcomes.

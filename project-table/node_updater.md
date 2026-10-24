@@ -15,15 +15,15 @@
 - **Responsibility:** Factory application that loads board provisioning, initializes USB CDC, and serves CAN firmware updates into an OTA slot.
 - **Key files:** `main.c`, `usb_cdc.c`, `usb_cdc.h`, `CMakeLists.txt`, `idf_component.yml`.
 - **Relationships:** Uses shared `boot_core`, `can_link`, and `can_updater_client` components plus board-profile and DFU configuration logic; TinyUSB provides CDC-ACM support.
-- **main.c** — Drives the profile's hold-LOW pins, starts TWAI from the profile (one default-pin retry unless a default pin is held), and runs the CAN Update Protocol service with INFO handling and recovery behavior.
+- **main.c** — Drives the profile's hold-LOW and hold-HIGH pins, applies its I2C safe writes through a GPIO-driver HAL and repeats them every second (the CAN wait is cut to the next run), starts TWAI from the profile (a failed record keeps the holds and safe writes and only the TWAI fields fall back to defaults; one default-pin retry unless a default pin is held), and runs the CAN Update Protocol service with INFO handling and recovery behavior.
 - **usb_cdc.c** — Presents the cancfg manufacturer/product as the USB name and restarts into ROM download when the host selects 1200 baud.
 - **usb_cdc.h** — Declares the CDC initialization interface used by the factory app.
-- **CMakeLists.txt** — Registers the updater app, USB implementation, and board-profile codec with their ESP-IDF component dependencies.
+- **CMakeLists.txt** — Registers the updater app, USB implementation, board-profile codec and I2C bit-bang with their ESP-IDF component dependencies.
 - **idf_component.yml** — Pins the `espressif/esp_tinyusb` dependency at version 1.7.6.
 
 ### node_updater/bootloader_components/main/
 - **Responsibility:** Custom ESP-IDF second-stage bootloader entry that applies early safety holds and selects the factory updater after recovery-counter trips.
 - **Key files:** `boot.c`, `CMakeLists.txt`.
-- **Relationships:** Reuses boot-counter, board-profile, and CRC logic from `src/boot/` and ESP-IDF bootloader support; the application-side recovery client clears the counters.
-- **boot.c** — Overrides `call_start_cpu0`, applies the profile's GPIO holds right after `bootloader_init()`, records recovery state, then selects the factory or normal boot partition.
-- **CMakeLists.txt** — Registers the override and shared boot logic, preserving ESP-IDF bootloader linker scripts.
+- **Relationships:** Reuses boot-counter, board-profile, I2C bit-bang, and CRC logic from `src/boot/` and ESP-IDF bootloader support; the application-side recovery client clears the counters.
+- **boot.c** — Overrides `call_start_cpu0`, applies the profile's GPIO holds (LOW and HIGH) and I2C safe writes right after `bootloader_init()` (open-drain pins released for the app afterwards), records recovery state, then selects the factory or normal boot partition.
+- **CMakeLists.txt** — Registers the override and shared boot logic (including `i2c_bitbang.c`), preserving ESP-IDF bootloader linker scripts.

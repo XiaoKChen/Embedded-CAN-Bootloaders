@@ -84,6 +84,7 @@ esp_err_t load_config()
     }
     dfu_config_can_ids(block, &update_cmd_id, &update_reply_id);
 
+    // BOARD_PROFILE_SIZE is the largest (v2) record, so v1 and v2 both parse.
     uint8_t record[BOARD_PROFILE_SIZE];
     memset(record, 0xFF, sizeof(record));
     if (cfg == nullptr ||

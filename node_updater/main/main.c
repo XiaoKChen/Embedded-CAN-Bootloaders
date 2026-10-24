@@ -5,20 +5,26 @@
  * The node's ESP-IDF 2nd-stage bootloader runs this app when no OTA app is selected: on a fresh
  * board, after an app called can_updater_client (which points the boot partition here), or when
  * every OTA app failed validation / was rolled back. Recovery counters also select factory
- * without changing otadata. Provisioned GPIO holds precede services; cancfg also
- * selects TWAI wiring and USB CDC identity, with a 1200-baud ROM-download exit.
+ * without changing otadata. Provisioned GPIO holds and I2C safe writes precede services and the
+ * writes repeat every second while parked; cancfg also selects TWAI wiring and USB CDC identity,
+ * with a 1200-baud ROM-download exit.
  *
  * Owns:         The slot HAL of the shared pure-logic engine (src/boot/can_update.c) over the
- *               ESP-IDF OTA API, the INFO reply, CAN IDs and board profile from `cancfg`.
+ *               ESP-IDF OTA API, the INFO reply, CAN IDs and board profile from `cancfg`, the
+ *               updater's GPIO-driver HAL for i2c_bitbang and the 1 s safe-write cadence.
  * Not here:     The protocol itself (can_update.h); the recovery-counter decision
- *               (node_updater/bootloader_components/main/boot.c).
+ *               (node_updater/bootloader_components/main/boot.c); the I2C sequence
+ *               (i2c_bitbang.h).
  * Invariants:   In all those cases the user wants the updater, so it always parks serving CAN
  *               Update Protocol v1 — the only exits are a completed update (GO) or a re-flash over
  *               USB/UART. The factory partition (this app) is never written by anything here.
  *               Safety holds always win: default TWAI fallback is skipped if either default
- *               pin is held LOW; no failed-link recovery may reconfigure a held pin.
- * Depends on:   can_link.h, can_update.h, dfu_config.h, board_profile.h, cancfg.h,
- *               can_updater_client.h, usb_cdc.h.
+ *               pin is held LOW; no failed-link recovery may reconfigure a held pin or drop the
+ *               I2C safe writes. The writes repeat every SAFE_WRITE_PERIOD_MS (the CAN wait is
+ *               cut to the next one), each run bounded by I2C_BB_WORST_CASE_US, well inside the
+ *               TWAI RX queue's buffering; their failure never stops the updater.
+ * Depends on:   can_link.h, can_update.h, dfu_config.h, board_profile.h, i2c_bitbang.h,
+ *               cancfg.h, can_updater_client.h, usb_cdc.h.
  *
  * @see     can_update.h, docs/testing/bench/node-updater.md, docs/concepts/recovery.md
  */
@@ -65,8 +71,10 @@
 #include "can_update.h"
 #include "dfu_config.h"
 #include "board_profile.h"
+#include "i2c_bitbang.h"
 #include "../cancfg.h"
 #include "driver/gpio.h"
+#include "esp_rom_sys.h"
 #include "usb_cdc.h"
 
 
@@ -76,6 +84,8 @@
 #define RX_POLL_TIMEOUT_MS         1000u  /* bounds the watchdog-feed period */
 #define RECOVERY_POLL_DELAY_MS     1000u  /* feed watchdog while USB-only   */
 #define LINK_START_ATTEMPTS        2u     /* profile, then at most defaults */
+#define SAFE_WRITE_PERIOD_MS       1000u  /* re-arm a re-powered output chip well before
+                                           * the EMC2305's 4 s power-up watchdog       */
 
 static const char *TAG = "can_updater";
 
@@ -96,6 +106,8 @@ static uint16_t           s_cmd_id;
 static uint16_t           s_reply_id;
 static can_update_hal_t   s_hal;
 static can_update_state_t s_engine;
+static bool               s_i2c_ready;      /* I2C pins configured for safe writes */
+static TickType_t         s_last_safe_write;
 
 
 /* -----------------------------------------------------------------------------
@@ -200,15 +212,17 @@ static void load_config_block(void)
 
     s_profile_from_record = board_profile_parse(
         s_cfg_block + BOARD_PROFILE_CANCFG_OFFSET, BOARD_PROFILE_SIZE, &s_profile) == BOARD_PROFILE_OK;
-    /* Set the output latch before enabling output: never pulse a held EN high. */
+    const uint64_t held = s_profile.hold_low_mask | s_profile.hold_high_mask;
+    /* Set the output latch before enabling output: never pulse a held pin to the wrong level. */
     for (uint32_t pin = 0u; pin <= BOARD_PROFILE_MAX_GPIO; ++pin) {
-        if ((s_profile.hold_low_mask & (1ull << pin)) != 0u) {
-            ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)pin, 0));
+        if ((held & (1ull << pin)) != 0u) {
+            ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)pin,
+                                           (s_profile.hold_high_mask & (1ull << pin)) != 0u));
         }
     }
-    if (s_profile.hold_low_mask != 0u) {
+    if (held != 0u) {
         const gpio_config_t holds = {
-            .pin_bit_mask = s_profile.hold_low_mask,
+            .pin_bit_mask = held,
             .mode = GPIO_MODE_OUTPUT,
             .pull_up_en = GPIO_PULLUP_DISABLE,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -217,6 +231,92 @@ static void load_config_block(void)
         ESP_ERROR_CHECK(gpio_config(&holds));
     }
     dfu_config_can_ids(s_cfg_block, &s_cmd_id, &s_reply_id);
+}
+
+
+/* -----------------------------------------------------------------------------
+ * I2C safe writes (pins from the board profile; sequence in i2c_bitbang.c)
+ * ----------------------------------------------------------------------------- */
+static void i2c_sda_release(void *ctx, bool release)
+{
+    (void)ctx;
+    (void)gpio_set_level((gpio_num_t)s_profile.i2c_sda_gpio, release);
+}
+
+static void i2c_scl_release(void *ctx, bool release)
+{
+    (void)ctx;
+    (void)gpio_set_level((gpio_num_t)s_profile.i2c_scl_gpio, release);
+}
+
+static bool i2c_sda_read(void *ctx)
+{
+    (void)ctx;
+    return gpio_get_level((gpio_num_t)s_profile.i2c_sda_gpio) != 0;
+}
+
+static bool i2c_scl_read(void *ctx)
+{
+    (void)ctx;
+    return gpio_get_level((gpio_num_t)s_profile.i2c_scl_gpio) != 0;
+}
+
+static void i2c_delay_us(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    esp_rom_delay_us(us);
+}
+
+static const i2c_bb_hal_t s_i2c_hal = {
+    NULL, i2c_sda_release, i2c_scl_release, i2c_sda_read, i2c_scl_read, i2c_delay_us,
+};
+
+/* Open-drain with pull-ups, released before the driver is enabled; the updater keeps the pins
+ * for its whole life (the bootloader released them, the app owns them once it runs). */
+static void start_safe_writes(void)
+{
+    if (s_profile.i2c_sda_gpio == BOARD_PROFILE_I2C_NONE) {
+        return;
+    }
+    const gpio_config_t od = {
+        .pin_bit_mask = (1ull << s_profile.i2c_sda_gpio) | (1ull << s_profile.i2c_scl_gpio),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    (void)gpio_set_level((gpio_num_t)s_profile.i2c_sda_gpio, 1);
+    (void)gpio_set_level((gpio_num_t)s_profile.i2c_scl_gpio, 1);
+    const esp_err_t err = gpio_config(&od);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C safe-write pins unavailable: %s", esp_err_to_name(err));
+        return;
+    }
+    s_i2c_ready = true;
+    const uint8_t acked = i2c_bb_apply_safe_writes(&s_i2c_hal, &s_profile);
+    s_last_safe_write = xTaskGetTickCount();
+    ESP_LOGI(TAG, "I2C safe writes 0x%02X on SDA %u SCL %u: %u/%u ACKed; repeating every %u ms",
+             (unsigned)s_profile.i2c_addr7, (unsigned)s_profile.i2c_sda_gpio,
+             (unsigned)s_profile.i2c_scl_gpio, (unsigned)acked,
+             (unsigned)s_profile.i2c_write_count, (unsigned)SAFE_WRITE_PERIOD_MS);
+}
+
+/* Repeat the writes once SAFE_WRITE_PERIOD_MS has passed; return how long the caller may block
+ * (at most @p idle_ms) before calling again. */
+static uint32_t service_safe_writes(uint32_t idle_ms)
+{
+    if (!s_i2c_ready) {
+        return idle_ms;
+    }
+    const TickType_t period = pdMS_TO_TICKS(SAFE_WRITE_PERIOD_MS);
+    TickType_t elapsed = xTaskGetTickCount() - s_last_safe_write;
+    if (elapsed >= period) {
+        (void)i2c_bb_apply_safe_writes(&s_i2c_hal, &s_profile);
+        s_last_safe_write = xTaskGetTickCount();
+        elapsed = 0u;
+    }
+    const uint32_t until_next_ms = (uint32_t)pdTICKS_TO_MS(period - elapsed);
+    return (until_next_ms < idle_ms) ? until_next_ms : idle_ms;
 }
 
 
@@ -284,9 +384,13 @@ static bool bring_up_link(void)
             }
             ESP_LOGW(TAG, "retrying once with defaults; safety holds remain asserted");
         }
-        /* Keep the already-driven safety holds; fallback must not release EN. */
-        board_profile_defaults(&s_profile);
-        s_profile_from_record = false;
+        /* Only the TWAI fields fall back: the driven holds and the I2C safe writes stay. */
+        board_profile_t defaults;
+        board_profile_defaults(&defaults);
+        s_profile.twai_tx_gpio = defaults.twai_tx_gpio;
+        s_profile.twai_rx_gpio = defaults.twai_rx_gpio;
+        s_profile.bitrate      = defaults.bitrate;
+        s_profile_from_record  = false;
     }
     return false;
 }
@@ -295,11 +399,12 @@ static void serve_can_forever(void)
 {
     for (;;) {
         (void)esp_task_wdt_reset();
+        const uint32_t wait_ms = service_safe_writes(RX_POLL_TIMEOUT_MS);
 
         uint32_t id;
         uint8_t  dlc;
         uint8_t  data[8];
-        if (can_link_receive(&id, &dlc, data, RX_POLL_TIMEOUT_MS) != CAN_LINK_STATUS_OK) {
+        if (can_link_receive(&id, &dlc, data, wait_ms) != CAN_LINK_STATUS_OK) {
             continue;
         }
 
@@ -328,7 +433,8 @@ static void serve_can_forever(void)
  * ----------------------------------------------------------------------------- */
 void app_main(void)
 {
-    load_config_block();  /* Holds come before health, USB or CAN services. */
+    load_config_block();  /* Holds and safe writes come before health, USB or CAN services. */
+    start_safe_writes();
     ESP_ERROR_CHECK(can_updater_client_start_health());
     const esp_err_t usb_err = updater_usb_cdc_init(s_cfg_block);
     if (usb_err != ESP_OK) {
@@ -370,7 +476,7 @@ void app_main(void)
         /* Keep USB recovery alive, without hammering a failed TWAI driver. */
         for (;;) {
             (void)esp_task_wdt_reset();  /* best effort if subscription failed */
-            vTaskDelay(pdMS_TO_TICKS(RECOVERY_POLL_DELAY_MS));
+            vTaskDelay(pdMS_TO_TICKS(service_safe_writes(RECOVERY_POLL_DELAY_MS)));
         }
     }
     serve_can_forever();

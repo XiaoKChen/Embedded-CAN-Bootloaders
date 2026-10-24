@@ -28,7 +28,7 @@ the separate brain example. Start with [getting-started/build.md](getting-starte
 | [brain-http-api.md](reference/brain-http-api.md) | every brain HTTP endpoint: parameters, status codes, JSON, state names, status texts |
 | [package-format.md](reference/package-format.md) | `.ecbpkg` v1 wire format, brain-first transaction, NVS record, power-loss table |
 | [configuration.md](reference/configuration.md) | updater profile/defaults vs. remaining app/bridge Kconfig settings |
-| [board-profile.md](reference/board-profile.md) | 24-byte record contract, GPIO rules, defaults, golden vectors, SOLO presets |
+| [board-profile.md](reference/board-profile.md) | v1/v2 record contract, GPIO and I2C rules, safe writes, defaults, golden vectors, SOLO presets |
 
 ## guides/
 

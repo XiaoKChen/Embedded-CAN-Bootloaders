@@ -9,7 +9,9 @@
  * Owns:         One statically allocated update task, its request notifications, the loaded ID
  *               pair, and optional one-shot image confirmation after the app's self-test.
  * Not here:     TWAI installation, filtering and RX (the app's transport); hardware self-test;
- *               RTC crash-loop counting and clean-restart marks; verifyRollbackLater().
+ *               RTC crash-loop counting and clean-restart marks; verifyRollbackLater(). A v2
+ *               profile's hold-HIGH pins and I2C safe writes, which only the bootloader and the
+ *               factory updater apply: the app owns those pins and its I2C bus once it runs.
  * Invariants:   Call begin() once, early in setup(), before registering the RX callback. Keep
  *               profile hold pins LOW and do not repurpose them. The app MUST define
  *               extern "C" bool verifyRollbackLater() { return true; } to defer Arduino's

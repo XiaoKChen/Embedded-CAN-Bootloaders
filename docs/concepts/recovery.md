@@ -38,9 +38,13 @@ reset (issue #24). On a blank board or with no working
 updater USB, use BOOT during reset to enter ROM download.
 
 The validated [board profile](../reference/board-profile.md) holds selected
-GPIOs LOW immediately after 2nd-stage `bootloader_init()` and again at the
-start of the updater. The IDU preset holds GPIO3 (ODU reset); ROM boot is
-earlier and may still leave GPIO3 floating. On TWAI start failure, the updater
+GPIOs LOW (and, in a v2 record, HIGH) immediately after 2nd-stage
+`bootloader_init()` and again at the start of the updater. The IDU preset holds
+GPIO3 (ODU reset); ROM boot is earlier and may still leave GPIO3 floating. A v2
+record's I2C safe writes run right after the holds in the bootloader, again at
+updater start and then every second while the updater runs, so the SOLO ODU's
+EMC2305 fans stay at 0 % across resets and update sessions instead of keeping
+their last duty or going to full scale on the chip's 4 s power-up watchdog. On TWAI start failure, the updater
 retries once with TX4/RX5 defaults unless either default pin is held LOW.
 Holds win over CAN: it skips the retry and continues on USB without CAN.
 

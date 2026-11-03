@@ -1,7 +1,8 @@
 /* =============================================================================
  * boot_config.h — CAN update path configuration (UNO R4 Minima bootloader)
  * =============================================================================
- * Compile-time constants for the CAN update transport and the handoff magics.
+ * Compile-time constants for the CAN update transport (IDs, bitrate, CAN
+ * update mode idle timeout) and the handoff magics.
  * Flash/RAM addresses live in memory_map.h, not here.
  *
  * Pure host-compilable header: <stdint.h> only, no target includes.
@@ -27,6 +28,13 @@ extern "C" {
 #define CAN_ID_HOST_TO_BOOT 0x79Eu       /* default host -> bootloader commands */
 #define CAN_ID_BOOT_TO_HOST 0x79Fu       /* default bootloader -> host ACK/NAK  */
 #define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3) */
+
+/* CAN update mode (VBTBKR[4] entry) resets after this long without a frame on
+ * the command ID: before ERASE the old app boots again, after ERASE the
+ * update-in-progress marker parks the board in DFU + CAN. Must exceed the
+ * host flasher's longest silent gap mid-session (~8 s: 2 s ACK timeout x 4
+ * attempts). The parked DFU + CAN loop has no timeout. */
+#define CAN_UPDATE_IDLE_TIMEOUT_MS 15000u
 
 /* -----------------------------------------------------------------------------
  * Handoff & image magics

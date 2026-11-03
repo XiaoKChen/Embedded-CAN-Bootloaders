@@ -466,8 +466,10 @@ static void can_service_info(void)
 }
 
 /* Poll one frame through the update engine, transmit its reply, and perform
- * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop. */
-static void can_service_once(void)
+ * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
+ * Returns true once a frame on can_cmd_id has been handled (the CAN-only
+ * mode's idle timeout restarts on it). */
+static bool can_service_once(void)
 {
   /* Zero-init: out-params are written by the callees before use, but gcc 7
    * LTO cannot prove it and -Werror=maybe-uninitialized trips otherwise. */
@@ -478,7 +480,7 @@ static void can_service_once(void)
   can_update_action_t action = CAN_UPDATE_ACTION_NONE;
 
   if (can_polled_receive(&id, &dlc, data) != CAN_POLLED_OK) {
-    return;  /* empty FIFO, or bus-off (driver re-initialized itself) */
+    return false;  /* empty FIFO, or bus-off (driver re-initialized itself) */
   }
 
   /* INFO is intercepted before the update engine: its 5-frame reply does not
@@ -486,7 +488,7 @@ static void can_service_once(void)
    * or advance the update session state. */
   if (id == can_cmd_id && data[0] == CAN_UPDATE_CMD_INFO) {
     can_service_info();
-    return;
+    return true;
   }
 
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {
@@ -497,6 +499,7 @@ static void can_service_once(void)
     can_initialized = false;
     NVIC_SystemReset();   /* clean re-entry through the boot decision */
   }
+  return id == can_cmd_id;
 }
 
 #ifndef CAN_DIAG
@@ -548,10 +551,20 @@ static void can_xcvr_usb_rail_power_on(void)
 }
 #endif /* !CAN_DIAG */
 
-/* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; the only
- * exits are the GO reset above or an external reset. This entry always
- * follows the application's NVIC_SystemReset(), so the flash open runs
- * against whatever FACI/data-flash state survived that software reset — the
+/* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
+ * through the GO reset above, an external reset, or (production build) the
+ * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without a frame on
+ * can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
+ * ERASE the old app boots again, after ERASE boot_decide's marker check
+ * parks it in DFU + CAN. The timebase is board_millis(): board_init()
+ * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same
+ * clock main()'s 500 ms double-tap window uses. Ticks lost in the IRQ-off
+ * flash windows only lengthen the timeout, and the timer restarts after
+ * each handled frame because ERASE blocks this loop for seconds.
+ *
+ * This entry always follows the application's NVIC_SystemReset(), so the
+ * flash open runs against whatever FACI/data-flash state survived that
+ * software reset — the
  * gated helper (never a raw DFU_CONFIG_ADDR read) is what keeps a dirty
  * entry state from bus-faulting into a locked-up board. If the open fails,
  * the board still parks and serves CAN on the compiled default IDs. */
@@ -636,8 +649,15 @@ static void run_can_update_mode(void)
     NVIC_SystemReset();  /* CAN unusable: reset into the normal boot path */
   }
   can_initialized = true;
+  uint32_t last_frame_ms = board_millis();
   while (1) {
-    can_service_once();
+    if (can_service_once()) {
+      last_frame_ms = board_millis();
+    } else if ((board_millis() - last_frame_ms) >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+      can_polled_deinit();  /* as the GO path: deinit before the reset */
+      can_initialized = false;
+      NVIC_SystemReset();
+    }
   }
 #endif /* CAN_DIAG */
 }
@@ -861,7 +881,7 @@ __WEAK void run_bootloader() {
     led_blinking_task();
 #ifdef CAN_LOADER
     if (can_initialized) {
-      can_service_once();
+      (void) can_service_once();  /* parked: no idle timeout */
     }
 #endif
   }

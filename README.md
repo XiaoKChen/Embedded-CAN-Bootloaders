@@ -223,8 +223,8 @@ only — no longer on every branch push or PR:
 
 Pushing an `embassy-ra4m1-v*` tag additionally publishes a GitHub Release with those artifacts and
 auto-generated notes. The tags carry a variant prefix because other branches of this repo release
-other bootloaders; the release name strips it (`embassy-ra4m1-v0.1.0-alpha.2` → version
-`v0.1.0-alpha.2`), and a `-alpha`/`-beta`/`-rc` suffix marks the release as a pre-release. To cut one:
+other bootloaders; the release is titled after this branch: `embassy-ra4m1-v0.1.0-alpha.2` →
+`embassy/ra4m1 v0.1.0-alpha.2` (the repo-wide `<lang>/<target> vX.Y.Z` naming), and a `-alpha`/`-beta`/`-rc` suffix marks the release as a pre-release. To cut one:
 
 ```sh
 git tag embassy-ra4m1-v0.1.0-alpha.2

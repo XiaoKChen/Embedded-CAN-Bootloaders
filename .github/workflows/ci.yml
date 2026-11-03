@@ -211,7 +211,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Embassy RA4M1 bootloader ${{ steps.version.outputs.version }}
+          name: embassy/ra4m1 ${{ steps.version.outputs.version }}
           prerelease: ${{ steps.version.outputs.prerelease }}
           files: dist/*
           generate_release_notes: true

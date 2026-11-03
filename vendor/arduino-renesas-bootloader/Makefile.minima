@@ -21,7 +21,9 @@ CFLAGS += -DUSB_PID=0x0369 -DBOARD_NAME=\"UNO\ R4\ Minima\"
 CFLAGS += -DLED_FADE_GPIO=BSP_IO_PORT_01_PIN_11
 CFLAGS += -DDFU_LOADER
 CFLAGS += -DOVERRIDE_VECTOR_TABLE=1
-CFLAGS += -DCODE_FLASH_DESCRIPTOR=\"@CodeFlash\ /0x00000000/8*2Ka,120*2Kg\"
+# The last block (0x3F800) holds the image record and the update-in-progress
+# marker: advertised read-only like the bootloader's 8 blocks.
+CFLAGS += -DCODE_FLASH_DESCRIPTOR=\"@CodeFlash\ /0x00000000/8*2Ka,119*2Kg,1*2Ka\"
 
 # ---------------------------------------------------------------------------
 # Flash-over-CAN update path (docs/research/r4-minima-can-bootloader.md).

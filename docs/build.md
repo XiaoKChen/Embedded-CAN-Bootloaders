@@ -360,7 +360,10 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     `DFU_CUSTOM_NAME` -> `name_len = 0` and all 32 name bytes `0x00`.
   - Host helper: `python can_flash.py --info --interface <if> --channel <ch>`
     prints the reported product name.
-- **USB DFU download** (`CAN_LOADER` builds; #40). A download must start at
+- **USB DFU download** (`CAN_LOADER` builds; #40). Only alt 0
+  (`@CodeFlash`) accepts downloads; alt 1 (`@DataFlash`) fails with
+  `errTARGET` before any flash operation, and the descriptor advertises the
+  metadata block (`0x3F800`) read-only. A download must start at
   block 0 and send full-size blocks (64 B) in order, only the last may be
   short, and nothing may reach `0x3F800`; otherwise it fails with
   `errADDRESS` (e.g. `dfu-util -t 63` is rejected at its second block).

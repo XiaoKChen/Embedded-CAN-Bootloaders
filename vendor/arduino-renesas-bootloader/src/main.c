@@ -875,8 +875,10 @@ uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state)
 
 #ifdef CAN_LOADER
 /* ---- USB DFU download into the app slot -----------------------------------
- * Both alt settings target the app slot, as in the stock callbacks below.
- * A session starts only at block 0, which takes the flash owner latch and
+ * Only alt 0 (@CodeFlash) downloads: alt 1 is advertised as @DataFlash, but
+ * the stock callbacks below would write the app slot for it, so here it
+ * fails with errTARGET before any flash operation. Uploads read the app slot
+ * on either alt. A session starts only at block 0, which takes the flash owner latch and
  * puts the update-in-progress marker in place (flash_mark_update_pending)
  * before any app byte changes. Blocks must then arrive in order and
  * full-size (CFG_TUD_DFU_XFER_BUFSIZE) except the last, so dfu_received_len
@@ -920,7 +922,10 @@ static void dfu_session_fail(uint8_t status)
 // Invoked when received DFU_DNLOAD (wLength>0) following by DFU_GETSTATUS (state=DFU_DNBUSY) requests
 void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, uint16_t length)
 {
-  (void) alt;
+  if (alt != 0) {
+    dfu_session_fail(DFU_STATUS_ERR_TARGET);
+    return;
+  }
 
   if (block_num == 0) {
     dfu_owns_flash = false;  /* block 0 always starts a new session */

@@ -102,9 +102,10 @@
  *               buffer (can_update_state_t) and the flash HAL contract
  *               (can_update_hal_t).
  * Not here:     INFO, answered by the integration layer (main.c CAN service);
- *               the CAN driver (can_polled.h); the reset after GO and the
- *               idle timeout (the caller, main.c); which transport owns
- *               flash (the caller, through hal->flash_locked).
+ *               the CAN driver (can_polled.h); the reset after GO, the idle
+ *               timeout and the ownership timeout (the caller, main.c, via
+ *               can_update_end_session); which transport owns flash (the
+ *               caller, through hal->flash_locked).
  * Invariants:   Per-device IDs: the host -> boot command ID the engine
  *               matches on is a runtime value supplied to can_update_init
  *               (default CAN_ID_HOST_TO_BOOT); the caller transmits every
@@ -243,6 +244,14 @@ bool can_update_accepts_frame(const can_update_state_t *st, uint32_t id,
  * and the USB DFU download must not start.
  */
 bool can_update_owns_flash(const can_update_state_t *st);
+
+/**
+ * Drop the session to IDLE without touching flash: the caller's ownership
+ * timeout for a host that went silent. Whatever ERASE/DATA did stays, and
+ * the update-in-progress marker keeps the board parked; the host restarts
+ * from HELLO.
+ */
+void can_update_end_session(can_update_state_t *st);
 
 /**
  * Feed one received CAN frame to the engine.

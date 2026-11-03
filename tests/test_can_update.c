@@ -843,6 +843,23 @@ static void test_flash_locked_by_dfu_naks_data_and_verify(void)
     TEST_ASSERT_EQUAL(IMAGE_ERR_MAGIC, image_validate(s_flash));
 }
 
+static void test_end_session_releases_flash_without_touching_it(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    const uint32_t last_program_addr = s_last_program_addr;
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+
+    can_update_end_session(&s_state);
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_erase_count);
+    TEST_ASSERT_EQUAL_UINT32(last_program_addr, s_last_program_addr);
+
+    /* The host's next DATA is ignored; it must restart from HELLO. */
+    TEST_ASSERT_FALSE(send_cmd(CAN_UPDATE_CMD_DATA, s_seq, false, 0u));
+}
+
 static void test_owns_flash_from_size_until_hello(void)
 {
     TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
@@ -918,6 +935,7 @@ int main(void)
     RUN_TEST(test_flash_locked_by_dfu_naks_erase_without_erasing);
     RUN_TEST(test_flash_locked_by_dfu_naks_data_and_verify);
     RUN_TEST(test_owns_flash_from_size_until_hello);
+    RUN_TEST(test_end_session_releases_flash_without_touching_it);
     RUN_TEST(test_custom_cmd_id_is_matched_and_default_ignored);
     return UNITY_END();
 }

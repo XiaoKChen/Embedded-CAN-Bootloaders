@@ -54,7 +54,9 @@ extern "C" {
  *     and the resend is re-ACKed without a second erase. 20 s keeps that
  *     resend inside this timeout with margin even if the erase were
  *     instant. Must stay strictly above the hosts' ERASE timeout plus a
- *     retry gap. */
+ *     retry gap.
+ * The parked DFU + CAN loop uses the same bound as the ownership timeout of
+ * a stalled CAN session or DFU download (main.c flash_ownership_timeouts). */
 #define CAN_UPDATE_IDLE_TIMEOUT_MS 20000u
 
 /* When CAN is down (init failed, or the driver reports a failed bus-off

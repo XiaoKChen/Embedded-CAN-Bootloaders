@@ -322,12 +322,22 @@ static bool can_flash_erase_app_and_metadata(void)
 
 /* Flash owner latch between the two update transports of the parked loop:
  * the USB DFU download owns flash from block 0 until manifest, abort,
- * failure, unmount or the next (re)enumeration (dfu_owns_flash); the CAN session owns it from SIZE until it
- * returns to IDLE/GREETED (can_update_owns_flash). Each side refuses to
+ * failure, unmount, the next (re)enumeration or its ownership timeout
+ * (dfu_owns_flash); the CAN session owns it from SIZE until it
+ * returns to IDLE/GREETED, its ownership timeout included
+ * (can_update_owns_flash). Each side refuses to
  * start while the other owns it (DFU block 0 fails, CAN SIZE NAKs), and
  * CAN ERASE/DATA/VERIFY also NAK while DFU owns it, so their erases and
  * writes never interleave. A reset releases both. */
 static bool dfu_owns_flash;
+static uint32_t dfu_last_block_ms;  /* board_millis of the last accepted DFU block */
+static uint32_t can_last_frame_ms;  /* board_millis of the last accepted CAN frame */
+
+/* A transport that goes silent while it owns flash must not lock the other
+ * out until a reset: after CAN_UPDATE_IDLE_TIMEOUT_MS without an accepted
+ * frame (CAN) or block (DFU) its ownership ends. Nothing is erased; the
+ * marker keeps the board parked until an update completes. */
+static void flash_ownership_timeouts(void);
 
 static bool can_flash_locked(void)
 {
@@ -676,11 +686,14 @@ __WEAK void run_bootloader() {
     }
 #ifdef CAN_LOADER
     if (can_initialized) {
-      (void) can_service_once();  /* parked: no idle timeout */
+      if (can_service_once()) {  /* parked: no idle reset, only the ownership timeout */
+        can_last_frame_ms = board_millis();
+      }
     } else if ((board_millis() - can_reinit_ms) >= CAN_REINIT_INTERVAL_MS) {
       can_reinit_ms = board_millis();  /* init failed, or bus-off recovery did */
       can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
     }
+    flash_ownership_timeouts();
 #endif
   }
 }
@@ -930,6 +943,7 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
   memcpy(&aucbuffer[fill], data, length);
   dfu_received_len += length;
   dfu_received_crc = crc32_ieee_update(dfu_received_crc, data, length);
+  dfu_last_block_ms = board_millis();
   if (fill + length == sizeof(aucbuffer) && !dfu_program_block(block_addr, sizeof(aucbuffer))) {
     dfu_session_fail(DFU_STATUS_ERR_WRITE);
     return;
@@ -999,6 +1013,18 @@ void tud_dfu_abort_cb(uint8_t alt)
 {
   (void) alt;
   dfu_owns_flash = false;  /* the marker stays: an unfinished download parks */
+}
+
+static void flash_ownership_timeouts(void)
+{
+  uint32_t now_ms = board_millis();
+  if (can_update_owns_flash(&can_state) &&
+      now_ms - can_last_frame_ms >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+    can_update_end_session(&can_state);
+  }
+  if (dfu_owns_flash && now_ms - dfu_last_block_ms >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+    dfu_owns_flash = false;
+  }
 }
 
 #else /* stock callbacks */

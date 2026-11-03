@@ -314,6 +314,11 @@ bool can_update_owns_flash(const can_update_state_t *st)
     return st->phase >= CAN_UPDATE_PHASE_SIZED;
 }
 
+void can_update_end_session(can_update_state_t *st)
+{
+    reset_session(st);
+}
+
 bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
                              const uint8_t data[8], uint8_t reply_data[8],
                              can_update_action_t *out_action)

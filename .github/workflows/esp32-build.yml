@@ -125,7 +125,7 @@ jobs:
           (cd dist/node && zip -r "../../esp32s3-node-updater-${version}.zip" .)
           (cd dist/brain && zip -r "../../esp32s3-brain-${version}.zip" .)
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "ESP32-S3 node updater + brain ${version}" --generate-notes \
+            --title "c-cpp/esp32 ${version}" --generate-notes \
             "esp32s3-node-updater-${version}.zip" "esp32s3-brain-${version}.zip" \
             dist/universal/esp32s3-can-updater-*.zip \
             dist/node/can_updater.bin dist/brain/brain_ota.bin

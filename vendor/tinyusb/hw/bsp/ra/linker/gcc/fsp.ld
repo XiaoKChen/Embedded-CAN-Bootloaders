@@ -192,7 +192,8 @@ SECTIONS
 
         *(.text*)
 
-        KEEP(*(.version))
+        /* Embedded-CAN-Bootloaders: the FSP version records (.version) are no longer KEEP'd; nothing
+         * reads them, so --gc-sections drops them (68 B of the 16 KB bootloader region). */
         KEEP(*(.init))
         KEEP(*(.fini))
 

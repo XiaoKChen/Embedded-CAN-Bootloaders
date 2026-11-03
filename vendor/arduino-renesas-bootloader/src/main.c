@@ -72,8 +72,11 @@ const flash_cfg_t g_flash_cfg =
   .ipl = (2),
 };
 
-/* Instance structure to use this module. */
-const flash_instance_t g_flash ={ .p_ctrl = &g_flash_ctrl, .p_cfg = &g_flash_cfg, .p_api = &flash_apis };
+/* Instance structure to use this module. No .p_api: every caller uses the
+ * R_FLASH_* functions directly, and the API table would keep the whole driver
+ * (ID code, access window, startup-area swap, ...) linked into the 16 KB
+ * region. */
+const flash_instance_t g_flash ={ .p_ctrl = &g_flash_ctrl, .p_cfg = &g_flash_cfg };
 
 //--------------------------------------------------------------------+
 // MACRO CONSTANT TYPEDEF PROTYPES

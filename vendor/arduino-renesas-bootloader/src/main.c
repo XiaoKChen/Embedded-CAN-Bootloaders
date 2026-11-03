@@ -1056,6 +1056,18 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
 
   //printf("\r\nReceived Alt %u BlockNum %u of length %u\r\n", alt, block_num, length);
 
+  /* Bounds the stock path lacked (#40): a new download never inherits an
+   * aborted one's buffered bytes, and blocks that do not tile aucbuffer
+   * (e.g. a short block before the last) are refused before they overrun
+   * it or touch flash. */
+  if (block_num == 0) {
+    auclen = 0;
+  }
+  if (auclen + length > sizeof(aucbuffer)) {
+    tud_dfu_finish_flashing(DFU_STATUS_ERR_ADDRESS);
+    return;
+  }
+
   if ((_offset + (block_num * CFG_TUD_DFU_XFER_BUFSIZE)) % PROGRAM_BLOCK_SIZE == 0) {
     // erase block
     __disable_irq();
@@ -1110,14 +1122,20 @@ void tud_dfu_manifest_cb(uint8_t alt)
 
 // Invoked when received DFU_UPLOAD request
 // Application must populate data with up to length bytes and
-// Return the number of written bytes
+// Return the number of written bytes. Reads stop at the end of code flash
+// (the end of the app slot): past it they would bus-fault.
 uint16_t tud_dfu_upload_cb(uint8_t alt, uint16_t block_num, uint8_t* data, uint16_t length)
 {
   _offset = alt == 0 ? SKETCH_FLASH_OFFSET : ZEPHYR_SKETCH_FLASH_OFFSET;
 
-  memcpy(data, _offset + (void*)(block_num * length), length);
+  uint32_t addr = _offset + (uint32_t) block_num * length;
+  if (addr >= BSP_ROM_SIZE_BYTES) {
+    return 0;
+  }
+  uint32_t count = (BSP_ROM_SIZE_BYTES - addr < length) ? (BSP_ROM_SIZE_BYTES - addr) : length;
+  memcpy(data, (const void *) addr, count);
 
-  return length;
+  return (uint16_t) count;
 }
 
 // Invoked when the Host has terminated a download or upload transfer
@@ -1125,6 +1143,7 @@ void tud_dfu_abort_cb(uint8_t alt)
 {
   (void) alt;
   //printf("Host aborted transfer\r\n");
+  auclen = 0;  /* the next download starts from an empty buffer */
 }
 #endif /* CAN_LOADER */
 

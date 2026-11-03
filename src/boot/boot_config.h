@@ -6,8 +6,8 @@
  * update mode idle timeout) and the handoff magics.
  *
  * Owns:         The default CAN update IDs and bitrate, the CAN update mode
- *               idle timeout, the CAN-update handoff magic and the image
- *               metadata magic.
+ *               idle timeout, the parked loop's CAN re-init interval, the
+ *               CAN-update handoff magic and the image metadata magic.
  * Not here:     Flash/RAM addresses (memory_map.h); per-device ID overrides
  *               (dfu_config.h).
  * Depends on:   <stdint.h> only: a pure host-compilable header, no target
@@ -53,6 +53,11 @@ extern "C" {
  *     before this timeout by the erase time, and is re-ACKed without a
  *     second erase. Do not lower this below the hosts' ERASE timeout. */
 #define CAN_UPDATE_IDLE_TIMEOUT_MS 15000u
+
+/* When CAN is down (init failed, or the driver reports a failed bus-off
+ * recovery), the parked DFU + CAN loop retries can_polled_init() at most this
+ * often; CAN update mode resets instead. */
+#define CAN_REINIT_INTERVAL_MS 1000u
 
 /* -----------------------------------------------------------------------------
  * Handoff & image magics

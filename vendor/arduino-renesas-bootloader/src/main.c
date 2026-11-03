@@ -452,6 +452,22 @@ static void can_load_ids(void)
 #endif
 }
 
+/* Replies are best effort (the host retries). A failed bus-off recovery marks
+ * CAN down: CAN update mode then resets, the parked loop re-inits it. */
+static void can_send_reply(const uint8_t frame[8])
+{
+  if (can_polled_send(can_reply_id, 8, frame) == CAN_POLLED_RECOVERY_FAILED) {
+    can_initialized = false;
+  }
+}
+
+/* Every exit from a CAN service path re-runs the boot decision. */
+static void can_deinit_and_reset(void)
+{
+  can_polled_deinit();  /* deinit every peripheral this path touched */
+  NVIC_SystemReset();
+}
+
 /* INFO (host CMD 0x07): report the device's USB product name so a host can
  * identify a board parked in the bootloader. Answered here, not in the update
  * engine, because the reply is 5 frames (the engine emits one per frame).
@@ -493,10 +509,10 @@ static void can_service_info(void)
   frame[2] = name_len;                     /* 0..32 */
   frame[3] = CAN_UPDATE_PROTOCOL_VERSION;  /* same version HELLO reports (1) */
   memset(&frame[4], CAN_UPDATE_FILL_BYTE, 4);
-  (void) can_polled_send(can_reply_id, 8, frame);
+  can_send_reply(frame);
 
   for (uint32_t off = 0; off < DFU_CONFIG_STR_MAX; off += 8u) {
-    (void) can_polled_send(can_reply_id, 8, &name[off]);
+    can_send_reply(&name[off]);
   }
 }
 
@@ -518,8 +534,12 @@ static bool can_service_once(void)
   uint8_t reply[8] = {0};
   can_update_action_t action = CAN_UPDATE_ACTION_NONE;
 
-  if (can_polled_receive(&id, &dlc, data) != CAN_POLLED_OK) {
-    return false;  /* empty FIFO, or bus-off (driver re-initialized itself) */
+  can_polled_status_t status = can_polled_receive(&id, &dlc, data);
+  if (status == CAN_POLLED_RECOVERY_FAILED) {
+    can_initialized = false;
+  }
+  if (status != CAN_POLLED_OK) {
+    return false;  /* empty FIFO, bus-off (the controller recovers), or CAN down */
   }
 
   if (!can_update_accepts_frame(&can_state, id, dlc, data)) {
@@ -535,12 +555,10 @@ static bool can_service_once(void)
   }
 
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {
-    (void) can_polled_send(can_reply_id, 8, reply);  /* host retries on loss */
+    can_send_reply(reply);
   }
   if (action == CAN_UPDATE_ACTION_RESET) {
-    can_polled_deinit();  /* deinit every peripheral this path touched */
-    can_initialized = false;
-    NVIC_SystemReset();   /* clean re-entry through the boot decision */
+    can_deinit_and_reset();
   }
   return true;
 }
@@ -595,9 +613,10 @@ static void can_xcvr_usb_rail_power_on(void)
 #endif /* !CAN_DIAG */
 
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
- * through the GO reset above, an external reset, or (production build) the
- * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without an
- * accepted update-protocol frame, so a pulled wire never leaves the board deaf to USB: before
+ * through the GO reset above, an external reset, or (production build) a
+ * reset when the driver reports a failed bus-off recovery or after
+ * CAN_UPDATE_IDLE_TIMEOUT_MS without an accepted update-protocol frame, so a
+ * pulled wire never leaves the board deaf to USB: before
  * ERASE the old app boots again, after ERASE boot_decide's marker check
  * parks it in DFU + CAN. The timebase is board_millis(): board_init()
  * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same
@@ -693,15 +712,13 @@ static void run_can_update_mode(void)
   }
   can_initialized = true;
   uint32_t last_frame_ms = board_millis();
-  while (1) {
+  while (can_initialized &&
+         (board_millis() - last_frame_ms) < CAN_UPDATE_IDLE_TIMEOUT_MS) {
     if (can_service_once()) {
       last_frame_ms = board_millis();
-    } else if ((board_millis() - last_frame_ms) >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
-      can_polled_deinit();  /* as the GO path: deinit before the reset */
-      can_initialized = false;
-      NVIC_SystemReset();
     }
   }
+  can_deinit_and_reset();  /* idle timeout, or bus-off recovery failed */
 #endif /* CAN_DIAG */
 }
 #endif /* CAN_LOADER */
@@ -930,6 +947,9 @@ __WEAK void run_bootloader() {
   can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
 #endif
 
+#ifdef CAN_LOADER
+  uint32_t can_reinit_ms = board_millis();
+#endif
   while (1)
   {
     tud_task(); // tinyusb device task
@@ -944,6 +964,9 @@ __WEAK void run_bootloader() {
 #ifdef CAN_LOADER
     if (can_initialized) {
       (void) can_service_once();  /* parked: no idle timeout */
+    } else if ((board_millis() - can_reinit_ms) >= CAN_REINIT_INTERVAL_MS) {
+      can_reinit_ms = board_millis();  /* init failed, or bus-off recovery did */
+      can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
     }
 #endif
   }

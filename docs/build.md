@@ -114,12 +114,12 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15752 / 16384 bytes
+SIZE GATE OK: 15768 / 16384 bytes
 ```
 
-That leaves **632 B** of headroom (per-device CAN-ID support ~120 B, the
+That leaves **616 B** of headroom (per-device CAN-ID support ~120 B, the
 data-flash read-readiness guard 32 B, the CAN-mode USB-regulator power-up
-88 B, the interrupted-flash marker + boot decision + CAN idle timeout 176 B).
+88 B, the interrupted-flash marker + boot decision + CAN idle timeout 192 B).
 A diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
 self-bisecting boot staircase for CAN bring-up debugging) fitted the gate by
 only 16–32 B before the interrupted-flash change and likely no longer fits;

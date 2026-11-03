@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Fetch the .gitignore'd vendored deps (CMSIS_5 + FSP) and build the
-# UNO R4 Minima DFU+CAN bootloader on a Linux host. Mirrors docs/build.md.
+# Fetch the vendored deps and build the UNO R4 Minima DFU+CAN bootloader.
 #
-# Requires arm-none-eabi-gcc (xPack 14.2.1) and GNU make already on PATH.
-# The Makefile.minima size gate fails the build if the .bin exceeds the
-# 16,384-byte bootloader region.
+# Fetches the .gitignore'd vendored deps (CMSIS_5 + FSP) at pinned commits
+# and builds the UNO R4 Minima DFU+CAN bootloader on a Linux host. Mirrors
+# docs/build.md.
+#   Usage: scripts/ci-build.sh    (run from the repo root)
 #
-# Usage: scripts/ci-build.sh    (run from the repo root)
+# Invariants:  The Makefile.minima size gate fails the build if the .bin
+#              exceeds the 16,384-byte bootloader region.
+# Errors:      set -euo pipefail: the first failing step aborts the script.
+# Depends on:  arm-none-eabi-gcc (xPack 14.2.1) and GNU make already on PATH.
+# See also:    docs/build.md, .github/workflows/release.yml
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

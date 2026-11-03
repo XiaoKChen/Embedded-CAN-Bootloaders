@@ -1,13 +1,15 @@
-# =============================================================================
-# CMakeLists.txt — UNO R4 Minima DFU+CAN bootloader (repo root)
-# =============================================================================
+# Root build for the UNO R4 Minima DFU+CAN bootloader repo.
+#
 # Two build surfaces from one tree:
 #   Host tests:  cmake -B build-host && cmake --build build-host
 #                && ctest --test-dir build-host --output-on-failure
 #   Bootloader:  cmake --build build-host --target bootloader
 #                (wraps the vendored fork's GNU Make / tinyusb build — NOT
 #                ported to CMake; toolchain prerequisites in docs/build.md)
-# =============================================================================
+#
+# Not here:    The host test targets (tests/CMakeLists.txt); the firmware
+#              build rules (vendor/arduino-renesas-bootloader/Makefile.minima).
+# See also:    tests/CMakeLists.txt, docs/build.md
 
 cmake_minimum_required(VERSION 3.20)
 

@@ -1,10 +1,14 @@
-# =============================================================================
-# tests/CMakeLists.txt — Host-side Unity tests for the bootloader's pure logic
-# =============================================================================
-# Standalone:  cmake -S tests -B build-host && cmake --build build-host
-#              && ctest --test-dir build-host --output-on-failure
+# Host-side Unity tests for the bootloader's pure logic.
+#
+# Builds the src/boot core (boot_core) and vendored Unity for the host and
+# registers one CTest per host test file.
+#   Standalone:  cmake -S tests -B build-host && cmake --build build-host
+#                && ctest --test-dir build-host --output-on-failure
 # Also usable via add_subdirectory(tests) from the root CMakeLists.
-# =============================================================================
+#
+# Invariants:  boot_core (src/boot) builds with zero hardware includes, by
+#              contract.
+# See also:    ../CMakeLists.txt, rules/testing.md
 
 cmake_minimum_required(VERSION 3.20)
 

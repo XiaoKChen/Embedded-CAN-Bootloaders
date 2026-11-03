@@ -117,21 +117,20 @@ _Static_assert((CAN_BRP_250K >= 1UL) && (CAN_BRP_250K <= 1024UL) &&
  *   250 kbit/s); 10 ms covers 15 of them.
  * - Transmit: arbitration losses and error retries; 200 ms.
  * - Transmit abort: completes when the frame in progress ends (same ~640 us
- *   worst case); 2 ms covers three. */
+ *   worst case); 2 ms covers three.
+ * - Bus-off: the automatic recovery needs 128 x 11 recessive bits, which
+ *   even a saturated bus yields within 128 frame times (~82 ms at
+ *   250 kbit/s); a bus-off that outlasts 1 s means the recovery is not
+ *   happening. */
 #define CAN_CPU_HZ              48000000UL
 #define CAN_CYCLES_PER_US       (CAN_CPU_HZ / 1000000UL)
 #define CAN_MODE_TIMEOUT_US     10000UL
 #define CAN_TX_TIMEOUT_US       200000UL
 #define CAN_TX_ABORT_TIMEOUT_US 2000UL
+#define CAN_BUS_OFF_REINIT_US   1000000UL
 
 /* -----------------------------------------------------------------------------
- * File-local state (plain .bss scalars — no static init order dependencies)
- * ----------------------------------------------------------------------------- */
-static uint32_t s_bitrate_bps;
-static uint32_t s_rx_filter_id;
-
-/* -----------------------------------------------------------------------------
- * Helpers
+ * Types
  * ----------------------------------------------------------------------------- */
 
 /* A bounded wait. `polls` is the fallback for a cycle counter that does not
@@ -144,10 +143,28 @@ typedef struct {
     uint32_t polls;
 } can_deadline_t;
 
+/* -----------------------------------------------------------------------------
+ * File-local state (one plain .bss struct — no static init order
+ * dependencies; one base address keeps the BOOT_LOW_FLASH init within the
+ * 832 B region)
+ * ----------------------------------------------------------------------------- */
+static struct {
+    uint32_t       bitrate_bps;
+    uint32_t       rx_filter_id;
+    can_deadline_t bus_off_deadline;  /* forced re-init deadline of the episode */
+    bool           bus_off_seen;      /* a bus-off episode is being timed       */
+    bool           recovery_failed;   /* sticky until can_polled_init()         */
+} s_can;
+
+/* -----------------------------------------------------------------------------
+ * Helpers
+ * ----------------------------------------------------------------------------- */
+
 /* Enabling the counter is idempotent, so every wait does it and no call
  * order (deinit before init) can leave a wait on a stopped counter. The
- * counter is left running for the application. */
-static can_deadline_t can_deadline_start(uint32_t timeout_us)
+ * counter is left running for the application. noinline keeps the
+ * BOOT_LOW_FLASH callers inside their 832 B region. */
+static __attribute__((noinline)) can_deadline_t can_deadline_start(uint32_t timeout_us)
 {
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
@@ -218,11 +235,30 @@ static void can_pin_config(uint32_t port, uint32_t pin, uint32_t pfs_value)
     R_PMISC->PWPR = PWPR_B0WI;                           /* re-lock          */
 }
 
-/* Bus-off recovery: full re-init, then report CAN_POLLED_BUS_OFF so the
- * caller keeps waiting (never proceed with a half-programmed slot). */
-static can_polled_status_t can_bus_off_recover(void)
+/* Bus-off gate for receive/send. CTLR.BOM = 00 makes the controller leave
+ * bus-off by itself as ISO 11898-1 requires (128 x 11 recessive bits), so a
+ * faulty node cannot flood the bus with error frames; meanwhile this reports
+ * CAN_POLLED_BUS_OFF. Only a bus-off that outlasts CAN_BUS_OFF_REINIT_US
+ * forces a re-init, so forced recoveries happen at most once per that
+ * period; a failed one latches CAN_POLLED_RECOVERY_FAILED. */
+static can_polled_status_t can_bus_state(void)
 {
-    (void) can_polled_init(s_bitrate_bps, s_rx_filter_id);
+    if (s_can.recovery_failed) {
+        return CAN_POLLED_RECOVERY_FAILED;
+    }
+    if ((R_CAN0->STR & R_CAN0_STR_BOST_Msk) == 0U) {
+        s_can.bus_off_seen = false;
+        return CAN_POLLED_OK;
+    }
+    if (!s_can.bus_off_seen) {
+        s_can.bus_off_seen     = true;
+        s_can.bus_off_deadline = can_deadline_start(CAN_BUS_OFF_REINIT_US);
+    } else if (can_deadline_expired(&s_can.bus_off_deadline)) {
+        if (can_polled_init(s_can.bitrate_bps, s_can.rx_filter_id) != CAN_POLLED_OK) {
+            s_can.recovery_failed = true;
+            return CAN_POLLED_RECOVERY_FAILED;
+        }
+    }
     return CAN_POLLED_BUS_OFF;
 }
 
@@ -261,7 +297,8 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_
     }
 
     /* FIFO mailbox mode (MBM=1), standard ID (IDFM=00), overwrite (MLM=0),
-     * stay in reset while writing. */
+     * ISO 11898-1 automatic bus-off recovery (BOM=00, as FSP's default,
+     * reference/r_can.c:272), stay in reset while writing. */
     R_CAN0->CTLR = (uint16_t) (R_CAN0_CTLR_MBM_Msk |
                                (CAN_MODE_RESET << R_CAN0_CTLR_CANM_Pos));
 
@@ -296,8 +333,10 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_
     /* Enable RX FIFO after entering operate mode (reference/r_can.c:397-411). */
     R_CAN0->RFCR = R_CAN0_RFCR_RFE_Msk;
 
-    s_bitrate_bps  = bitrate_bps;
-    s_rx_filter_id = rx_filter_id;
+    s_can.bitrate_bps     = bitrate_bps;
+    s_can.rx_filter_id    = rx_filter_id;
+    s_can.bus_off_seen    = false;
+    s_can.recovery_failed = false;
     return CAN_POLLED_OK;
 }
 
@@ -306,8 +345,9 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
     if ((id == 0) || (dlc == 0) || (data == 0)) {  /* null pointers */
         return CAN_POLLED_ERROR;
     }
-    if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-        return can_bus_off_recover();
+    can_polled_status_t bus = can_bus_state();
+    if (bus != CAN_POLLED_OK) {
+        return bus;
     }
     if (R_CAN0->RFCR & R_CAN0_RFCR_RFEST_Msk) {
         return CAN_POLLED_NO_DATA;             /* FIFO empty                 */
@@ -338,8 +378,9 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
     if ((id > CAN_SID_MAX) || (dlc > 8U) || ((data == 0) && (dlc > 0U))) {
         return CAN_POLLED_ERROR;
     }
-    if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-        return can_bus_off_recover();
+    can_polled_status_t bus = can_bus_state();
+    if (bus != CAN_POLLED_OK) {
+        return bus;
     }
     if (!can_tx_mailbox_release()) {
         return CAN_POLLED_TIMEOUT;             /* an earlier abort still runs */
@@ -363,7 +404,13 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
             return CAN_POLLED_OK;
         }
         if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-            return can_bus_off_recover();
+            /* Request the abort so the frame is not sent stale after the
+             * automatic recovery; the next send's release completes it. The
+             * gate passed on entry, so this call only starts the episode
+             * timer. */
+            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
+            (void) can_bus_state();
+            return CAN_POLLED_BUS_OFF;
         }
     } while (!can_deadline_expired(&deadline));
 

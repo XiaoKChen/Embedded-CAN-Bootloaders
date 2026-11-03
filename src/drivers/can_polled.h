@@ -50,13 +50,19 @@ typedef enum {
                              aborted; the frame may still have gone out as
                              the abort took effect), or the TX mailbox was
                              still busy with an earlier abort (nothing sent) */
-    CAN_POLLED_BUS_OFF,   /* bus-off detected; driver re-initialized itself —
-                             caller must keep waiting / retry                  */
+    CAN_POLLED_BUS_OFF,   /* receive/send: the controller is bus-off and its
+                             ISO 11898-1 automatic recovery (128 x 11
+                             recessive bits) is running; nothing was received
+                             or sent — keep polling / retry later. A bus-off
+                             that outlasts 1 s is ended by a driver re-init
+                             (at most once per second); BUS_OFF is returned
+                             for that call too                               */
     CAN_POLLED_ERROR,     /* bad argument (bitrate, ID, dlc) or mode-switch
                              failure                                           */
-    CAN_POLLED_RECOVERY_FAILED, /* receive/send: bus-off recovery could not
-                             bring the controller back; CAN0 is unusable
-                             until the caller re-runs can_polled_init()        */
+    CAN_POLLED_RECOVERY_FAILED, /* receive/send: the forced re-init after a
+                             1 s bus-off failed; CAN0 is unusable until the
+                             caller re-runs can_polled_init() — every
+                             receive/send returns this until then            */
 } can_polled_status_t;
 
 /* Bring up CAN0 at 250000 or 500000 bit/s (16 tq/bit, sample point 75 %,
@@ -65,7 +71,9 @@ typedef enum {
  * rx_filter_id are received (4-deep hardware RX FIFO, mailboxes 28–31). */
 can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id);
 
-/* Non-blocking. Returns CAN_POLLED_NO_DATA when the RX FIFO is empty.
+/* Non-blocking, except for the forced re-init after a 1 s bus-off. Returns
+ * CAN_POLLED_NO_DATA when the RX FIFO is empty, CAN_POLLED_BUS_OFF or
+ * CAN_POLLED_RECOVERY_FAILED as documented above.
  * On CAN_POLLED_OK: *id = 11-bit standard ID, *dlc = 0..8, data[0..*dlc-1]
  * filled. */
 can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[8]);
@@ -74,8 +82,9 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
  * completion for at most 200 ms. Before MB[0] is written the mailbox is made
  * idle: a request still latched from an earlier send is aborted and its
  * completion flag cleared (at most 2 ms). On the 200 ms bound the request is
- * aborted the same way and CAN_POLLED_TIMEOUT returned. Worst-case blocking:
- * about 204 ms. */
+ * aborted the same way and CAN_POLLED_TIMEOUT returned. A bus-off during the
+ * wait requests the abort and returns CAN_POLLED_BUS_OFF, so the frame is
+ * not sent stale after the recovery. Worst-case blocking: about 204 ms. */
 can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 
 /* Module-stop CAN0 and restore P102/P103 PFS to reset state (GPIO input).

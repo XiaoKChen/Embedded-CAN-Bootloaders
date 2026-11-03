@@ -2,9 +2,13 @@
  * @file    memory_map.h
  * @brief   Flash/RAM partition for the UNO R4 Minima (RA4M1) bootloader.
  *
- * Single header mirror of the flash partition. The linker script (vendored
- * bootloader layout, see minima_fsp.ld / the arduino-renesas-bootloader fork)
- * is the source of truth; these constants MUST agree with it.
+ * Single header mirror of the flash partition. The bootloader's linker
+ * script is the source of truth: vendor/tinyusb/hw/bsp/ra/linker/gcc/ra4m1.ld
+ * (selected by Makefile.minima's LD_FILE; FLASH_IMAGE_LENGTH bounds the link
+ * to BOOT_SIZE), which INCLUDEs fsp.ld (sections, option bytes, the
+ * BOOT_LOW_FLASH placement). These constants MUST agree with it. The app
+ * slot and metadata block lie outside that link; both update paths refuse
+ * an image larger than APP_SLOT_SIZE.
  *
  * Partition (256 KB code flash, 128 x 2 KB erase blocks):
  *   0x0000_0000 .. 0x0000_3FFF   bootloader (8 blocks, immutable at runtime,
@@ -29,7 +33,8 @@
  * Depends on:   <stdint.h> only: a pure host-compilable header, no target
  *               includes.
  *
- * @see     image_header.h, dfu_config.h, docs/reference/minima_fsp.ld,
+ * @see     image_header.h, dfu_config.h,
+ *          vendor/tinyusb/hw/bsp/ra/linker/gcc/{ra4m1,fsp}.ld,
  *          rules/bootloader.md
  */
 
@@ -51,7 +56,8 @@ extern "C" {
 #define FLASH_WRITE_UNIT    8u           /* code flash write unit (r_flash_lp) */
 
 #define BOOT_BASE           FLASH_BASE
-#define BOOT_SIZE           0x00004000u  /* 16 KB, 8 blocks — never self-written */
+#define BOOT_SIZE           0x00004000u  /* 16 KB, 8 blocks — never self-written;
+                                            ra4m1.ld FLASH_IMAGE_LENGTH */
 
 #define APP_BASE            0x00004000u  /* app vector table lives here        */
 #define APP_SLOT_SIZE       0x0003B800u  /* 238 KB, 119 blocks                 */

@@ -2,6 +2,10 @@ RAM_START = 0x20000000;
 RAM_LENGTH = 0x8000;
 FLASH_START = 0x00000000;
 FLASH_LENGTH = 0x40000;
+/* UNO R4 bootloader (Makefile.minima links this file): fsp.ld limits the
+ * FLASH region to FLASH_IMAGE_LENGTH, so an image larger than the 16 KB
+ * bootloader region (src/boot/memory_map.h BOOT_SIZE) fails the link. */
+FLASH_IMAGE_LENGTH = 0x4000;
 DATA_FLASH_START = 0x40100000;
 DATA_FLASH_LENGTH = 0x2000;
 OPTION_SETTING_START = 0x00000000;

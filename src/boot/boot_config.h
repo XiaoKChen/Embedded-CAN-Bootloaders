@@ -39,8 +39,9 @@ extern "C" {
 
 /* CAN update mode (VBTBKR[4] entry) resets after this long without an
  * accepted update-protocol frame (can_update_accepts_frame: command ID,
- * DLC 8, command byte HELLO..INFO, 0xFF padding); other traffic on that ID,
- * such as the master's app polls, does not count. Before ERASE the old app
+ * DLC 8, command byte HELLO..INFO, 0xFF padding; INFO counts only once a
+ * session is past IDLE); other traffic on that ID, such as the master's app
+ * polls, does not count. Before ERASE the old app
  * boots again, after ERASE the update-in-progress marker parks the board in
  * DFU + CAN. The parked DFU + CAN loop has no timeout.
  *

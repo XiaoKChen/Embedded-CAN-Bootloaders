@@ -248,8 +248,10 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      `src/boot/boot_config.h`) with no accepted update-protocol frame on the
      command ID, the board resets. Accepted means DLC 8, command byte
      `0x01`–`0x07` and `0xFF` in every unused byte
-     (`can_update_accepts_frame`, `src/boot/can_update.h`). Other traffic on
-     that ID gets no reply and does not count: a provisioned board's boot
+     (`can_update_accepts_frame`, `src/boot/can_update.h`); INFO is
+     answered but counts only once HELLO has started a session, so a host
+     that only scans cannot hold the board either. Other traffic on that ID
+     gets no reply and does not count: a provisioned board's boot
      command ID equals its app request ID, so the master's periodic app polls
      (ISO-TP) also arrive there and would otherwise hold a stranded board in
      CAN-only mode. The timer restarts after each handled frame; 20 s is

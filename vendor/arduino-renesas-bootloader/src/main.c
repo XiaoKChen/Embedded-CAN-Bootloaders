@@ -439,10 +439,11 @@ static void can_service_info(void)
  * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
  * Returns true once an accepted update-protocol frame has been handled
  * (can_update_accepts_frame: can_cmd_id, DLC 8, command byte HELLO..INFO,
- * 0xFF padding); the CAN-only mode's idle timeout restarts only on those.
- * Provisioned boards share can_cmd_id with their app's request ID, so the
- * master's periodic app polls (ISO-TP) land here too: they get no reply and
- * must not keep a stranded board in CAN-only mode. */
+ * 0xFF padding), except INFO while the session is IDLE; the CAN-only mode's
+ * idle timeout restarts only on those. Provisioned boards share can_cmd_id
+ * with their app's request ID, so the master's periodic app polls (ISO-TP)
+ * land here too: they get no reply and must not keep a stranded board in
+ * CAN-only mode. Neither may a host that only scans with INFO. */
 static bool can_service_once(void)
 {
   /* Zero-init: out-params are written by the callees before use, but gcc 7
@@ -467,10 +468,11 @@ static bool can_service_once(void)
 
   /* INFO is intercepted before the update engine: its 5-frame reply does not
    * fit the engine's one-reply-per-frame contract. Answering it does not touch
-   * or advance the update session state. */
+   * or advance the update session state, so it counts as activity only
+   * inside a session. */
   if (data[0] == CAN_UPDATE_CMD_INFO) {
     can_service_info();
-    return true;
+    return can_state.phase != CAN_UPDATE_PHASE_IDLE;
   }
 
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {

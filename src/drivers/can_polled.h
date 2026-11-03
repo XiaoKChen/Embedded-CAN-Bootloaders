@@ -14,6 +14,19 @@
  * Invariants:   CAN clock source is PCLKB, which must run at 24 MHz (board
  *               default: HOCO 48 MHz, PCLKA 48 / PCLKB 24, ratio 2:1 as
  *               required for CAN on this part).
+ *               Bit timing: 16 tq/bit, TSEG1 11, TSEG2 4, SJW 4 tq, sample
+ *               point 75 %. By the ISO 11898-1 rule each node's clock may
+ *               then deviate by min(SJW / (20 * 16), TSEG2 / (2 * (13 * 16 -
+ *               TSEG2))) = min(1.25 %, 0.98 %) = 0.98 % from nominal (SJW 1
+ *               allowed only 0.31 %). The HOCO is the only clock on this
+ *               board; its datasheet accuracy (about +/-1 % over temperature,
+ *               not in this repo) uses most of that budget, so the peer
+ *               needs a crystal clock.
+ *               FSP's r_can refuses a PCLKB-clocked CAN unless the PLL is the
+ *               system clock (reference/r_can.c:233-239, "Clock Setting" in
+ *               the HW manual). The uno_r4 BSP runs on the HOCO with no PLL,
+ *               so this driver deliberately clocks CAN from the HOCO-derived
+ *               PCLKB and relies on the SJW margin above.
  * Errors:       Every call but can_polled_deinit() returns
  *               can_polled_status_t.
  * Depends on:   The vendored RA4M1 device headers (vendor/ra4m1-headers/).
@@ -43,10 +56,10 @@ typedef enum {
                              until the caller re-runs can_polled_init()        */
 } can_polled_status_t;
 
-/* Bring up CAN0 at 250000 or 500000 bit/s (16 tq/bit, sample point 75 %).
- * Any other bitrate is rejected with CAN_POLLED_ERROR. Acceptance filtering
- * is exact: only frames whose 11-bit standard ID equals rx_filter_id are
- * received (4-deep hardware RX FIFO, mailboxes 28–31). */
+/* Bring up CAN0 at 250000 or 500000 bit/s (16 tq/bit, sample point 75 %,
+ * SJW 4 tq). Any other bitrate is rejected with CAN_POLLED_ERROR. Acceptance
+ * filtering is exact: only frames whose 11-bit standard ID equals
+ * rx_filter_id are received (4-deep hardware RX FIFO, mailboxes 28–31). */
 can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id);
 
 /* Non-blocking. Returns CAN_POLLED_NO_DATA when the RX FIFO is empty.

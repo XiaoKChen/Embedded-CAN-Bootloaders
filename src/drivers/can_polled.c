@@ -57,15 +57,34 @@
 #define CAN_MODE_HALT           2U
 #define CAN_STR_MODE_MASK       0x0700U
 
-/* Bit timing on PCLKB = 24 MHz: 16 tq/bit, SS=1, TSEG1=11, TSEG2=4, SJW=1
- * (sample point 75 %). BCR fields hold value-1 (reference/r_can.c:283-288). */
+/* Bit timing on PCLKB = 24 MHz: 16 tq/bit, SS=1, TSEG1=11, TSEG2=4, SJW=4
+ * (sample point 75 %; oscillator tolerance in can_polled.h). BCR fields hold
+ * value-1 (reference/r_can.c:283-288); the hardware requires
+ * TSEG1 > TSEG2 >= SJW (reference/r_can.c:195-206). */
 #define CAN_PCLKB_HZ            24000000UL
-#define CAN_BRP_250K            6U
-#define CAN_BRP_500K            3U
-#define CAN_BCR_SEGMENTS  (((11UL - 1U) << R_CAN0_BCR_TSEG1_Pos) | \
-                           ((4UL - 1U)  << R_CAN0_BCR_TSEG2_Pos) | \
-                           ((1UL - 1U)  << R_CAN0_BCR_SJW_Pos))
+#define CAN_TQ_PER_BIT          16UL
+#define CAN_TSEG1_TQ            11UL
+#define CAN_TSEG2_TQ            4UL
+#define CAN_SJW_TQ              4UL
+#define CAN_BRP(bitrate_bps)    (CAN_PCLKB_HZ / (CAN_TQ_PER_BIT * (bitrate_bps)))
+#define CAN_BRP_250K            CAN_BRP(250000UL)
+#define CAN_BRP_500K            CAN_BRP(500000UL)
+#define CAN_BCR_SEGMENTS  (((CAN_TSEG1_TQ - 1U) << R_CAN0_BCR_TSEG1_Pos) | \
+                           ((CAN_TSEG2_TQ - 1U) << R_CAN0_BCR_TSEG2_Pos) | \
+                           ((CAN_SJW_TQ - 1U)   << R_CAN0_BCR_SJW_Pos))
 /* BCR.CCLKS = 0 selects PCLKB (reference/r_can.h:126-130). */
+
+_Static_assert(1UL + CAN_TSEG1_TQ + CAN_TSEG2_TQ == CAN_TQ_PER_BIT,
+               "SS + TSEG1 + TSEG2 must fill the bit");
+_Static_assert((CAN_TSEG1_TQ > CAN_TSEG2_TQ) && (CAN_TSEG2_TQ >= CAN_SJW_TQ) &&
+               (CAN_TSEG1_TQ <= 16UL) && (CAN_TSEG2_TQ <= 8UL) && (CAN_SJW_TQ <= 4UL),
+               "BCR segment fields out of range");
+_Static_assert((CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 250000UL) == 0UL) &&
+               (CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 500000UL) == 0UL),
+               "PCLKB must divide exactly into 250k and 500k bit/s");
+_Static_assert((CAN_BRP_250K >= 1UL) && (CAN_BRP_250K <= 1024UL) &&
+               (CAN_BRP_500K >= 1UL) && (CAN_BRP_500K <= 1024UL),
+               "BRP out of the 1..1024 range (reference/r_can.c:30-31)");
 
 /* Standard ID sits at bits [28:18] of MB.ID / MKR / FIDCR. */
 #define CAN_SID_MAX             0x7FFUL

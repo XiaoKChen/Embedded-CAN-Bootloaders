@@ -1,11 +1,15 @@
-/* =============================================================================
- * can_update.c — CAN Update Protocol v1 state machine (pure logic)
- * =============================================================================
- * See can_update.h for the protocol spec and the fail-safe/power-loss table.
- * Every flash mutation goes through the injected HAL; the metadata block is
- * written only after VERIFY matches, so an interrupted update always leaves
- * the metadata erased and the device parked in the bootloader.
- * ============================================================================= */
+/**
+ * @file    can_update.c
+ * @brief   CAN Update Protocol v1 state machine (see can_update.h for the
+ *          protocol spec and the fail-safe/power-loss table).
+ *
+ * Implementation notes: every flash mutation goes through the injected HAL;
+ * the metadata block is written only after VERIFY matches, so an interrupted
+ * update never leaves a valid record over a partial image (boot_decide in
+ * image_validate.h then parks the device, or boots the intact old app).
+ *
+ * @see     can_update.h, test_can_update.c
+ */
 
 #include "can_update.h"
 

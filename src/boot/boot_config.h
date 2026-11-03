@@ -1,12 +1,20 @@
-/* =============================================================================
- * boot_config.h — CAN update path configuration (UNO R4 Minima bootloader)
- * =============================================================================
+/**
+ * @file    boot_config.h
+ * @brief   CAN update path configuration (UNO R4 Minima bootloader).
+ *
  * Compile-time constants for the CAN update transport (IDs, bitrate, CAN
  * update mode idle timeout) and the handoff magics.
- * Flash/RAM addresses live in memory_map.h, not here.
  *
- * Pure host-compilable header: <stdint.h> only, no target includes.
- * ============================================================================= */
+ * Owns:         The default CAN update IDs and bitrate, the CAN update mode
+ *               idle timeout, the CAN-update handoff magic and the image
+ *               metadata magic.
+ * Not here:     Flash/RAM addresses (memory_map.h); per-device ID overrides
+ *               (dfu_config.h).
+ * Depends on:   <stdint.h> only: a pure host-compilable header, no target
+ *               includes.
+ *
+ * @see     memory_map.h, dfu_config.h, can_update.h
+ */
 
 #ifndef BOOT_CONFIG_H
 #define BOOT_CONFIG_H

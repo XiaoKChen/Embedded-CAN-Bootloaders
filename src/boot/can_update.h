@@ -1,16 +1,11 @@
-/* =============================================================================
- * can_update.h — CAN Update Protocol v1 state machine (pure logic)
- * =============================================================================
+/**
+ * @file    can_update.h
+ * @brief   CAN Update Protocol v1 state machine (pure logic).
+ *
  * Frame-in / frame-out engine for the flash-over-CAN update path. The engine
  * touches no hardware: the CAN driver feeds it received frames, sends replies
  * it produces on the boot -> host reply ID, and flash access goes through the
  * injected HAL — so the whole protocol unit-tests on the host.
- *
- * Per-device IDs: the host -> boot command ID the engine matches on is a
- * runtime value supplied to can_update_init (default CAN_ID_HOST_TO_BOOT); the
- * caller transmits every reply on the paired boot -> host ID (default
- * CAN_ID_BOOT_TO_HOST). This lets several parked boards share one bus, each
- * addressed on its own ID (see dfu_config.h v2 config block).
  *
  * Protocol v1 (classic CAN, 11-bit IDs, every frame DLC 8, unused bytes 0xFF):
  *
@@ -61,7 +56,26 @@
  * CAN_UPDATE_IDLE_TIMEOUT_MS without a command frame, landing in the row
  * above that matches how far the session got.
  * There is no state that bricks: the bootloader region is never written.
- * ============================================================================= */
+ *
+ * Owns:         The protocol constants (below), the session phases and window
+ *               buffer (can_update_state_t) and the flash HAL contract
+ *               (can_update_hal_t).
+ * Not here:     INFO, answered by the integration layer (main.c CAN service);
+ *               the CAN driver (can_polled.h); the reset after GO and the
+ *               idle timeout (the caller, main.c).
+ * Invariants:   Per-device IDs: the host -> boot command ID the engine
+ *               matches on is a runtime value supplied to can_update_init
+ *               (default CAN_ID_HOST_TO_BOOT); the caller transmits every
+ *               reply on the paired boot -> host ID (default
+ *               CAN_ID_BOOT_TO_HOST). This lets several parked boards share
+ *               one bus, each addressed on its own ID (see dfu_config.h v2
+ *               config block).
+ * Errors:       A rejected frame is answered with a NAK carrying a
+ *               CAN_UPDATE_ERR_* code; frames on other IDs get no reply.
+ * Depends on:   boot_config.h and memory_map.h only. No hardware, no heap.
+ *
+ * @see     can_update.c, test_can_update.c, image_validate.h, image_header.h
+ */
 
 #ifndef CAN_UPDATE_H
 #define CAN_UPDATE_H

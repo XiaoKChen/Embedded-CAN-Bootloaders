@@ -1,10 +1,10 @@
-/* =============================================================================
- * memory_map.h — Flash/RAM partition for the UNO R4 Minima (RA4M1) bootloader
- * =============================================================================
+/**
+ * @file    memory_map.h
+ * @brief   Flash/RAM partition for the UNO R4 Minima (RA4M1) bootloader.
+ *
  * Single header mirror of the flash partition. The linker script (vendored
  * bootloader layout, see minima_fsp.ld / the arduino-renesas-bootloader fork)
- * is the source of truth; these constants MUST agree with it. Do not scatter
- * these addresses anywhere else.
+ * is the source of truth; these constants MUST agree with it.
  *
  * Partition (256 KB code flash, 128 x 2 KB erase blocks):
  *   0x0000_0000 .. 0x0000_3FFF   bootloader (8 blocks, immutable at runtime,
@@ -13,11 +13,22 @@
  *   0x0003_F800 .. 0x0003_FFFF   image metadata block (last block, written
  *                                LAST during an update — see image_header.h)
  *
- * VTOR policy: the BOOTLOADER sets SCB->VTOR = APP_BASE immediately before
- * the jump (stock boot5() behavior); the application does not need to.
+ * Owns:         The code-flash, data-flash and SRAM addresses and sizes,
+ *               including DFU_CONFIG_ADDR, and the VTOR policy.
+ * Not here:     The metadata record layout (image_header.h); the config
+ *               block layout (dfu_config.h).
+ * Invariants:   MUST agree with the linker script; do not scatter these
+ *               addresses anywhere else. The _Static_asserts below pin the
+ *               partition's adjacency and block alignment. VTOR policy: the
+ *               BOOTLOADER sets SCB->VTOR = APP_BASE immediately before the
+ *               jump (stock boot5() behavior); the application does not need
+ *               to.
+ * Depends on:   <stdint.h> only: a pure host-compilable header, no target
+ *               includes.
  *
- * Pure host-compilable header: <stdint.h> only, no target includes.
- * ============================================================================= */
+ * @see     image_header.h, dfu_config.h, docs/reference/minima_fsp.ld,
+ *          rules/bootloader.md
+ */
 
 #ifndef MEMORY_MAP_H
 #define MEMORY_MAP_H

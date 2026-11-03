@@ -59,7 +59,7 @@ tusb_desc_device_t const desc_device =
 
     .idVendor           = 0x2341,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0100,
+    .bcdDevice          = 0x0100,  /* fixed: Arduino's Windows DFU driver INF matches Rev_0100 only */
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,

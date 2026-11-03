@@ -115,12 +115,17 @@ Builds are automated by GitHub Actions
   the run.
 - **Pushing a `c-cpp-ra4m1-v*` tag** additionally publishes a GitHub Release with the
   version-named `.hex`/`.bin`/`.elf` (the prefix is stripped, so tag
-  `c-cpp-ra4m1-v1.0.3` yields `bootloader-uno_r4-v1.0.3.*`) and auto-generated
+  `c-cpp-ra4m1-v1.1.0` yields `bootloader-uno_r4-v1.1.0.*`) and auto-generated
   notes. Releases up to `v1.0.2` used the old plain `v*` tags.
+
+The release tag is the bootloader's only version number. Do not bump the DFU
+descriptor's `bcdDevice` (`usb_descriptors.c`) to match it: Arduino's Windows
+DFU driver matches `VID_2341&PID_0369&Rev_0100` only, so any other value leaves
+the bootloader without a driver on Windows (Device Manager code 28).
 
 ```sh
 # Cut a release: tag and push — CI builds and publishes it.
-git tag c-cpp-ra4m1-v1.0.3 && git push origin c-cpp-ra4m1-v1.0.3
+git tag c-cpp-ra4m1-v1.1.0 && git push origin c-cpp-ra4m1-v1.1.0
 ```
 
 The bootloader firmware has no embedded version field; "version" here is the

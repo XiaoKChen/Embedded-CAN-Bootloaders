@@ -114,18 +114,32 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15768 / 16384 bytes
+SIZE GATE OK: 14232 / 16384 bytes
 ```
 
-That leaves **616 B** of headroom (per-device CAN-ID support ~120 B, the
-data-flash read-readiness guard 32 B, the CAN-mode USB-regulator power-up
-88 B, the interrupted-flash marker + boot decision + CAN idle timeout 192 B).
-A diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
-self-bisecting boot staircase for CAN bring-up debugging) fitted the gate by
-only 16–32 B before the interrupted-flash change and likely no longer fits;
+That leaves **2 152 B** of headroom. Since #34 the build reclaims space it
+used to waste or carry for nothing:
+
+- **Low-flash gap:** functions marked `BOOT_LOW_FLASH`
+  (`src/boot/memory_map.h`: `can_polled_init`, `can_polled_send`,
+  `can_polled_deinit`, `flash_lp_open_df_read_ready`, 776 B) sit between the
+  vector table and the option bytes (`0x00C0–0x03C7`), where the FSP linker
+  script used to pad with `0xFF`. The linker script fails the link if that
+  code ever reaches `0x400`; `0x043C–0x04FF` stays reserved padding.
+- **No flash API table:** `g_flash` no longer points at the `r_flash_lp` API
+  table, so the unused public entry points are not linked. Three unused RAM
+  helpers (ID code, access window, startup-area swap, ~330 B) remain: the FSP
+  marks every `.code_in_ram` function `used`.
+- **GPIO LED:** the LED blinks as a plain GPIO instead of the GPT PWM fade,
+  so the GPT driver is not linked.
+- **No FSP version records:** `.version` is no longer `KEEP`ed.
+
+The diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
+self-bisecting boot staircase for CAN bring-up debugging) fits again at
+14 864 B (it was 16 456 B and failed the gate before #34);
 it is never shipped and CI does not build it; with `CAN_DIAG=0` (default) the diag code is fully
 compiled out. For reference: the same source built with the old
-gcc 7.2.1 is ~656 B larger (`SIZE GATE OK: 16112 / 16384`), which is why gcc 14
+gcc 7.2.1 was ~656 B larger (measured before #31), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
 the CAN update path is the difference.
 

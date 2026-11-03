@@ -13,6 +13,17 @@ Host-side python-can/Textual CLI and TUI (`can-flash/can_flash.py`) that flashes
 - **Key files:** `can_flash.py`, `README.md`, `requirements.txt`
 - **Relationships:** imports `can` (python-can), `isotp` (can-isotp, only for `--enter-bootloader`) and `textual`; protocol constants mirror `src/boot/can_update.c` / `src/boot/dfu_config.c`.
 
-- **can_flash.py** — The whole tool: protocol constants (`CMD_HELLO` 0x01 .. `CMD_GO` 0x06, `CMD_INFO` 0x07, `ERR_*`, 2048-byte windows of 342 frames, slot size 0x3B800; defaults TX 0x79E / RX 0x79F, 250 kbit/s, socketcan `can0`); `CanFlasher.flash_image()` for the HELLO→GO flow; `--scan` (INFO probes across a cmd-ID band plus the known device IDs); `--enter-bootloader` (the `/enter_bootloader` ISO-TP RPC); `--selftest` (a `FakeBootloader` thread on python-can's `virtual` interface); the TUI (`FlasherApp`, bin picker); `parse_args()` / `main()`.
-- **README.md** — Usage: requirements, TUI vs CLI, wiring (external transceiver), entering CAN update mode, `--enter-bootloader`, `--scan` and multi-board workflow, per-interface usage, `--selftest`, protocol summary.
+- **can_flash.py** — The whole tool:
+  - **Protocol constants:** `CMD_HELLO` 0x01 .. `CMD_GO` 0x06, `CMD_INFO` 0x07, `ERR_*`, 2048-byte windows of 342 frames, expected slot size 0x3B800.
+  - **Defaults:** TX 0x79E / RX 0x79F, 250 kbit/s, socketcan `can0`, 3 retries.
+  - **`CanFlasher` / `flash_image()`:** the HELLO→GO flow. It rewinds on `ERR_UNEXPECTED_SEQ` but stops with a `FlashError` on a board-side `ERR_FLASH_FAILURE`, because the board ends the session.
+  - **`--scan`:** INFO probes across a cmd-ID band (0x700–0x71F) plus the known device IDs.
+  - **`--enter-bootloader`:** the `/enter_bootloader` ISO-TP RPC.
+  - **`--selftest`:** a `FakeBootloader` thread on python-can's `virtual` interface, with handler `_handle_frame`.
+  - **TUI and CLI:** the TUI (`FlasherApp`, bin picker); `parse_args()` / `main()`.
+- **README.md** — Usage:
+  - requirements, TUI vs CLI, wiring (external transceiver);
+  - entering CAN update mode, `--enter-bootloader`, `--scan` and the multi-board workflow;
+  - per-interface usage and `--selftest`;
+  - protocol summary, including the frame rules and the end-of-session behaviour on a board flash failure.
 - **requirements.txt** — Pins for non-`uv` setups: `python-can>=4.0`, `can-isotp>=2.0`, `textual>=0.60`.

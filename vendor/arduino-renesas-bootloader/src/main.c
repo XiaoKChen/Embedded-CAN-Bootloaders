@@ -49,6 +49,16 @@
 #include "drivers/can_polled.h"
 
 static bool can_initialized = false;
+static uint32_t can_reinit_ms;  /* last CAN drop or init attempt (board_millis) */
+
+/* CAN0 is unusable until can_polled_init() succeeds again. The parked loop's
+ * next init waits CAN_REINIT_INTERVAL_MS from this drop: the driver has just
+ * run (and failed) its own forced re-init. */
+static void can_mark_down(void)
+{
+  can_initialized = false;
+  can_reinit_ms = board_millis();
+}
 #endif
 
 _Alignas(8) uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];  /* flash program source: one 8 B write unit */
@@ -366,7 +376,7 @@ static void can_load_ids(void)
 static void can_send_reply(const uint8_t frame[8])
 {
   if (can_polled_send(can_reply_id, 8, frame) == CAN_POLLED_RECOVERY_FAILED) {
-    can_initialized = false;
+    can_mark_down();
   }
 }
 
@@ -445,7 +455,7 @@ static bool can_service_once(void)
 
   can_polled_status_t status = can_polled_receive(&id, &dlc, data);
   if (status == CAN_POLLED_RECOVERY_FAILED) {
-    can_initialized = false;
+    can_mark_down();
   }
   if (status != CAN_POLLED_OK) {
     return false;  /* empty FIFO, bus-off (the controller recovers), or CAN down */
@@ -649,10 +659,7 @@ __WEAK void run_bootloader() {
   can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
   can_update_init(&can_state, &can_hal, can_cmd_id);
   can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
-#endif
-
-#ifdef CAN_LOADER
-  uint32_t can_reinit_ms = board_millis();
+  can_reinit_ms = board_millis();
 #endif
   while (1)
   {

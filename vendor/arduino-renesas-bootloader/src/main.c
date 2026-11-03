@@ -97,6 +97,11 @@ enum  {
 
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
+/* Set by tud_dfu_detach_cb (inside tud_task); the main loop drains USB for
+ * DFU_DETACH_DRAIN_MS and resets, so tud_task is never re-entered. */
+static bool dfu_detach_requested;
+#define DFU_DETACH_DRAIN_MS 100u
+
 void led_blinking_task(void);
 void set_double_tap_data(uint32_t data);
 
@@ -929,6 +934,13 @@ __WEAK void run_bootloader() {
   {
     tud_task(); // tinyusb device task
     led_blinking_task();
+    if (dfu_detach_requested) {
+      uint32_t start_ms = board_millis();
+      while (board_millis() - start_ms < DFU_DETACH_DRAIN_MS) {
+        tud_task();  /* complete the DFU_DETACH status stage */
+      }
+      NVIC_SystemReset();
+    }
 #ifdef CAN_LOADER
     if (can_initialized) {
       (void) can_service_once();  /* parked: no idle timeout */
@@ -1347,15 +1359,11 @@ void tud_dfu_abort_cb(uint8_t alt)
 }
 #endif /* CAN_LOADER */
 
-// Invoked when a DFU_DETACH request is received
+// Invoked when a DFU_DETACH request is received. This runs inside
+// tud_task(): the drain and reset wait for the main loop (run_bootloader).
 void tud_dfu_detach_cb(void)
 {
-  //printf("Host detach, we should probably reboot\r\n");
-  uint32_t start_ms = board_millis();
-  while (board_millis() - start_ms < 100) {
-    tud_task();
-  }
-  NVIC_SystemReset();
+  dfu_detach_requested = true;
 }
 
 #endif

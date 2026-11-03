@@ -105,12 +105,15 @@ static bool dfu_detach_requested;
 void led_blinking_task(void);
 void set_double_tap_data(uint32_t data);
 
+/* Jump sequence per rules/bootloader.md: IRQs off first, then deinit every
+ * peripheral the bootloader touched, stop SysTick and clear its pending bit,
+ * disable and clear every NVIC interrupt, then VTOR, MSP and the reset
+ * vector. The application re-enables IRQs itself. */
 void boot5(uint32_t address) {
+  __disable_irq();
 
 #ifdef CAN_LOADER
-  /* Jump rule (rules/bootloader.md): deinit every peripheral the bootloader
-   * touched. No current caller reaches here with CAN up, but keep the jump
-   * sequence self-contained. */
+  /* No current caller reaches here with CAN up; kept self-contained. */
   if (can_initialized) {
     can_polled_deinit();
     can_initialized = false;
@@ -129,12 +132,16 @@ void boot5(uint32_t address) {
     R_MPU_SPMON->SP[0].CTL = 0;
 #endif
 
-  __disable_irq(); // Note: remember to enable IRQ in application
+  SysTick->CTRL = 0;
+  SysTick->LOAD = 0;
+  SysTick->VAL  = 0;
+  SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+  for (uint32_t i = 0; i < sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0]); i++) {
+    NVIC->ICER[i] = 0xFFFFFFFFu;
+    NVIC->ICPR[i] = 0xFFFFFFFFu;
+  }
   __DSB();
   __ISB();
-
-  // Disable SysTick
-  SysTick->CTRL = 0;
 
   SCB->VTOR  = address;
 

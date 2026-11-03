@@ -177,6 +177,11 @@ SECTIONS
         KEEP(*(.application_vectors*))
         __Vectors_End = .;
 
+        /* Embedded-CAN-Bootloaders: code marked BOOT_LOW_FLASH (src/boot/memory_map.h) fills the gap
+         * up to the ROM registers instead of 0xFF padding. Overflowing it fails the link. */
+        *(.text.boot_low_flash*)
+        ASSERT(OPTION_SETTING_LENGTH > 0 || . <= __ROM_Start + 0x400, "BOOT_LOW_FLASH code overflows into the ROM registers at 0x400");
+
         /* ROM Registers start at address 0x00000400 for devices that do not have the OPTION_SETTING region. */
         . = OPTION_SETTING_LENGTH > 0 ? . : __ROM_Start + 0x400;
         KEEP(*(.rom_registers*))

@@ -295,7 +295,7 @@ static can_polled_status_t can_diag_bringup_retry(uint8_t stage, bool *out_sent)
 }
 #endif /* CAN_DIAG */
 
-static bool flash_lp_open_df_read_ready(void)
+static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
 {
 #ifdef CAN_DIAG
   /* Same calls/short-circuits as stock, with the fsp_err_t values latched

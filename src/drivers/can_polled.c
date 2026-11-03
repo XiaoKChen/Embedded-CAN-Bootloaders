@@ -94,6 +94,9 @@ _Static_assert((CAN_BRP_250K >= 1UL) && (CAN_BRP_250K <= 1024UL) &&
  * one write — write 0x00 twice (reference/r_can.c:1043-1051). */
 #define MCTL_TRMREQ             0x80U
 #define MCTL_SENTDATA           0x01U
+/* TRMABT=0x04 latches a completed transmit abort (device header
+ * R_CAN0_MCTL_TX_TRMABT_Msk). */
+#define MCTL_TRMABT             0x04U
 
 /* RFCR: RFE=bit0 enables the RX FIFO, RFMLF=bit4 message-lost flag,
  * RFEST=bit7 empty flag. Reading MB[28] accesses the FIFO head; writing 0xFF
@@ -112,11 +115,14 @@ _Static_assert((CAN_BRP_250K >= 1UL) && (CAN_BRP_250K <= 1024UL) &&
  * - Mode switch: reset and halt are entered once the frame in progress ends
  *   (one stuffed 8-byte frame plus an error frame is ~160 bits, 640 us at
  *   250 kbit/s); 10 ms covers 15 of them.
- * - Transmit: arbitration losses and error retries; 200 ms. */
+ * - Transmit: arbitration losses and error retries; 200 ms.
+ * - Transmit abort: completes when the frame in progress ends (same ~640 us
+ *   worst case); 2 ms covers three. */
 #define CAN_CPU_HZ              48000000UL
 #define CAN_CYCLES_PER_US       (CAN_CPU_HZ / 1000000UL)
 #define CAN_MODE_TIMEOUT_US     10000UL
 #define CAN_TX_TIMEOUT_US       200000UL
+#define CAN_TX_ABORT_TIMEOUT_US 2000UL
 
 /* -----------------------------------------------------------------------------
  * File-local state (plain .bss scalars — no static init order dependencies)
@@ -173,6 +179,28 @@ static can_polled_status_t can_mode_set(uint16_t mode)
         }
     } while (!can_deadline_expired(&deadline));
     return CAN_POLLED_ERROR;
+}
+
+/* Bring the TX mailbox to MCTL_TX = 0, the only state in which MB[0] may be
+ * rewritten. Writing 0 clears TRMREQ, which requests an abort of a pending
+ * transmit; the abort ends in TRMABT (not sent) or SENTDATA (the frame in
+ * progress went out), and only then is that flag cleared, by another write
+ * of 0, because TRMREQ and a completion flag cannot clear in one write
+ * (reference/r_can.c:1043-1051). Nothing is written while the abort runs.
+ * Returns false if the mailbox is still busy after the abort bound. */
+static bool can_tx_mailbox_release(void)
+{
+    can_deadline_t deadline = can_deadline_start(CAN_TX_ABORT_TIMEOUT_US);
+    do {
+        uint8_t mctl = R_CAN0->MCTL_TX[TX_MAILBOX];
+        if (mctl == 0U) {
+            return true;
+        }
+        if (mctl & (MCTL_TRMREQ | MCTL_TRMABT | MCTL_SENTDATA)) {
+            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
+        }
+    } while (!can_deadline_expired(&deadline));
+    return false;
 }
 
 /* Route one pin to CAN0 (or back to reset state when pfs_value == 0).
@@ -313,6 +341,9 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
     if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
         return can_bus_off_recover();
     }
+    if (!can_tx_mailbox_release()) {
+        return CAN_POLLED_TIMEOUT;             /* an earlier abort still runs */
+    }
 
     R_CAN0->MB[TX_MAILBOX].ID = id << R_CAN0_MB_ID_SID_Pos;  /* IDE=0, RTR=0 */
     R_CAN0->MB[TX_MAILBOX].DL = dlc;
@@ -336,8 +367,9 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
         }
     } while (!can_deadline_expired(&deadline));
 
-    R_CAN0->MCTL_TX[TX_MAILBOX] = 0;           /* abort the pending request  */
-    R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
+    /* Abort and wait it out. If the abort outlasts its bound, the next send's
+     * release finishes it before MB[0] is touched. */
+    (void) can_tx_mailbox_release();
     return CAN_POLLED_TIMEOUT;
 }
 

@@ -46,7 +46,10 @@ extern "C" {
 typedef enum {
     CAN_POLLED_OK = 0,
     CAN_POLLED_NO_DATA,   /* receive: RX FIFO empty                            */
-    CAN_POLLED_TIMEOUT,   /* send: SENTDATA not set within 200 ms              */
+    CAN_POLLED_TIMEOUT,   /* send: SENTDATA not set within 200 ms (request
+                             aborted; the frame may still have gone out as
+                             the abort took effect), or the TX mailbox was
+                             still busy with an earlier abort (nothing sent) */
     CAN_POLLED_BUS_OFF,   /* bus-off detected; driver re-initialized itself —
                              caller must keep waiting / retry                  */
     CAN_POLLED_ERROR,     /* bad argument (bitrate, ID, dlc) or mode-switch
@@ -68,8 +71,11 @@ can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id)
 can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[8]);
 
 /* Transmit one frame from a single TX mailbox and poll SENTDATA to
- * completion for at most 200 ms (returns CAN_POLLED_TIMEOUT and aborts the
- * request if the bound is hit). */
+ * completion for at most 200 ms. Before MB[0] is written the mailbox is made
+ * idle: a request still latched from an earlier send is aborted and its
+ * completion flag cleared (at most 2 ms). On the 200 ms bound the request is
+ * aborted the same way and CAN_POLLED_TIMEOUT returned. Worst-case blocking:
+ * about 204 ms. */
 can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 
 /* Module-stop CAN0 and restore P102/P103 PFS to reset state (GPIO input).

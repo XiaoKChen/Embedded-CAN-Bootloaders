@@ -109,7 +109,9 @@ $(BUILD)/obj/src/drivers/can_polled.o: CFLAGS = $(CAN_POLLED_CFLAGS)
 
 # ---------------------------------------------------------------------------
 # Size gate: the bootloader region is 8 x 2 KB (memory_map.h BOOT_SIZE); a
-# .bin that no longer fits must fail the build, not brick a board.
+# .bin that no longer fits must fail the build, not brick a board. The same
+# 16 KB is ra4m1.ld's FLASH_IMAGE_LENGTH (which bounds the link) and
+# memory_map.h's BOOT_SIZE: change all three together.
 # ---------------------------------------------------------------------------
 BOOT_REGION_LIMIT = 16384
 all: sizegate

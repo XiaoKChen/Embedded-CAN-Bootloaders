@@ -57,7 +57,9 @@ extern "C" {
 
 #define BOOT_BASE           FLASH_BASE
 #define BOOT_SIZE           0x00004000u  /* 16 KB, 8 blocks — never self-written;
-                                            ra4m1.ld FLASH_IMAGE_LENGTH */
+                                            also ra4m1.ld FLASH_IMAGE_LENGTH
+                                            (+ its ASSERT) and Makefile.minima
+                                            BOOT_REGION_LIMIT */
 
 #define APP_BASE            0x00004000u  /* app vector table lives here        */
 #define APP_SLOT_SIZE       0x0003B800u  /* 238 KB, 119 blocks                 */

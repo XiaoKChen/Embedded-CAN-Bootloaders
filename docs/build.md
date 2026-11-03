@@ -113,7 +113,9 @@ Artifacts land in `_build/uno_r4/`:
 The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 (8 × 2 KB blocks, `src/boot/memory_map.h` `BOOT_SIZE`). The link itself
 fails first: `ra4m1.ld` sets `FLASH_IMAGE_LENGTH = 0x4000`, which bounds the
-FLASH region `fsp.ld` places the image in. Current output with gcc 14.2.1
+FLASH region `fsp.ld` places the image in, and asserts that this region is
+exactly `0x0000–0x3FFF`. The 16 KB figure lives in three places (that value,
+`BOOT_SIZE`, and the Makefile's `BOOT_REGION_LIMIT`); change them together. Current output with gcc 14.2.1
 (#40 hardening, before the #40 CAN driver changes are merged):
 
 ```

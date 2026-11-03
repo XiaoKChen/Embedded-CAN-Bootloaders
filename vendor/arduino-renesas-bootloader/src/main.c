@@ -272,9 +272,21 @@ static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
  * not safe, so INFO and the USB name strings fall back to their defaults
  * until the next reset re-proves the gate. */
 
+/* The bootloader never erases or writes its own region (rules/bootloader.md):
+ * both helpers refuse a range outside [APP_BASE, end of the metadata block)
+ * before touching the flash driver. */
+static bool flash_update_range_ok(uint32_t addr, uint32_t len)
+{
+  const uint32_t update_end = METADATA_ADDR + METADATA_BLOCK_SIZE;
+  return addr >= APP_BASE && addr <= update_end && len <= update_end - addr;
+}
+
 /* One block per IRQ-off window, so USB stays serviceable between blocks. */
 static bool flash_erase_block(uint32_t addr)
 {
+  if (!flash_update_range_ok(addr, FLASH_BLOCK_SIZE)) {
+    return false;
+  }
   __disable_irq();
   fsp_err_t err = R_FLASH_LP_Erase(g_flash.p_ctrl, addr, 1);
   __enable_irq();
@@ -287,6 +299,9 @@ static bool flash_erase_block(uint32_t addr)
 
 static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
+  if (!flash_update_range_ok(addr, len)) {
+    return false;
+  }
   __disable_irq();
   int err = R_FLASH_LP_Write(g_flash.p_ctrl, (uint32_t) data, addr, len);
   __enable_irq();

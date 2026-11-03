@@ -1,15 +1,20 @@
 /* =============================================================================
  * image_validate.c — Pure-logic validation of the application image
  * =============================================================================
- * See image_validate.h for the interface and check order. Fail-closed: every
- * metadata field is bounds-checked before it is trusted, and the expensive
- * payload CRC runs last. All multi-byte reads go through explicit little-
- * endian byte loads — no misaligned or aliased direct loads from the buffer.
+ * See image_validate.h for the interface, check order and boot decision.
+ * Fail-closed: every metadata field is bounds-checked before it is trusted,
+ * and the expensive payload CRC runs last. All multi-byte reads go through
+ * explicit little-endian byte loads — no misaligned or aliased direct loads
+ * from the buffer.
  * ============================================================================= */
 
 #include "image_validate.h"
 
 #include "crc32.h"
+
+/* The stock Arduino bootloader's "is there a sketch" test, kept verbatim for
+ * the no-record fallback: the SP word's top byte must be SRAM's (0x20). */
+#define STOCK_SP_REGION_MASK 0xFF000000u
 
 /* -----------------------------------------------------------------------------
  * Private helpers
@@ -68,4 +73,27 @@ image_validate_result_t image_validate(const uint8_t *flash_base)
     }
 
     return IMAGE_VALID;
+}
+
+boot_decision_t boot_decide(const uint8_t *flash_base)
+{
+    const image_validate_result_t result = image_validate(flash_base);
+
+    if (result == IMAGE_VALID) {
+        return BOOT_DECISION_APP;
+    }
+    if (result != IMAGE_ERR_MAGIC && result != IMAGE_ERR_HEADER_CRC) {
+        return BOOT_DECISION_PARK;
+    }
+
+    const uint8_t *pending = flash_base + METADATA_ADDR + IMAGE_PENDING_OFFSET;
+    if (load_le32(&pending[0]) == IMAGE_PENDING_MAGIC &&
+        load_le32(&pending[4]) == (uint32_t)~IMAGE_PENDING_MAGIC) {
+        return BOOT_DECISION_PARK;
+    }
+
+    if ((load_le32(flash_base + APP_BASE) & STOCK_SP_REGION_MASK) == SRAM_BASE) {
+        return BOOT_DECISION_APP;
+    }
+    return BOOT_DECISION_PARK;
 }

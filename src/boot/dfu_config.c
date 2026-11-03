@@ -112,4 +112,9 @@ void dfu_config_can_ids(const uint8_t *blob,
     if (reply_id <= DFU_CONFIG_CAN_ID_MAX) {
         *out_boot_reply_id = reply_id;
     }
+    if (*out_boot_cmd_id == *out_boot_reply_id) {
+        /* The board's replies would arrive on its own command filter. */
+        *out_boot_cmd_id   = (uint16_t)CAN_ID_HOST_TO_BOOT;
+        *out_boot_reply_id = (uint16_t)CAN_ID_BOOT_TO_HOST;
+    }
 }

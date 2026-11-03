@@ -32,7 +32,9 @@
  * Validity (ALL must hold, else fall back): magic matches AND version in {1,2}
  * AND mfr_len <= 32 AND prod_len <= 32 AND the version's crc32 matches. A CAN-ID
  * field that is not a valid 11-bit value (0x000..0x7FF; 0xFFFF/out-of-range =
- * unset) falls back to that ID's compiled default individually.
+ * unset) falls back to that ID's compiled default individually. If the two
+ * resulting IDs are equal, BOTH fall back (a board would hear its own replies
+ * as commands).
  *
  * Owns:         The block layout (v1 and v2, above), its magic, offsets and
  *               validity rules.
@@ -133,7 +135,8 @@ dfu_config_status_t dfu_config_parse(const uint8_t *blob,
  * validated as an 11-bit standard ID (0x000..0x7FF); an absent/invalid block, a
  * v1 block, or an out-of-range ID field yields the compiled defaults
  * (CAN_ID_HOST_TO_BOOT / CAN_ID_BOOT_TO_HOST from boot_config.h), per ID
- * independently. Pure: no hardware access. Split from dfu_config_parse so the
+ * independently; command ID == reply ID yields both defaults. Pure: no
+ * hardware access. Split from dfu_config_parse so the
  * USB-descriptor name path keeps its existing signature.
  *
  * @param blob              Config block (on target: DFU_CONFIG_ADDR).

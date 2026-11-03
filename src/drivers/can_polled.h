@@ -8,12 +8,16 @@
  * Owns:         CAN0 and its pins D4 = P103 = CTX0 (TX), D5 = P102 = CRX0
  *               (RX), from can_polled_init() until can_polled_deinit().
  *               Enables the DWT cycle counter as its time base and leaves it
- *               running (the driver never uses board_millis()).
+ *               running (the driver never uses board_millis()). Its enables,
+ *               DEMCR.TRCENA and DWT_CTRL.CYCCNTENA, are reset only by a
+ *               power-on reset, not by NVIC_SystemReset(): they stay set
+ *               across the bootloader's resets and into the application.
  * Not here:     The CAN Update Protocol (can_update.h); the CAN service loop
  *               (main.c).
  * Invariants:   CAN clock source is PCLKB, which must run at 24 MHz (board
  *               default: HOCO 48 MHz, PCLKA 48 / PCLKB 24, ratio 2:1 as
- *               required for CAN on this part).
+ *               required for CAN on this part), and the timeouts assume
+ *               ICLK = 48 MHz; main.c _Static_asserts the BSP clock config.
  *               Bit timing: 16 tq/bit, TSEG1 11, TSEG2 4, SJW 4 tq, sample
  *               point 75 %. By the ISO 11898-1 rule each node's clock may
  *               then deviate by min(SJW / (20 * 16), TSEG2 / (2 * (13 * 16 -
@@ -72,7 +76,8 @@ typedef enum {
  * rx_filter_id are received (4-deep hardware RX FIFO, mailboxes 28–31). */
 can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id);
 
-/* Non-blocking, except for the forced re-init after a 1 s bus-off. Returns
+/* Non-blocking, except for the forced re-init after a 1 s bus-off (three
+ * mode switches, at most ~30 ms). Returns
  * CAN_POLLED_NO_DATA when the RX FIFO is empty, CAN_POLLED_BUS_OFF or
  * CAN_POLLED_RECOVERY_FAILED as documented above.
  * On CAN_POLLED_OK: *id = 11-bit standard ID, *dlc = 0..8, data[0..*dlc-1]
@@ -85,7 +90,10 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
  * completion flag cleared (at most 2 ms). On the 200 ms bound the request is
  * aborted the same way and CAN_POLLED_TIMEOUT returned. A bus-off during the
  * wait requests the abort and returns CAN_POLLED_BUS_OFF, so the frame is
- * not sent stale after the recovery. Worst-case blocking: about 204 ms. */
+ * not sent stale after the recovery. Worst-case blocking: about 204 ms
+ * (2 ms release + 200 ms transmit + 2 ms abort), or about 234 ms when the
+ * bus-off gate runs the forced re-init first (three mode switches of up to
+ * 10 ms each). */
 can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 
 /* Put CAN0 in reset mode, restore P102/P103 PFS to reset state (GPIO

@@ -84,6 +84,12 @@ _Static_assert(1UL + CAN_TSEG1_TQ + CAN_TSEG2_TQ == CAN_TQ_PER_BIT,
 _Static_assert((CAN_TSEG1_TQ > CAN_TSEG2_TQ) && (CAN_TSEG2_TQ >= CAN_SJW_TQ) &&
                (CAN_TSEG1_TQ <= 16UL) && (CAN_TSEG2_TQ <= 8UL) && (CAN_SJW_TQ <= 4UL),
                "BCR segment fields out of range");
+/* Lower bounds of the same fields, per the RX/RA CAN module's bit timing
+ * rules (HW manual "Bit Timing Setting", not in this repo; FSP checks only
+ * the ordering above): TSEG1 4..16 tq, TSEG2 2..8 tq, 8..25 tq per bit. */
+_Static_assert((CAN_TSEG1_TQ >= 4UL) && (CAN_TSEG2_TQ >= 2UL) && (CAN_SJW_TQ >= 1UL) &&
+               (CAN_TQ_PER_BIT >= 8UL) && (CAN_TQ_PER_BIT <= 25UL),
+               "bit timing below the CAN module's minimums");
 _Static_assert((CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 250000UL) == 0UL) &&
                (CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 500000UL) == 0UL),
                "PCLKB must divide exactly into 250k and 500k bit/s");

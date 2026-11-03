@@ -203,6 +203,14 @@ void boot5(uint32_t address) {
 _Static_assert(SKETCH_FLASH_OFFSET == APP_BASE,
                "memory_map.h APP_BASE must match the stock SKETCH_FLASH_OFFSET");
 
+/* drivers/can_polled.c derives its bit timing from PCLKB = 24 MHz and its
+ * timeouts from ICLK = 48 MHz (can_polled.h): pin the BSP clock tree. */
+_Static_assert(BSP_CFG_CLOCK_SOURCE == BSP_CLOCKS_SOURCE_CLOCK_HOCO && BSP_HOCO_HZ == 48000000,
+               "CAN driver assumes the 48 MHz HOCO as the system clock");
+_Static_assert(BSP_CFG_ICLK_DIV == BSP_CLOCKS_SYS_CLOCK_DIV_1 &&
+               BSP_CFG_PCLKB_DIV == BSP_CLOCKS_SYS_CLOCK_DIV_2,
+               "CAN driver assumes ICLK = 48 MHz and PCLKB = 24 MHz");
+
 static void set_can_update_request(uint32_t data)
 {
   R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_PRC1_UNLOCK;

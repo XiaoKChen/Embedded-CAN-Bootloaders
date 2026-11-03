@@ -357,11 +357,12 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   short, and nothing may reach `0x3F800`; otherwise it fails with
   `errADDRESS` (e.g. `dfu-util -t 63` is rejected at its second block).
   Every erase and write is checked and read back (`errERASE` / `errWRITE`).
-  At manifest the bootloader programs the buffered tail and writes the
-  metadata record only if the CRC32 read back from flash equals the CRC32 of
-  the bytes received (`errVERIFY`) and the SP/entry words are valid
-  (`errFIRMWARE`), so DFU-uploaded sketches are CRC-validated on later boots
-  too (research §5.2, risk R7). Any failure leaves the marker: the board
+  At manifest the bootloader programs the buffered tail and commits only if
+  the CRC32 of the image (its first 8 bytes from RAM, see the vector unit
+  below, the rest read back from flash) equals the CRC32 of the bytes
+  received (`errVERIFY`) and the SP/entry words are valid (`errFIRMWARE`),
+  so DFU-uploaded sketches are CRC-validated on later boots too (research
+  §5.2, risk R7). Any failure leaves the marker: the board
   parks until an update completes. The flash driver stays open after a
   manifest, so a CAN or DFU update can follow without a reset. Uploads
   (`dfu-util -U`) stop at the end of the app slot.
@@ -375,10 +376,18 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   - Slot bootable now (valid record, or no record and a stock-valid SP
     word): erase the metadata block, program the marker.
   - Slot not bootable (a record that fails a check, a torn record, an erased
-    slot): erase the app's first block at `0x4000` first, then as above.
+    slot): erase the app's first block at `0x4000` first and confirm its
+    first word reads `0xFFFFFFFF`, then as above.
 
   The record at offset 0 is programmed last, into the same block without a
-  second erase: CAN in `VERIFY`, DFU at manifest. If the marker cannot be
+  second erase: CAN in `VERIFY`, DFU at manifest.
+- **Deferred vector unit.** Both update paths program the app's first block
+  from offset 8 and keep its first 8 bytes (initial SP + reset vector) in
+  RAM. They are programmed (and read back) only at the commit, after the CRC
+  and the SP/entry checks pass and right before the record. Until then the
+  SP word at `0x4000` reads erased, so a half-written image fails the stock
+  SP-word check even if the marker were lost (e.g. a marker program cut by
+  power loss that later reads erased). If the marker cannot be
   put in place, the update is refused (CAN `ERASE` NAK, DFU `errERASE`)
   with the rest of the app slot untouched.
 - Power loss at any instant never bricks the board, and the bootloader
@@ -389,5 +398,8 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     first block was erased first, so the SP fallback finds no SP word).
   - From the marker until the record is written, the board parks in the
     bootloader. It never boots a half-written image, also when the update
-    is retried after an interruption.
+    is retried after an interruption: the SP word stays erased until the
+    image has passed its CRC.
+  - During the commit (vector unit, then record), the board parks: the
+    marker is set and the record is absent or torn.
   - Once the record is written, the new, CRC-validated image boots.

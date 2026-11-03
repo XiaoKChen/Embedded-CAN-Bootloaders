@@ -280,7 +280,10 @@ static bool flash_mark_update_pending(void)
   if (plan == UPDATE_START_MARKER_IN_PLACE) {
     return true;
   }
-  if (plan == UPDATE_START_ERASE_APP_THEN_METADATA && !flash_erase_block(APP_BASE)) {
+  /* The SP-word fallback reads only the first word: it must read erased
+   * before the marker's block may be erased. */
+  if (plan == UPDATE_START_ERASE_APP_THEN_METADATA &&
+      (!flash_erase_block(APP_BASE) || *(const volatile uint32_t *) APP_BASE != 0xFFFFFFFFu)) {
     return false;
   }
   if (!flash_erase_block(METADATA_ADDR)) {
@@ -839,11 +842,14 @@ uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state)
  * full-size (CFG_TUD_DFU_XFER_BUFSIZE) except the last, so dfu_received_len
  * alone says where every byte goes and aucbuffer fills to exactly one flash
  * block; nothing may reach METADATA_ADDR. A flash block is erased on its
- * first byte and programmed + read back when full. The manifest programs
- * the buffered tail and writes the record only if the CRC read back from
- * flash equals the running CRC of the bytes received and the vectors pass
- * image_check_bounds. Any failure ends the session with a DFU error status
- * and leaves the marker, so the board parks until an update completes. */
+ * first byte and programmed + read back when full; the APP_BASE block skips
+ * its vector unit (SP + reset vector), which waits in dfu_vector_unit. The
+ * manifest programs the buffered tail, then commits only if
+ * image_check_staged passes (the running CRC of the bytes received equals
+ * the CRC of the vector unit followed by flash, and the vectors are in
+ * bounds): the vector unit first, then the record. Any failure ends the
+ * session with a DFU error status and leaves the marker, so the board parks
+ * until an update completes; the SP word stays erased until the commit. */
 _Static_assert(PROGRAM_BLOCK_SIZE == FLASH_BLOCK_SIZE,
                "aucbuffer must hold exactly one code flash block");
 _Static_assert(PROGRAM_BLOCK_SIZE % CFG_TUD_DFU_XFER_BUFSIZE == 0,
@@ -851,6 +857,19 @@ _Static_assert(PROGRAM_BLOCK_SIZE % CFG_TUD_DFU_XFER_BUFSIZE == 0,
 
 static uint32_t dfu_received_len;
 static uint32_t dfu_received_crc;  /* crc32_ieee_update over the bytes received */
+static _Alignas(FLASH_WRITE_UNIT) uint8_t dfu_vector_unit[IMAGE_VECTOR_UNIT_SIZE];
+
+/* Program `len` buffered bytes of the block at block_addr. The APP_BASE
+ * block leaves its vector unit erased and keeps it for dfu_commit_image. */
+static bool dfu_program_block(uint32_t block_addr, uint32_t len)
+{
+  uint32_t skip = 0;
+  if (block_addr == APP_BASE) {
+    memcpy(dfu_vector_unit, aucbuffer, IMAGE_VECTOR_UNIT_SIZE);
+    skip = IMAGE_VECTOR_UNIT_SIZE;
+  }
+  return len == skip || can_flash_program(block_addr + skip, &aucbuffer[skip], len - skip);
+}
 
 static void dfu_session_fail(uint8_t status)
 {
@@ -895,15 +914,15 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
   memcpy(&aucbuffer[fill], data, length);
   dfu_received_len += length;
   dfu_received_crc = crc32_ieee_update(dfu_received_crc, data, length);
-  if (fill + length == sizeof(aucbuffer) &&
-      !can_flash_program(block_addr, aucbuffer, sizeof(aucbuffer))) {
+  if (fill + length == sizeof(aucbuffer) && !dfu_program_block(block_addr, sizeof(aucbuffer))) {
     dfu_session_fail(DFU_STATUS_ERR_WRITE);
     return;
   }
   tud_dfu_finish_flashing(DFU_STATUS_OK);
 }
 
-/* Program the buffered tail, check what flash holds, write the record. */
+/* Program the buffered tail, check what flash holds, then commit: the
+ * vector unit, then the record. */
 static uint8_t dfu_commit_image(void)
 {
   if (!dfu_owns_flash) {
@@ -913,16 +932,21 @@ static uint8_t dfu_commit_image(void)
   if (fill != 0) {
     uint32_t padded = (fill + FLASH_WRITE_UNIT - 1u) & ~(FLASH_WRITE_UNIT - 1u);
     memset(&aucbuffer[fill], 0xFF, padded - fill);
-    if (!can_flash_program(APP_BASE + dfu_received_len - fill, aucbuffer, padded)) {
+    if (!dfu_program_block(APP_BASE + dfu_received_len - fill, padded)) {
       return DFU_STATUS_ERR_WRITE;
     }
   }
-  const uint8_t *app = (const uint8_t *) APP_BASE;
-  if (crc32_ieee(app, dfu_received_len) != dfu_received_crc) {
+  image_validate_result_t staged = image_check_staged(dfu_vector_unit, (const uint8_t *) APP_BASE,
+                                                      dfu_received_len, dfu_received_crc);
+  if (staged == IMAGE_ERR_PAYLOAD_CRC) {
     return DFU_STATUS_ERR_VERIFY;
   }
-  if (image_check_bounds(app, dfu_received_len) != IMAGE_VALID) {
+  if (staged != IMAGE_VALID) {
     return DFU_STATUS_ERR_FIRMWARE;
+  }
+  /* Power loss from here: marker set, no record -> parks (can_update.h). */
+  if (!can_flash_program(APP_BASE, dfu_vector_unit, IMAGE_VECTOR_UNIT_SIZE)) {
+    return DFU_STATUS_ERR_WRITE;
   }
   _Alignas(FLASH_WRITE_UNIT) uint8_t meta[IMAGE_META_SIZE];
   image_meta_encode(meta, dfu_received_len, dfu_received_crc);

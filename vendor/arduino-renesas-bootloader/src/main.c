@@ -61,16 +61,27 @@ static void can_mark_down(void)
 }
 #endif
 
-_Alignas(8) uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];  /* flash program source: one 8 B write unit */
+/* Flash program source of the DFU download: one whole code flash block
+ * (PROGRAM_BLOCK_SIZE), aligned to the 8 B write unit. */
+_Alignas(8) uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];
+#ifndef CAN_LOADER
 uint16_t auclen = 0;
 uint16_t auc_block_num = 0;
+#endif
 
+/* Only called for data-flash background operations (data_flash_bgo below is
+ * false), so the CAN_LOADER build, whose DFU session tracks its own length,
+ * keeps it a no-op. */
 void bgo_callback(flash_callback_args_t *p_args)
 {
+#ifdef CAN_LOADER
+  (void) p_args;
+#else
   if (p_args->event == FLASH_EVENT_WRITE_COMPLETE && auclen > 0) {
     tud_dfu_finish_flashing(DFU_STATUS_OK);
     auclen = 0;
   }
+#endif
 }
 
 void flash_ready_interrupt_handler();

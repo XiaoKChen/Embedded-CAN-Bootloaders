@@ -1,7 +1,7 @@
 # Arduino UNO R4 Minima — CAN + DFU Bootloader
 
 A fork of Arduino's stock TinyUSB **USB DFU** bootloader for the UNO R4 Minima
-(Renesas **RA4M1**, Cortex-M4F), extended with three added features while keeping
+(Renesas **RA4M1**, Cortex-M4F), extended with four added features while keeping
 the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
 
 1. **Flash-over-CAN** — program an application `.bin` over classic CAN 2.0B on
@@ -17,6 +17,13 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
    Config reads are guarded fail-safe: if data flash isn't readable (e.g.
    after a software reset leaves the FACI in a bad state), the board still
    parks and serves CAN on the default IDs rather than faulting.
+4. **Recovery from an interrupted flash** — if a CAN or USB DFU update stops
+   partway (cable pulled, host crash, power loss), the board comes up parked
+   in the bootloader with USB DFU and CAN both running, instead of booting
+   the half-written image or hanging. An "update in progress" marker is
+   written before the old image is erased, and CAN update mode resets after
+   15 s without an update frame (before ERASE the old app boots again).
+   Bench-tested on the ODU Superheat (PR #33).
 
 > Full project map: **[PROJECT.md](PROJECT.md)**. Build & flash guide:
 > **[docs/build.md](docs/build.md)**. Design/decision record:
@@ -39,6 +46,11 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
   at 0, no bus-idle ever seen. Harmless on boards that don't use that rail.
 - **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (HOCO-clocked; prefer
   250 k for clock-tolerance margin).
+- **Status LED (D13 / P111):** blinks while the board is parked in the
+  bootloader: every 250 ms with no USB host (the usual state on a CAN-only
+  node), 1 s when USB is mounted, 2.5 s when suspended. It is a plain GPIO
+  blink, not the stock bootloader's fade (that saves ~680 B of the 16 KB
+  region). The CAN-only update mode does not drive the LED.
 
 ## CAN Update Protocol v1
 
@@ -51,7 +63,8 @@ HELLO → SIZE → ERASE → DATA windows → VERIFY → GO
 
 Each 2 KB flash block is one ACK-paced DATA window (342 frames); the image is
 CRC32-validated (IEEE/zlib) and a metadata block is written last so power loss
-never bricks the device. `INFO (0x07)` returns the board's product name so a
+never bricks the device: an update interrupted after `ERASE` leaves the board
+parked in DFU + CAN (see feature 4 and `docs/build.md`). `INFO (0x07)` returns the board's product name so a
 parked board can be identified over CAN. The pure-logic engine
 (`src/boot/can_update.c`) is host-tested; `tools/can-flash/` is the host side.
 
@@ -116,7 +129,9 @@ Builds are automated by GitHub Actions
 - **Pushing a `c-cpp-ra4m1-v*` tag** additionally publishes a GitHub Release with the
   version-named `.hex`/`.bin`/`.elf` (the prefix is stripped, so tag
   `c-cpp-ra4m1-v1.1.0` yields `bootloader-uno_r4-v1.1.0.*`) and auto-generated
-  notes. Releases up to `v1.0.2` used the old plain `v*` tags.
+  notes. The release is titled `c-cpp/ra4m1 vX.Y.Z`: every line in this repo
+  names its releases `<lang>/<target> vX.Y.Z` after its `version/<lang>/<target>`
+  branch. Releases up to `v1.0.2` used the old plain `v*` tags.
 
 The release tag is the bootloader's only version number. Do not bump the DFU
 descriptor's `bcdDevice` (`usb_descriptors.c`) to match it: Arduino's Windows

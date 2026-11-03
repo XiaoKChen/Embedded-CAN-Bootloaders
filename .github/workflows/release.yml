@@ -20,6 +20,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.collect.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -85,5 +87,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Repo-wide release naming: '<lang>/<target> vX.Y.Z', the
+          # version/<lang>/<target> branch the release is built from.
+          name: c-cpp/ra4m1 ${{ needs.build.outputs.version }}
           files: dist/*
           generate_release_notes: true

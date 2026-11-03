@@ -32,6 +32,12 @@
  * read from a config block in RA4M1 data flash. Independent of CAN_LOADER. */
 #include "memory_map.h"
 #include "dfu_config.h"
+
+#ifdef CAN_LOADER
+/* main.c's data-flash read gate: true only once DFU_CONFIG_ADDR is provably
+ * readable. A CAN_LOADER=0 build opens flash the stock way and reads as before. */
+extern bool dfu_config_readable;
+#endif
 #endif
 
 //--------------------------------------------------------------------+
@@ -152,10 +158,9 @@ static uint16_t _desc_str[128];
 #ifdef DFU_CUSTOM_NAME
 // Widen the flash-provisioned string for manufacturer (index 1) / product
 // (index 2) into _desc_str[1..] as UTF-16LE and report its length. Returns
-// false when no valid config block is present, so the caller falls back to the
-// compiled default. Data flash is memory-mapped and made readable by
-// R_FLASH_LP_Open() (DFLCTL.DFLEN = 1), which main() calls before run_bootloader()
-// -> tud_init(), so the block is readable by the time enumeration reaches here.
+// false when no valid config block is present, or (CAN_LOADER) when main.c
+// could not prove the data-flash window readable, so the caller falls back to
+// the compiled default. An unreadable window can bus-fault into a lockup.
 static bool dfu_custom_string(uint8_t index, size_t* out_len)
 {
   const char* mfr;
@@ -163,6 +168,11 @@ static bool dfu_custom_string(uint8_t index, size_t* out_len)
   uint8_t mfr_len;
   uint8_t prod_len;
 
+#ifdef CAN_LOADER
+  if (!dfu_config_readable) {
+    return false;
+  }
+#endif
   if (dfu_config_parse((const uint8_t*) DFU_CONFIG_ADDR,
                        &mfr, &mfr_len, &prod, &prod_len) != DFU_CFG_OK) {
     return false;

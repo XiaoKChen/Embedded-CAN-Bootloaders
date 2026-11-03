@@ -192,7 +192,7 @@ static void set_can_update_request(uint32_t data)
  * always keeps serving CAN, never a dead board). */
 #define DATA_FLASH_TDSTOP_SETTLE_US  6u
 
-static bool dfu_config_readable = false;
+bool dfu_config_readable = false;  /* also read by usb_descriptors.c */
 
 #ifdef CAN_DIAG
 /* ---- CAN_DIAG bench instrumentation (throwaway) --------------------------

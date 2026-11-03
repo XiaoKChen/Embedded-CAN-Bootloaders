@@ -50,7 +50,7 @@
 static bool can_initialized = false;
 #endif
 
-uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];
+_Alignas(8) uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];  /* flash program source: one 8 B write unit */
 uint16_t auclen = 0;
 uint16_t auc_block_num = 0;
 
@@ -1080,6 +1080,9 @@ void tud_mount_cb(void)
 void tud_umount_cb(void)
 {
   blink_interval_ms = BLINK_NOT_MOUNTED;
+#ifdef CAN_LOADER
+  dfu_owns_flash = false;  /* a download cut off by unplug/reset never completes */
+#endif
 }
 
 // Invoked when usb bus is suspended
@@ -1112,41 +1115,143 @@ uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state)
   return 0;
 }
 
+#ifdef CAN_LOADER
+/* ---- USB DFU download into the app slot -----------------------------------
+ * Both alt settings target the app slot, as in the stock callbacks below.
+ * A session starts only at block 0, which takes the flash owner latch and
+ * puts the update-in-progress marker in place (flash_mark_update_pending)
+ * before any app byte changes. Blocks must then arrive in order and
+ * full-size (CFG_TUD_DFU_XFER_BUFSIZE) except the last, so dfu_received_len
+ * alone says where every byte goes and aucbuffer fills to exactly one flash
+ * block; nothing may reach METADATA_ADDR. A flash block is erased on its
+ * first byte and programmed + read back when full. The manifest programs
+ * the buffered tail and writes the record only if the CRC read back from
+ * flash equals the running CRC of the bytes received and the vectors pass
+ * image_check_bounds. Any failure ends the session with a DFU error status
+ * and leaves the marker, so the board parks until an update completes. */
+_Static_assert(PROGRAM_BLOCK_SIZE == FLASH_BLOCK_SIZE,
+               "aucbuffer must hold exactly one code flash block");
+_Static_assert(PROGRAM_BLOCK_SIZE % CFG_TUD_DFU_XFER_BUFSIZE == 0,
+               "full-size DFU blocks must tile a flash block");
+
+static uint32_t dfu_received_len;
+static uint32_t dfu_received_crc;  /* crc32_ieee_update over the bytes received */
+
+static void dfu_session_fail(uint8_t status)
+{
+  dfu_owns_flash = false;
+  tud_dfu_finish_flashing(status);
+}
+
+// Invoked when received DFU_DNLOAD (wLength>0) following by DFU_GETSTATUS (state=DFU_DNBUSY) requests
+void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, uint16_t length)
+{
+  (void) alt;
+
+  if (block_num == 0) {
+    dfu_owns_flash = false;  /* block 0 always starts a new session */
+    if (can_update_owns_flash(&can_state)) {
+      dfu_session_fail(DFU_STATUS_ERR_WRITE);  /* a CAN session holds flash */
+      return;
+    }
+    if (!flash_mark_update_pending()) {
+      dfu_session_fail(DFU_STATUS_ERR_ERASE);  /* app slot untouched */
+      return;
+    }
+    dfu_received_len = 0;
+    dfu_received_crc = 0;
+    dfu_owns_flash = true;
+  }
+
+  uint32_t fill = dfu_received_len % PROGRAM_BLOCK_SIZE;
+  if (!dfu_owns_flash ||
+      dfu_received_len != (uint32_t) block_num * CFG_TUD_DFU_XFER_BUFSIZE ||
+      fill + length > sizeof(aucbuffer) ||
+      length > APP_SLOT_SIZE - dfu_received_len) {
+    dfu_session_fail(DFU_STATUS_ERR_ADDRESS);  /* out of order, after a short block, or too large */
+    return;
+  }
+
+  uint32_t block_addr = APP_BASE + dfu_received_len - fill;
+  if (fill == 0 && !flash_erase_block(block_addr)) {
+    dfu_session_fail(DFU_STATUS_ERR_ERASE);
+    return;
+  }
+  memcpy(&aucbuffer[fill], data, length);
+  dfu_received_len += length;
+  dfu_received_crc = crc32_ieee_update(dfu_received_crc, data, length);
+  if (fill + length == sizeof(aucbuffer) &&
+      !can_flash_program(block_addr, aucbuffer, sizeof(aucbuffer))) {
+    dfu_session_fail(DFU_STATUS_ERR_WRITE);
+    return;
+  }
+  tud_dfu_finish_flashing(DFU_STATUS_OK);
+}
+
+/* Program the buffered tail, check what flash holds, write the record. */
+static uint8_t dfu_commit_image(void)
+{
+  if (!dfu_owns_flash) {
+    return DFU_STATUS_ERR_NOTDONE;  /* no download, or it already failed */
+  }
+  uint32_t fill = dfu_received_len % PROGRAM_BLOCK_SIZE;
+  if (fill != 0) {
+    uint32_t padded = (fill + FLASH_WRITE_UNIT - 1u) & ~(FLASH_WRITE_UNIT - 1u);
+    memset(&aucbuffer[fill], 0xFF, padded - fill);
+    if (!can_flash_program(APP_BASE + dfu_received_len - fill, aucbuffer, padded)) {
+      return DFU_STATUS_ERR_WRITE;
+    }
+  }
+  const uint8_t *app = (const uint8_t *) APP_BASE;
+  if (crc32_ieee(app, dfu_received_len) != dfu_received_crc) {
+    return DFU_STATUS_ERR_VERIFY;
+  }
+  if (image_check_bounds(app, dfu_received_len) != IMAGE_VALID) {
+    return DFU_STATUS_ERR_FIRMWARE;
+  }
+  _Alignas(FLASH_WRITE_UNIT) uint8_t meta[IMAGE_META_SIZE];
+  image_meta_encode(meta, dfu_received_len, dfu_received_crc);
+  return can_flash_program(METADATA_ADDR, meta, sizeof(meta)) ? DFU_STATUS_OK
+                                                               : DFU_STATUS_ERR_WRITE;
+}
+
+// Invoked when download process is complete, received DFU_DNLOAD (wLength=0) following by DFU_GETSTATUS (state=Manifest)
+void tud_dfu_manifest_cb(uint8_t alt)
+{
+  (void) alt;
+  uint8_t status = dfu_commit_image();
+  dfu_owns_flash = false;
+  /* No R_FLASH_LP_Close(): the descriptor is manifestation-tolerant, so the
+   * board stays parked here, and later CAN or DFU updates need the driver. */
+  tud_dfu_finish_flashing(status);
+}
+
+// Invoked when received DFU_UPLOAD request: reads stop at the end of the app slot
+uint16_t tud_dfu_upload_cb(uint8_t alt, uint16_t block_num, uint8_t* data, uint16_t length)
+{
+  (void) alt;
+  uint32_t offset = (uint32_t) block_num * length;
+  if (offset >= APP_SLOT_SIZE) {
+    return 0;
+  }
+  uint32_t count = (APP_SLOT_SIZE - offset < length) ? (APP_SLOT_SIZE - offset) : length;
+  memcpy(data, (const uint8_t *) APP_BASE + offset, count);
+  return (uint16_t) count;
+}
+
+// Invoked when the Host has terminated a download or upload transfer
+void tud_dfu_abort_cb(uint8_t alt)
+{
+  (void) alt;
+  dfu_owns_flash = false;  /* the marker stays: an unfinished download parks */
+}
+
+#else /* stock callbacks */
+
 #ifndef ZEPHYR_SKETCH_FLASH_OFFSET
 #define ZEPHYR_SKETCH_FLASH_OFFSET SKETCH_FLASH_OFFSET
 #endif
 static uint32_t _offset;
-
-#ifdef CAN_LOADER
-static uint32_t dfu_received_len;
-
-/* Research §5.2 / risk R7: stock DFU uploads carry no CRC. After a completed
- * DFU download, compute CRC32 over the received image and write the metadata
- * record, so DFU-uploaded sketches are CRC-validated on later boots. Block 0
- * of the download already erased the metadata block and programmed the
- * update-in-progress marker (tud_dfu_download_cb); offset 0 is still erased,
- * so the record is programmed WITHOUT a second erase. A failed record write
- * leaves the marker alone: the board parks in the bootloader (fail closed). */
-static void dfu_write_image_metadata(void)
-{
-  /* An oversized sketch (> APP_SLOT_SIZE) already overwrote the metadata
-   * block, marker included; leave its bytes alone (research §5.1: such
-   * images are simply unvalidated and take the SP-word fallback). */
-  if (dfu_received_len == 0 || dfu_received_len > APP_SLOT_SIZE) {
-    return;
-  }
-
-  image_meta_t meta = {
-    .magic        = IMAGE_META_MAGIC,
-    .image_size   = dfu_received_len,
-    .image_crc32  = crc32_ieee((const uint8_t *) APP_BASE, dfu_received_len),
-    .header_crc32 = 0,
-  };
-  meta.header_crc32 = crc32_ieee((const uint8_t *) &meta, IMAGE_META_CRC_COVERAGE);
-
-  (void) can_flash_program(METADATA_ADDR, (const uint8_t *) &meta, sizeof(meta));
-}
-#endif
 
 #if BSP_FEATURE_FLASH_HP_VERSION
 int flash_write_block() {
@@ -1167,26 +1272,6 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
 {
   _offset = alt == 0 ? SKETCH_FLASH_OFFSET : ZEPHYR_SKETCH_FLASH_OFFSET;
   auc_block_num = block_num;
-
-#ifdef CAN_LOADER
-  if (block_num == 0) {
-    dfu_received_len = 0;
-    /* A CAN session past SIZE owns flash: refuse rather than interleave. */
-    if (can_update_owns_flash(&can_state)) {
-      tud_dfu_finish_flashing(DFU_STATUS_ERR_WRITE);
-      return;
-    }
-    /* Before the first app erase below: from here on an interrupted
-     * download parks in the bootloader instead of booting a partial sketch.
-     * If the marker cannot be set, abort with the app slot untouched. */
-    if (!flash_mark_update_pending()) {
-      tud_dfu_finish_flashing(DFU_STATUS_ERR_ERASE);
-      return;
-    }
-    dfu_owns_flash = true;
-  }
-  dfu_received_len += length;
-#endif
 
   //printf("\r\nReceived Alt %u BlockNum %u of length %u\r\n", alt, block_num, length);
 
@@ -1228,11 +1313,6 @@ void tud_dfu_manifest_cb(uint8_t alt)
   flash_write_block();
   __enable_irq();
 
-#ifdef CAN_LOADER
-  dfu_write_image_metadata();
-  dfu_owns_flash = false;
-#endif
-
   // flashing op for manifest is complete without error
   // Application can perform checksum, should it fail, use appropriate status such as errVERIFY.
   tud_dfu_finish_flashing(DFU_STATUS_OK);
@@ -1264,10 +1344,8 @@ void tud_dfu_abort_cb(uint8_t alt)
 {
   (void) alt;
   //printf("Host aborted transfer\r\n");
-#ifdef CAN_LOADER
-  dfu_owns_flash = false;
-#endif
 }
+#endif /* CAN_LOADER */
 
 // Invoked when a DFU_DETACH request is received
 void tud_dfu_detach_cb(void)

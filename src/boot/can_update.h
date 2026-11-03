@@ -24,9 +24,10 @@
  *   Accepted frames (can_update_accepts_frame): on the command ID, DLC 8,
  *   command byte 0x01..0x07, and every unused byte 0xFF (HELLO bytes 2..7;
  *   SIZE/VERIFY bytes 1, 6, 7; ERASE/GO/INFO bytes 1..7). DATA carries
- *   payload, so it is accepted only while a transfer is in progress: outside
- *   one, a 0x03-led frame is a 3-byte ISO-TP single frame from the app
- *   protocol, not DATA. Anything else, including the 0x79 reply
+ *   payload, so it is accepted only while a transfer is in progress, or
+ *   once it is complete (TRANSFERRED) with a seq of the last window (see
+ *   Host retries): otherwise a 0x03-led frame is a 3-byte ISO-TP single
+ *   frame from the app protocol, not DATA. Anything else, including the 0x79 reply
  *   marker and ISO-TP traffic sharing the command ID, gets NO reply. Every
  *   known host (tools/can-flash, the Airform flasher, the ESP32 brain's
  *   can_flash_host) pads this way.
@@ -52,7 +53,12 @@
  * Host retries: a host resends SIZE/ERASE/VERIFY when the ACK is lost, so an
  * exact repeat of the previous command is ACKed again without redoing it:
  * SIZE with the same size while SIZED, ERASE while TRANSFER before any DATA,
- * VERIFY with the committed CRC while VERIFIED. A DATA or VERIFY flash
+ * VERIFY with the committed CRC while VERIFIED. A host resends a DATA window
+ * whose ACK was lost; for the final window (phase TRANSFERRED) nothing is
+ * programmed again: its frames are accepted silently and the final-seq frame
+ * is re-ACKed (arg = final seq). For a full 342-frame final window the final
+ * seq also occurs 256 frames earlier, so the re-ACK comes at that frame; the
+ * host then simply moves on to VERIFY. A DATA or VERIFY flash
  * failure (err 0x02) drops the session to IDLE: the slot is no longer known
  * to be erased, so the host must restart from HELLO.
  *
@@ -212,7 +218,8 @@ typedef struct {
     uint32_t block_index;          /* next/current 2048-byte block             */
     uint32_t block_fill;           /* bytes buffered for the current block     */
     uint8_t  expected_seq;         /* seq of the next DATA frame               */
-    uint8_t  window_start_seq;     /* first seq of the current window          */
+    uint8_t  window_start_seq;     /* first seq of the current window (the
+                                      last one once TRANSFERRED)               */
 } can_update_state_t;
 
 /* -----------------------------------------------------------------------------

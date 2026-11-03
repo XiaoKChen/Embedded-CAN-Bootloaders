@@ -11,7 +11,8 @@
  *               writes part of its data first) dropping the session to IDLE,
  *               final-short-block 0xFF padding, frame filtering (DLC, command
  *               range, 0xFF padding, ISO-TP-like app traffic: no reply),
- *               re-ACKs of exact SIZE/ERASE/VERIFY repeats, the VERIFY vector
+ *               re-ACKs of exact SIZE/ERASE/VERIFY repeats and of a resent
+ *               final DATA window (nothing reprogrammed), the VERIFY vector
  *               check, the deferred vector unit (erased until VERIFY, then
  *               programmed exactly once, before the record), and the flash
  *               lock / ownership seen by USB DFU.
@@ -626,6 +627,49 @@ static void test_repeated_verify_is_reacked_without_rewriting(void)
     TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
 }
 
+/* A lost ACK on the final window: the host resends that window after the
+ * engine has moved to TRANSFERRED. */
+static void test_resent_final_window_is_reacked_without_programming(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    stream_block(FLASH_BLOCK_SIZE);
+    const uint8_t last_window_start = s_seq;
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    const uint8_t final_seq = (uint8_t)(s_seq - 1u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_TRANSFERRED, s_state.phase);
+
+    /* The whole window again: silent until its final frame, then the same
+     * ACK. The fake's NOR check fails any second program of the block. */
+    const uint32_t last_program_addr = s_last_program_addr;
+    s_seq = last_window_start;
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(last_program_addr, s_last_program_addr);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_TRANSFERRED, s_state.phase);
+
+    /* DATA outside the last window is not a protocol frame: no reply. */
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = (uint8_t)(last_window_start - 1u);  /* the previous window's */
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, d));
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = (uint8_t)(final_seq + 1u);
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, d));
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = final_seq;
+    TEST_ASSERT_TRUE(send_frame(d));
+    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_OK, final_seq);
+
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+
+    /* Once VERIFIED, DATA is app traffic again. */
+    TEST_ASSERT_FALSE(send_frame(d));
+}
+
 /* -----------------------------------------------------------------------------
  * VERIFY commit checks and failures
  * ----------------------------------------------------------------------------- */
@@ -848,6 +892,7 @@ int main(void)
     RUN_TEST(test_repeated_size_is_reacked);
     RUN_TEST(test_repeated_erase_is_reacked_without_erasing);
     RUN_TEST(test_repeated_verify_is_reacked_without_rewriting);
+    RUN_TEST(test_resent_final_window_is_reacked_without_programming);
     RUN_TEST(test_verify_rejects_bad_vectors_even_with_matching_crc);
     RUN_TEST(test_verify_flash_failure_drops_to_idle);
     RUN_TEST(test_verify_record_failure_drops_to_idle_and_restart_recovers);

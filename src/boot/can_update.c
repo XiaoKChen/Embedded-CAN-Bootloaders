@@ -79,6 +79,14 @@ static void discard_window(can_update_state_t *st)
     st->expected_seq   = st->window_start_seq;
 }
 
+/* TRANSFERRED keeps window_start_seq at the last window's first seq and
+ * expected_seq one past the final seq: true for a seq of that window. */
+static bool in_last_window(const can_update_state_t *st, uint8_t seq)
+{
+    return (uint8_t)(seq - st->window_start_seq) <=
+           (uint8_t)(st->expected_seq - 1u - st->window_start_seq);
+}
+
 static void reset_session(can_update_state_t *st)
 {
     st->phase            = CAN_UPDATE_PHASE_IDLE;
@@ -202,10 +210,11 @@ static bool handle_data(can_update_state_t *st, const uint8_t data[8], uint8_t r
     }
 
     st->block_index++;
-    st->block_fill       = 0u;
-    st->window_start_seq = st->expected_seq;
+    st->block_fill = 0u;
     if (image_complete) {
-        st->phase = CAN_UPDATE_PHASE_TRANSFERRED;
+        st->phase = CAN_UPDATE_PHASE_TRANSFERRED;  /* window_start_seq stays */
+    } else {
+        st->window_start_seq = st->expected_seq;
     }
     return make_reply(reply, CAN_UPDATE_CMD_DATA, CAN_UPDATE_OK, seq);
 }
@@ -278,9 +287,12 @@ bool can_update_accepts_frame(const can_update_state_t *st, uint32_t id,
     }
     /* DATA carries payload, so it has no padding to check, and its command
      * byte (0x03) is also how a 3-byte ISO-TP single frame starts. Outside a
-     * transfer it can only be such app traffic: ignore it, so it neither
-     * draws a NAK nor keeps CAN update mode alive. */
-    if (cmd == CAN_UPDATE_CMD_DATA && st->phase != CAN_UPDATE_PHASE_TRANSFER) {
+     * transfer (or the resend of its last window) it can only be such app
+     * traffic: ignore it, so it neither draws a NAK nor keeps CAN update
+     * mode alive. */
+    if (cmd == CAN_UPDATE_CMD_DATA &&
+        !(st->phase == CAN_UPDATE_PHASE_TRANSFER ||
+          (st->phase == CAN_UPDATE_PHASE_TRANSFERRED && in_last_window(st, data[1])))) {
         return false;
     }
     const uint8_t mask = k_fill_mask[cmd - CAN_UPDATE_CMD_HELLO];
@@ -338,7 +350,13 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
         if (st->phase == CAN_UPDATE_PHASE_TRANSFER) {
             return handle_data(st, data, reply_data);
         }
-        break;
+        /* TRANSFERRED (accepts_frame admits only the last window's seqs):
+         * the host resends that window when its ACK was lost. Nothing is
+         * programmed again; its final frame is re-ACKed. */
+        if ((uint8_t)(data[1] + 1u) == st->expected_seq) {
+            return make_reply(reply_data, cmd, CAN_UPDATE_OK, data[1]);
+        }
+        return false;
     case CAN_UPDATE_CMD_VERIFY:
         if (st->phase == CAN_UPDATE_PHASE_TRANSFERRED) {
             return handle_verify(st, data, reply_data);

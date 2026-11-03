@@ -209,8 +209,12 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      PRC1-unlocked) → cleared → CAN-only update mode at 250 kbit/s on
      D4 (CTX0/P103) / D5 (CRX0/P102). External 5 V CAN transceiver required.
      **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (15 s,
-     `src/boot/boot_config.h`) with no frame on the command ID, the board
-     resets. The timer restarts after each handled frame, and 15 s is well
+     `src/boot/boot_config.h`) with no update-protocol frame (command byte
+     `0x01`–`0x07`) on the command ID, the board resets. Other traffic on
+     that ID does not count: a provisioned board's boot command ID equals its
+     app request ID, so the master's periodic app polls (ISO-TP) also arrive
+     there and would otherwise hold a stranded board in CAN-only mode. The
+     timer restarts after each handled update-protocol frame, and 15 s is well
      above the host flasher's ~8 s worst-case retry gap. If the session never
      reached ERASE, the old app boots again. Once ERASE has started, the
      update-in-progress marker parks the board in DFU + CAN. The parked

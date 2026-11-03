@@ -467,8 +467,11 @@ static void can_service_info(void)
 
 /* Poll one frame through the update engine, transmit its reply, and perform
  * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
- * Returns true once a frame on can_cmd_id has been handled (the CAN-only
- * mode's idle timeout restarts on it). */
+ * Returns true once an update-protocol frame (command byte HELLO..INFO) on
+ * can_cmd_id has been handled; the CAN-only mode's idle timeout restarts only
+ * on those. Provisioned boards share can_cmd_id with their app's request ID,
+ * so the master's periodic app polls (ISO-TP, first byte 0x10/0x2x/0x3x) land
+ * here too and must not keep a stranded board in CAN-only mode. */
 static bool can_service_once(void)
 {
   /* Zero-init: out-params are written by the callees before use, but gcc 7
@@ -499,7 +502,8 @@ static bool can_service_once(void)
     can_initialized = false;
     NVIC_SystemReset();   /* clean re-entry through the boot decision */
   }
-  return id == can_cmd_id;
+  return id == can_cmd_id &&
+         data[0] >= CAN_UPDATE_CMD_HELLO && data[0] <= CAN_UPDATE_CMD_INFO;
 }
 
 #ifndef CAN_DIAG
@@ -553,8 +557,8 @@ static void can_xcvr_usb_rail_power_on(void)
 
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
  * through the GO reset above, an external reset, or (production build) the
- * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without a frame on
- * can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
+ * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without an
+ * update-protocol frame on can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
  * ERASE the old app boots again, after ERASE boot_decide's marker check
  * parks it in DFU + CAN. The timebase is board_millis(): board_init()
  * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same

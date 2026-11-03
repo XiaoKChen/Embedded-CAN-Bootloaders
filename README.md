@@ -1,7 +1,7 @@
 # Arduino UNO R4 Minima — CAN + DFU Bootloader
 
 A fork of Arduino's stock TinyUSB **USB DFU** bootloader for the UNO R4 Minima
-(Renesas **RA4M1**, Cortex-M4F), extended with four added features while keeping
+(Renesas **RA4M1**, Cortex-M4F), extended with five added features while keeping
 the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
 
 1. **Flash-over-CAN** — program an application `.bin` over classic CAN 2.0B on
@@ -21,9 +21,16 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
    partway (cable pulled, host crash, power loss), the board comes up parked
    in the bootloader with USB DFU and CAN both running, instead of booting
    the half-written image or hanging. An "update in progress" marker is
-   written before the old image is erased, and CAN update mode resets after
-   15 s without an update frame (before ERASE the old app boots again).
-   Bench-tested on the ODU Superheat (PR #33).
+   written before the old image is erased, the app's first 8 bytes (stack
+   pointer + reset vector) stay erased until the image is committed, and CAN
+   update mode resets after 20 s without an update frame (before ERASE the
+   old app boots again). Bench-tested on the ODU Superheat (PRs #33, #41).
+5. **Checked USB DFU** — DFU downloads run as a checked session: blocks must
+   arrive in order (64 bytes each, except the last), every erase and write is
+   read back, and the image record is written only if the CRC of what was
+   received matches flash. Anything else ends the download with a DFU error
+   status and leaves the board parked. USB DFU and CAN never write flash at
+   the same time.
 
 > Full project map: **[PROJECT.md](PROJECT.md)**. Build & flash guide:
 > **[docs/build.md](docs/build.md)**. Design/decision record:
@@ -44,8 +51,9 @@ the stock USB-DFU upload workflow, USB PID, and memory map unchanged:
   rail. Without this, a board entering CAN mode via the app handoff (where
   USB is never initialized) sits deaf on the bus — operate mode, TEC frozen
   at 0, no bus-idle ever seen. Harmless on boards that don't use that rail.
-- **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (HOCO-clocked; prefer
-  250 k for clock-tolerance margin).
+- **Bus:** classic CAN 2.0B, 11-bit IDs, **250 kbit/s** (500 k also supported).
+  The CAN clock comes from the on-chip HOCO oscillator; the bit timing (16 tq,
+  75 % sample point, SJW 4 tq) tolerates about 0.98 % clock error per node.
 - **Status LED (D13 / P111):** blinks while the board is parked in the
   bootloader: every 250 ms with no USB host (the usual state on a CAN-only
   node), 1 s when USB is mounted, 2.5 s when suspended. It is a plain GPIO
@@ -65,7 +73,14 @@ Each 2 KB flash block is one ACK-paced DATA window (342 frames); the image is
 CRC32-validated (IEEE/zlib) and a metadata block is written last so power loss
 never bricks the device: an update interrupted after `ERASE` leaves the board
 parked in DFU + CAN (see feature 4 and `docs/build.md`). `INFO (0x07)` returns the board's product name so a
-parked board can be identified over CAN. The pure-logic engine
+parked board can be identified over CAN.
+
+The bootloader answers only protocol frames: on its command ID, DLC 8, command
+byte `0x01`–`0x07` and `0xFF` in every unused byte (DATA only during a
+transfer). Other traffic on that ID, such as the app protocol's polls when a
+board's update ID equals its app request ID, gets no reply and does not keep
+CAN update mode alive. A lost ACK is handled by re-ACKing an exact repeat of
+SIZE, ERASE, VERIFY or the final DATA window. The pure-logic engine
 (`src/boot/can_update.c`) is host-tested; `tools/can-flash/` is the host side.
 
 ## Build & Flash
@@ -128,7 +143,7 @@ Builds are automated by GitHub Actions
   the run.
 - **Pushing a `c-cpp-ra4m1-v*` tag** additionally publishes a GitHub Release with the
   version-named `.hex`/`.bin`/`.elf` (the prefix is stripped, so tag
-  `c-cpp-ra4m1-v1.1.0` yields `bootloader-uno_r4-v1.1.0.*`) and auto-generated
+  `c-cpp-ra4m1-v1.2.0` yields `bootloader-uno_r4-v1.2.0.*`) and auto-generated
   notes. The release is titled `c-cpp/ra4m1 vX.Y.Z`: every line in this repo
   names its releases `<lang>/<target> vX.Y.Z` after its `version/<lang>/<target>`
   branch. Releases up to `v1.0.2` used the old plain `v*` tags.
@@ -140,7 +155,7 @@ the bootloader without a driver on Windows (Device Manager code 28).
 
 ```sh
 # Cut a release: tag and push — CI builds and publishes it.
-git tag c-cpp-ra4m1-v1.1.0 && git push origin c-cpp-ra4m1-v1.1.0
+git tag c-cpp-ra4m1-v1.2.0 && git push origin c-cpp-ra4m1-v1.2.0
 ```
 
 The bootloader firmware has no embedded version field; "version" here is the

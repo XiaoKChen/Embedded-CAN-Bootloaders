@@ -280,7 +280,8 @@ static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
  * Power-loss outcomes of every mutation here are enumerated in
  * src/boot/can_update.h; in short: the update-in-progress marker is in
  * place before the app slot is erased (update_start_plan decides what that
- * costs), and the record is written last, so an interruption at any instant
+ * costs), and the image's vector unit and then the record are written last,
+ * after the image's CRC has passed, so an interruption at any instant
  * leaves either the old app intact or the marker parking the device in this
  * bootloader (boot_decide). The bootloader's own 8 flash blocks
  * (0x0000-0x3FFF) are never touched. Shared with the USB DFU download. */
@@ -510,8 +511,9 @@ static void can_service_info(void)
  * CAN-only mode. Neither may a host that only scans with INFO. */
 static bool can_service_once(void)
 {
-  /* Zero-init: out-params are written by the callees before use, but gcc 7
-   * LTO cannot prove it and -Werror=maybe-uninitialized trips otherwise. */
+  /* Zero-init: out-params are written by the callees before use, but gcc
+   * cannot always prove it under LTO, and -Werror=maybe-uninitialized would
+   * trip. */
   uint32_t id = 0;
   uint8_t dlc = 0;
   uint8_t data[8] = {0};
@@ -921,10 +923,12 @@ uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state)
  * Only alt 0 (@CodeFlash) downloads: alt 1 is advertised as @DataFlash, but
  * the stock callbacks below would write the app slot for it, so here it
  * fails with errTARGET before any flash operation. Uploads read the app slot
- * on either alt. A session starts only at block 0, which takes the flash owner latch and
- * puts the update-in-progress marker in place (flash_mark_update_pending)
- * before any app byte changes. Blocks must then arrive in order and
- * full-size (CFG_TUD_DFU_XFER_BUFSIZE) except the last, so dfu_received_len
+ * on either alt. A session starts only at block 0, which takes the flash
+ * owner latch and puts the update-in-progress marker in place
+ * (flash_mark_update_pending) before any app byte changes. Blocks must then
+ * arrive in order and full-size except the last: the descriptor's 64 B
+ * transfer size (CFG_TUD_DFU_XFER_BUFSIZE) is the only one accepted
+ * (dfu-util raises a smaller -t to 64 by itself), so dfu_received_len
  * alone says where every byte goes and aucbuffer fills to exactly one flash
  * block; nothing may reach METADATA_ADDR. A flash block is erased on its
  * first byte and programmed + read back when full; the APP_BASE block skips
@@ -977,7 +981,7 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
       return;
     }
     if (!flash_mark_update_pending()) {
-      dfu_session_fail(DFU_STATUS_ERR_ERASE);  /* app slot untouched */
+      dfu_session_fail(DFU_STATUS_ERR_ERASE);  /* no marker yet: boots or parks as before */
       return;
     }
     dfu_received_len = 0;

@@ -30,7 +30,10 @@
  *   frame from the app protocol, not DATA. Anything else, including the 0x79 reply
  *   marker and ISO-TP traffic sharing the command ID, gets NO reply. Every
  *   known host (tools/can-flash, the Airform flasher, the ESP32 brain's
- *   can_flash_host) pads this way.
+ *   can_flash_host) pads this way. The padding is the only thing that tells
+ *   commands from app traffic on a shared ID, so the app protocol must not
+ *   pad with 0xFF: e.g. {0x01, x, 0xFF x 6} is a HELLO for any x (byte 1 is
+ *   the version, not padding), which restarts a session or draws a NAK.
  *
  *   Boot -> host on the device's reply ID (default CAN_ID_BOOT_TO_HOST):
  *     ACK  {0x79, cmd_echo, 0x00, arg, 0xFF, 0xFF, 0xFF, 0xFF}
@@ -78,7 +81,10 @@
  *   before the marker is
  *   programmed .............. record erased/torn, marker absent/torn (cannot
  *                             match), app slot untouched -> SP-word fallback
- *                             boots the old, intact app
+ *                             boots the old, intact app. Exception: a marker
+ *                             left by the previous, completed update can
+ *                             survive a torn metadata erase that took the
+ *                             record -> parks until an update completes
  *   rest of ERASE, between
  *   DATA blocks ............. marker present, no record -> stay in boot
  *                             (DFU + CAN). Block 0 is programmed from its

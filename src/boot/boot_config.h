@@ -41,9 +41,9 @@ extern "C" {
  * accepted update-protocol frame (can_update_accepts_frame: command ID,
  * DLC 8, command byte HELLO..INFO, 0xFF padding; INFO counts only once a
  * session is past IDLE); other traffic on that ID, such as the master's app
- * polls, does not count. Before ERASE the old app
- * boots again, after ERASE the update-in-progress marker parks the board in
- * DFU + CAN. The parked DFU + CAN loop has no timeout.
+ * polls, does not count. Before ERASE the old app boots again, after ERASE
+ * the update-in-progress marker parks the board in DFU + CAN. The parked
+ * DFU + CAN loop never resets on idle (see its ownership timeout below).
  *
  * Must exceed the host flasher's longest silent gap mid-session:
  *   - ordinary commands: 2 s ACK timeout x 4 attempts, ~8 s;

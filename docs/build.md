@@ -256,13 +256,17 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      gets no reply and does not count: a provisioned board's boot
      command ID equals its app request ID, so the master's periodic app polls
      (ISO-TP) also arrive there and would otherwise hold a stranded board in
-     CAN-only mode. The timer restarts after each handled frame; 20 s is
+     CAN-only mode. The `0xFF` padding is what tells the two apart, so the
+     app protocol on that ID must not pad with `0xFF`: `{0x01, x, 0xFF ×6}`
+     is a HELLO for any `x` (byte 1 is the version, not padding). The timer
+     restarts after each handled frame; 20 s is
      above the hosts' ~8 s worst-case retry gap, and strictly above a
      host's ERASE retry (15 s ERASE timeout plus its retry gap, counted
      from its send), so that retry still lands before it. If the session
      never reached ERASE, the old app boots again. Once ERASE has started, the
      update-in-progress marker parks the board in DFU + CAN. The parked
-     DFU + CAN loop itself has no timeout. If the CAN driver reports a failed
+     DFU + CAN loop itself never resets on idle (it only ends a stalled
+     session's flash ownership, see below). If the CAN driver reports a failed
      bus-off recovery, CAN update mode resets the same way; the parked loop
      retries the CAN bring-up once per second.
   3. App validation (`boot_decide`, `src/boot/image_validate.h`): the CRC
@@ -368,9 +372,12 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   (`@CodeFlash`) accepts downloads; alt 1 (`@DataFlash`) fails with
   `errTARGET` before any flash operation, and the descriptor advertises the
   metadata block (`0x3F800`) read-only. A download must start at
-  block 0 and send full-size blocks (64 B) in order, only the last may be
-  short, and nothing may reach `0x3F800`; otherwise it fails with
-  `errADDRESS` (e.g. `dfu-util -t 63` is rejected at its second block).
+  block 0 and send full-size blocks in order, only the last may be short,
+  and nothing may reach `0x3F800`; otherwise it fails with `errADDRESS`.
+  Full-size means the descriptor's 64 B transfer size, the only one
+  accepted: `dfu-util` raises a smaller `-t` (e.g. `-t 63`) to the 64 B
+  control endpoint size by itself, and a host that does send shorter blocks
+  fails at its second block.
   Every erase and write is checked and read back (`errERASE` / `errWRITE`).
   At manifest the bootloader programs the buffered tail and commits only if
   the CRC32 of the image (its first 8 bytes from RAM, see the vector unit

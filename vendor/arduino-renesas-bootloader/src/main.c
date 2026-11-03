@@ -129,8 +129,8 @@ void set_double_tap_data(uint32_t data);
 
 /* Jump sequence per rules/bootloader.md: IRQs off first, then deinit every
  * peripheral the bootloader touched, stop SysTick and clear its pending bit,
- * disable and clear every NVIC interrupt, then VTOR, MSP and the reset
- * vector. The application re-enables IRQs itself. */
+ * disable and clear every NVIC interrupt, then VTOR, CONTROL, MSP and the
+ * reset vector. The application re-enables IRQs itself. */
 void boot5(uint32_t address) {
   __disable_irq();
 
@@ -165,13 +165,23 @@ void boot5(uint32_t address) {
   __DSB();
   __ISB();
 
-  SCB->VTOR  = address;
+  SCB->VTOR = address;
+  __DSB();
+  __ISB();
 
-  uint32_t mainStackPointer = *(volatile uint32_t *)(address);
-  __set_MSP(mainStackPointer);
-  uint32_t programResetHandlerAddress = *(volatile uint32_t *) (address + 4);
-  void (* programResetHandler)(void) = (void (*)(void)) programResetHandlerAddress;
-  programResetHandler();
+  /* Both vector words go into registers before MSP moves: nothing may use
+   * the old stack after that. CONTROL = 0 selects MSP in privileged thread
+   * mode and clears FPCA (no lazy FP context carried into the app). MSP and
+   * the branch are one asm block, so the compiler cannot spill to the stack
+   * between them. */
+  uint32_t app_sp    = *(const volatile uint32_t *) address;
+  uint32_t app_entry = *(const volatile uint32_t *) (address + 4u);
+  __set_CONTROL(0);
+  __ISB();
+  __asm volatile ("msr msp, %0\n"
+                  "bx  %1\n"
+                  : : "r" (app_sp), "r" (app_entry) : "memory");
+  __builtin_unreachable();
 }
 
 #if defined(RENESAS_CORTEX_M23)

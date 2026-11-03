@@ -311,8 +311,8 @@ static bool can_flash_erase_app_and_metadata(void)
 }
 
 /* Flash owner latch between the two update transports of the parked loop:
- * the USB DFU download owns flash from block 0 until manifest, abort or
- * failure (dfu_owns_flash); the CAN session owns it from SIZE until it
+ * the USB DFU download owns flash from block 0 until manifest, abort,
+ * failure, unmount or the next (re)enumeration (dfu_owns_flash); the CAN session owns it from SIZE until it
  * returns to IDLE/GREETED (can_update_owns_flash). Each side refuses to
  * start while the other owns it (DFU block 0 fails, CAN SIZE NAKs), and
  * CAN ERASE/DATA/VERIFY also NAK while DFU owns it, so their erases and
@@ -793,6 +793,12 @@ bootloader:
 void tud_mount_cb(void)
 {
   blink_interval_ms = BLINK_MOUNTED;
+#ifdef CAN_LOADER
+  /* Every (re)enumeration ends a download: tinyusb 0.17 does not call
+   * tud_umount_cb on a bus reset, e.g. after a killed dfu-util with the
+   * cable still in, so a mount is what reliably follows it. */
+  dfu_owns_flash = false;
+#endif
 }
 
 // Invoked when device is unmounted
@@ -800,7 +806,7 @@ void tud_umount_cb(void)
 {
   blink_interval_ms = BLINK_NOT_MOUNTED;
 #ifdef CAN_LOADER
-  dfu_owns_flash = false;  /* a download cut off by unplug/reset never completes */
+  dfu_owns_flash = false;  /* a download cut off by unplug never completes */
 #endif
 }
 

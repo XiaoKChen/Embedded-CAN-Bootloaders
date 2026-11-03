@@ -291,7 +291,10 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     and VERIFY NAK `0x05` while a DFU download is in progress, and a DFU
     download fails to start while a CAN session is past SIZE. A reset releases both; a stalled
     CAN session is also released by a new HELLO, a stalled DFU download by
-    a new download, an abort or a USB unplug/reset.
+    a new download, an abort, a USB unplug, or the next USB enumeration
+    (tinyusb 0.17 reports no unmount on a bus reset, so a killed `dfu-util`
+    with the cable still in is released when the host enumerates the
+    board again).
 - **Per-device CAN IDs.** The command/reply IDs default to `0x79E`/`0x79F` but
   are overridable per board so several parked boards can share one bus, each
   addressed individually. The effective IDs are read at CAN bring-up from the

@@ -87,8 +87,8 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
  * not sent stale after the recovery. Worst-case blocking: about 204 ms. */
 can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 
-/* Module-stop CAN0 and restore P102/P103 PFS to reset state (GPIO input).
- * Call before jump-to-app. */
+/* Put CAN0 in reset mode, restore P102/P103 PFS to reset state (GPIO
+ * input), then module-stop CAN0, in that order. Call before jump-to-app. */
 void can_polled_deinit(void);
 
 #ifdef __cplusplus

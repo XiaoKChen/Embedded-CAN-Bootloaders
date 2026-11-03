@@ -426,10 +426,12 @@ BOOT_LOW_FLASH void can_polled_deinit(void)
      * are stopping the module regardless. */
     (void) can_mode_set(CAN_MODE_RESET);
 
-    R_MSTP->MSTPCRB |= CAN0_MSTP_BIT;
-    (void) R_MSTP->MSTPCRB;
-
-    /* PmnPFS reset value is 0x00000000 (GPIO input, no pull, PSEL clear). */
+    /* Pins back to GPIO before the module stops, so CTX0 is never left
+     * routed to an unclocked peripheral. PmnPFS reset value is 0x00000000
+     * (GPIO input, no pull, PSEL clear). */
     can_pin_config(CAN_TX_PORT, CAN_TX_PIN, 0);
     can_pin_config(CAN_RX_PORT, CAN_RX_PIN, 0);
+
+    R_MSTP->MSTPCRB |= CAN0_MSTP_BIT;
+    (void) R_MSTP->MSTPCRB;
 }

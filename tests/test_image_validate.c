@@ -1,14 +1,20 @@
-/* =============================================================================
- * test_image_validate.c — Host-side Unity tests for image_validate
- * =============================================================================
+/**
+ * @file    test_image_validate.c
+ * @brief   Host-side Unity tests for image_validate and boot_decide.
+ *
  * Adapted from .claude/template/bootloader/test_image_validate.c to the
  * metadata-block layout: a 256 KB byte buffer stands in for code flash, the
  * app image sits at APP_BASE and the 16-byte metadata record at METADATA_ADDR.
- * Every image_validate_result_t outcome gets a test (rules/testing.md), and
- * every boot_decide() branch: valid record (with and without the update-in-
- * progress marker), marker-only (interrupted update), the no-record SP-word
- * fallback, a corrupt record, and torn markers falling back to the SP check.
- * ============================================================================= */
+ *
+ * Covers:       Every image_validate_result_t outcome (rules/testing.md), and
+ *               every boot_decide() branch: valid record (with and without
+ *               the update-in-progress marker), marker-only (interrupted
+ *               update), the no-record SP-word fallback, a corrupt record,
+ *               and torn markers falling back to the SP check.
+ * Not covered:  The jump to the application (on target only).
+ *
+ * @see     image_validate.h, image_header.h, rules/testing.md
+ */
 
 #include <string.h>
 

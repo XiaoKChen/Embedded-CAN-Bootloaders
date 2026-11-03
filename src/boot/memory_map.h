@@ -8,13 +8,16 @@
  *
  * Partition (256 KB code flash, 128 x 2 KB erase blocks):
  *   0x0000_0000 .. 0x0000_3FFF   bootloader (8 blocks, immutable at runtime,
- *                                incl. OFS0/OFS1 option bytes at 0x400/0x404)
+ *                                incl. OFS0/OFS1 option bytes at 0x400/0x404;
+ *                                BOOT_LOW_FLASH code fills 0x00C0..0x03FF,
+ *                                between the vector table and the option bytes)
  *   0x0000_4000 .. 0x0003_F7FF   application slot (119 blocks)
  *   0x0003_F800 .. 0x0003_FFFF   image metadata block (last block, written
  *                                LAST during an update — see image_header.h)
  *
  * Owns:         The code-flash, data-flash and SRAM addresses and sizes,
- *               including DFU_CONFIG_ADDR, and the VTOR policy.
+ *               including DFU_CONFIG_ADDR, the VTOR policy, and the
+ *               BOOT_LOW_FLASH placement of code below the option bytes.
  * Not here:     The metadata record layout (image_header.h); the config
  *               block layout (dfu_config.h).
  * Invariants:   MUST agree with the linker script; do not scatter these
@@ -55,6 +58,18 @@ extern "C" {
 
 #define METADATA_ADDR       0x0003F800u  /* last 2 KB block                    */
 #define METADATA_BLOCK_SIZE FLASH_BLOCK_SIZE
+
+/* Places a firmware function in the 832 B between the end of the vector table
+ * (0xC0; the RA4M1 NVIC has 32 IRQs, so entries past it are never fetched)
+ * and the option bytes at 0x400, which the FSP linker script otherwise pads
+ * with 0xFF. The linker script (vendor/tinyusb/hw/bsp/ra/linker/gcc/fsp.ld)
+ * collects .text.boot_low_flash there and fails the link if it overflows
+ * into 0x400. A no-op for host builds. */
+#if defined(__GNUC__) && defined(__arm__)
+#define BOOT_LOW_FLASH __attribute__((section(".text.boot_low_flash")))
+#else
+#define BOOT_LOW_FLASH
+#endif
 
 /* -----------------------------------------------------------------------------
  * Data flash (RA4M1: 8 KB at 0x4010_0000..0x4010_1FFF, 1 KB erase blocks).

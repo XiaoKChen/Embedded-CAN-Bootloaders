@@ -22,6 +22,8 @@
 #include "bsp_exceptions.h"
 #include "R7FA4M1AB.h"
 
+#include "../boot/memory_map.h"  /* BOOT_LOW_FLASH */
+
 /* -----------------------------------------------------------------------------
  * Constants
  * ----------------------------------------------------------------------------- */
@@ -145,7 +147,7 @@ static can_polled_status_t can_bus_off_recover(void)
  * Public API
  * ----------------------------------------------------------------------------- */
 
-can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id)
+BOOT_LOW_FLASH can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id)
 {
     uint32_t prescaler;
 
@@ -248,7 +250,7 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
     return CAN_POLLED_OK;
 }
 
-can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8])
+BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8])
 {
     if ((id > CAN_SID_MAX) || (dlc > 8U) || ((data == 0) && (dlc > 0U))) {
         return CAN_POLLED_ERROR;
@@ -283,7 +285,7 @@ can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data
     return CAN_POLLED_TIMEOUT;
 }
 
-void can_polled_deinit(void)
+BOOT_LOW_FLASH void can_polled_deinit(void)
 {
     /* Reset mode halts all bus activity; result deliberately ignored — we
      * are stopping the module regardless. */

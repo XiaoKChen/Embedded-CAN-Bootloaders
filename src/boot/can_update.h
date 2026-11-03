@@ -17,11 +17,19 @@
  *     0x03 DATA    byte1 = seq (uint8, starts at 0, mod 256 across the whole
  *                  transfer), bytes2..7 = 6 image bytes (final frame may carry
  *                  fewer valid bytes — the receiver counts against image_size)
- *     0x04 SIZE    bytes2..5 = image_size, uint32 LE
+ *     0x04 SIZE    bytes2..5 = image_size, uint32 LE (8 .. APP_SLOT_SIZE)
  *     0x05 VERIFY  bytes2..5 = expected image CRC32, uint32 LE
  *     0x06 GO
  *
- *   Boot -> host on CAN_ID_BOOT_TO_HOST:
+ *   Accepted frames (can_update_accepts_frame): on the command ID, DLC 8,
+ *   command byte 0x01..0x07, and every unused byte 0xFF (HELLO bytes 2..7;
+ *   SIZE/VERIFY bytes 1, 6, 7; ERASE/GO/INFO bytes 1..7; DATA carries
+ *   payload and is not checked). Anything else, including the 0x79 reply
+ *   marker and ISO-TP traffic sharing the command ID, gets NO reply. Every
+ *   known host (tools/can-flash, the Airform flasher, the ESP32 brain's
+ *   can_flash_host) pads this way.
+ *
+ *   Boot -> host on the device's reply ID (default CAN_ID_BOOT_TO_HOST):
  *     ACK  {0x79, cmd_echo, 0x00, arg, 0xFF, 0xFF, 0xFF, 0xFF}
  *     NAK  {0x79, cmd_echo, err,  arg, 0xFF, 0xFF, 0xFF, 0xFF}
  *     HELLO ACK: byte3 = bootloader protocol version, bytes4..7 =
@@ -37,6 +45,13 @@
  * Session restart: HELLO is additionally accepted in ANY phase and resets the
  * session (documented deviation for host-retry robustness; every other
  * command is strictly ordered and NAKs err 0x05 out of order).
+ *
+ * Host retries: a host resends SIZE/ERASE/VERIFY when the ACK is lost, so an
+ * exact repeat of the previous command is ACKed again without redoing it:
+ * SIZE with the same size while SIZED, ERASE while TRANSFER before any DATA,
+ * VERIFY with the committed CRC while VERIFIED. A DATA or VERIFY flash
+ * failure (err 0x02) drops the session to IDLE: the slot is no longer known
+ * to be erased, so the host must restart from HELLO.
  *
  * Fail-safe (power loss at any instant; outcomes per boot_decide in
  * image_validate.h, marker layout in image_header.h, ERASE's first steps per
@@ -72,7 +87,8 @@
  *               (can_update_hal_t).
  * Not here:     INFO, answered by the integration layer (main.c CAN service);
  *               the CAN driver (can_polled.h); the reset after GO and the
- *               idle timeout (the caller, main.c).
+ *               idle timeout (the caller, main.c); which transport owns
+ *               flash (the caller, through hal->flash_locked).
  * Invariants:   Per-device IDs: the host -> boot command ID the engine
  *               matches on is a runtime value supplied to can_update_init
  *               (default CAN_ID_HOST_TO_BOOT); the caller transmits every
@@ -80,9 +96,11 @@
  *               CAN_ID_BOOT_TO_HOST). This lets several parked boards share
  *               one bus, each addressed on its own ID (see dfu_config.h v2
  *               config block).
- * Errors:       A rejected frame is answered with a NAK carrying a
- *               CAN_UPDATE_ERR_* code; frames on other IDs get no reply.
- * Depends on:   boot_config.h and memory_map.h only. No hardware, no heap.
+ * Errors:       A rejected protocol frame is answered with a NAK carrying a
+ *               CAN_UPDATE_ERR_* code; frames that are not protocol frames
+ *               (see above) get no reply.
+ * Depends on:   boot_config.h, memory_map.h, image_header.h and
+ *               image_validate.h. No hardware, no heap.
  *
  * @see     can_update.c, test_can_update.c, image_validate.h, image_header.h
  */
@@ -114,17 +132,18 @@ extern "C" {
 /* INFO is answered by the bootloader integration layer (main.c CAN service),
  * NOT by this engine: its reply is 5 frames, which the single-reply engine
  * cannot express. The constant is reserved here so main and the engine agree
- * on 0x07; if a frame with this command ever reaches the engine it falls
- * through to the default case and is NAKed as an unknown command. */
+ * on 0x07; the engine itself never replies to it. */
 #define CAN_UPDATE_CMD_INFO          0x07u
 
 #define CAN_UPDATE_REPLY_MARKER      0x79u  /* byte0 of every ACK/NAK          */
 #define CAN_UPDATE_OK                0x00u  /* byte2 of an ACK                 */
 #define CAN_UPDATE_ERR_SEQ           0x01u  /* unexpected seq; arg = expected  */
 #define CAN_UPDATE_ERR_FLASH         0x02u  /* program/erase/read-back failure */
-#define CAN_UPDATE_ERR_CRC           0x03u  /* VERIFY CRC mismatch             */
-#define CAN_UPDATE_ERR_SIZE          0x04u  /* SIZE zero or > APP_SLOT_SIZE    */
-#define CAN_UPDATE_ERR_STATE         0x05u  /* out-of-order/unknown/malformed  */
+#define CAN_UPDATE_ERR_CRC           0x03u  /* VERIFY: CRC mismatch or bad
+                                               SP/entry vector words           */
+#define CAN_UPDATE_ERR_SIZE          0x04u  /* SIZE < 8 or > APP_SLOT_SIZE     */
+#define CAN_UPDATE_ERR_STATE         0x05u  /* out of order, bad HELLO version,
+                                               or flash owned by USB DFU       */
 
 #define CAN_UPDATE_DATA_BYTES_PER_FRAME 6u
 #define CAN_UPDATE_FILL_BYTE            0xFFu
@@ -146,6 +165,10 @@ typedef struct {
 
     /* Code flash as a readable byte buffer (VERIFY reads back through it). */
     const uint8_t *flash_base;
+
+    /* True while another transport (the USB DFU download) owns flash:
+     * ERASE, DATA and VERIFY then NAK err 0x05 without touching flash. */
+    bool (*flash_locked)(void);
 } can_update_hal_t;
 
 /* -----------------------------------------------------------------------------
@@ -166,6 +189,8 @@ typedef enum {
 } can_update_action_t;
 
 typedef struct {
+    /* First member: aligned for the flash program source without padding. */
+    _Alignas(FLASH_WRITE_UNIT) uint8_t block_buf[FLASH_BLOCK_SIZE];
     const can_update_hal_t *hal;
     uint32_t cmd_id;               /* host -> boot ID this engine answers      */
     can_update_phase_t phase;
@@ -175,7 +200,6 @@ typedef struct {
     uint32_t block_fill;           /* bytes buffered for the current block     */
     uint8_t  expected_seq;         /* seq of the next DATA frame               */
     uint8_t  window_start_seq;     /* first seq of the current window          */
-    uint8_t  block_buf[FLASH_BLOCK_SIZE];
 } can_update_state_t;
 
 /* -----------------------------------------------------------------------------
@@ -185,15 +209,30 @@ void can_update_init(can_update_state_t *st, const can_update_hal_t *hal,
                      uint32_t cmd_id);
 
 /**
+ * True when a received frame is an update-protocol frame for this engine
+ * (rules in the file header). The caller uses it to pick INFO out and to
+ * restart its idle timer; can_update_handle_frame ignores everything else.
+ */
+bool can_update_accepts_frame(const can_update_state_t *st, uint32_t id,
+                              uint8_t dlc, const uint8_t data[8]);
+
+/**
+ * True from an accepted SIZE until the session returns to IDLE/GREETED (HELLO,
+ * a flash failure, or the reset after GO): the CAN session has claimed flash
+ * and the USB DFU download must not start.
+ */
+bool can_update_owns_flash(const can_update_state_t *st);
+
+/**
  * Feed one received CAN frame to the engine.
  *
  * @param st          Engine state.
- * @param id          Received CAN ID; frames not addressed to the engine's
- *                    configured cmd_id (see can_update_init) are silently
- *                    ignored.
- * @param dlc         Received DLC; protocol frames must be DLC 8.
+ * @param id          Received CAN ID.
+ * @param dlc         Received DLC. Frames can_update_accepts_frame rejects
+ *                    (other IDs, DLC != 8, unknown command, bad padding) and
+ *                    INFO are silently ignored.
  * @param data        8 payload bytes.
- * @param reply_data  Out: 8-byte reply payload for CAN_ID_BOOT_TO_HOST.
+ * @param reply_data  Out: 8-byte reply payload for the reply ID.
  * @param out_action  Out: CAN_UPDATE_ACTION_RESET after an accepted GO.
  * @return true when reply_data holds a reply to transmit; false otherwise.
  */

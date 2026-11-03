@@ -7,16 +7,32 @@
  * the metadata block is written only after VERIFY matches, so an interrupted
  * update never leaves a valid record over a partial image (boot_decide in
  * image_validate.h then parks the device, or boots the intact old app).
+ * Unused-byte rules per command are one bitmask each (bit n = byte n must be
+ * 0xFF), indexed by command byte.
  *
  * @see     can_update.h, test_can_update.c
  */
 
 #include "can_update.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "crc32.h"
 #include "image_header.h"
+#include "image_validate.h"
+
+/* Bit n set: byte n of an accepted frame must be CAN_UPDATE_FILL_BYTE.
+ * Indexed by command byte - CAN_UPDATE_CMD_HELLO. */
+static const uint8_t k_fill_mask[CAN_UPDATE_CMD_INFO] = {
+    0xFCu,  /* HELLO:  bytes 2..7 (byte 1 = version)        */
+    0xFEu,  /* ERASE:  bytes 1..7                           */
+    0x00u,  /* DATA:   payload, nothing to check            */
+    0xC2u,  /* SIZE:   bytes 1, 6, 7 (bytes 2..5 = size)    */
+    0xC2u,  /* VERIFY: bytes 1, 6, 7 (bytes 2..5 = CRC32)   */
+    0xFEu,  /* GO:     bytes 1..7                           */
+    0xFEu,  /* INFO:   bytes 1..7                           */
+};
 
 /* -----------------------------------------------------------------------------
  * Private helpers
@@ -97,7 +113,7 @@ static bool handle_size(can_update_state_t *st, const uint8_t data[8], uint8_t r
 {
     const uint32_t image_size = load_le32(&data[2]);
 
-    if (image_size == 0u || image_size > APP_SLOT_SIZE) {
+    if (image_size < IMAGE_MIN_SIZE || image_size > APP_SLOT_SIZE) {
         return make_reply(reply, CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_SIZE, 0u);
     }
 
@@ -108,9 +124,12 @@ static bool handle_size(can_update_state_t *st, const uint8_t data[8], uint8_t r
 
 static bool handle_erase(can_update_state_t *st, uint8_t reply[8])
 {
-    /* Power loss during/after erase: metadata block goes first, so the old
-     * image is invalidated before any app byte is disturbed. Any interruption
-     * leaves metadata erased -> device stays in the bootloader. */
+    if (st->hal->flash_locked()) {
+        return make_reply(reply, CAN_UPDATE_CMD_ERASE, CAN_UPDATE_ERR_STATE, 0u);
+    }
+    /* Power loss: until the marker is in place the board does what it did
+     * before (old app boots, or parks); from then on it parks. Rows in the
+     * can_update.h power-loss table. */
     if (!st->hal->flash_erase_app_and_metadata()) {
         return make_reply(reply, CAN_UPDATE_CMD_ERASE, CAN_UPDATE_ERR_FLASH, 0u);
     }
@@ -127,6 +146,10 @@ static bool handle_erase(can_update_state_t *st, uint8_t reply[8])
 static bool handle_data(can_update_state_t *st, const uint8_t data[8], uint8_t reply[8])
 {
     const uint8_t seq = data[1];
+
+    if (st->hal->flash_locked()) {
+        return make_reply(reply, CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+    }
 
     if (seq != st->expected_seq) {
         const uint8_t rewind_seq = st->window_start_seq;
@@ -159,11 +182,13 @@ static bool handle_data(can_update_state_t *st, const uint8_t data[8], uint8_t r
         padded_len += pad;
     }
 
-    /* Power loss during this program: block torn, metadata still erased ->
-     * image invalid -> device stays in the bootloader. */
+    /* Power loss during this program: block torn, no record, marker set ->
+     * device stays in the bootloader. A failed program may have written part
+     * of the block, which cannot be programmed again without an erase: drop
+     * the session so the host restarts from HELLO (and ERASE). */
     if (!st->hal->flash_program(APP_BASE + st->block_index * FLASH_BLOCK_SIZE,
                                 st->block_buf, padded_len)) {
-        discard_window(st);
+        reset_session(st);
         return make_reply(reply, CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_FLASH, 0u);
     }
 
@@ -178,25 +203,30 @@ static bool handle_data(can_update_state_t *st, const uint8_t data[8], uint8_t r
 
 static bool handle_verify(can_update_state_t *st, const uint8_t data[8], uint8_t reply[8])
 {
-    const uint32_t expected_crc = load_le32(&data[2]);
-    const uint32_t computed_crc =
-        crc32_ieee(st->hal->flash_base + APP_BASE, st->image_size);
+    if (st->hal->flash_locked()) {
+        return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_STATE, 0u);
+    }
 
-    if (computed_crc != expected_crc) {
-        /* Fail closed: metadata stays erased, image stays unbootable. */
+    const uint32_t expected_crc = load_le32(&data[2]);
+    const uint8_t *app = st->hal->flash_base + APP_BASE;
+
+    /* Fail closed: no record over an image that would not validate at boot.
+     * The session stays TRANSFERRED; the host restarts from HELLO. */
+    if (crc32_ieee(app, st->image_size) != expected_crc ||
+        image_check_bounds(app, st->image_size) != IMAGE_VALID) {
         return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
     }
 
-    uint8_t meta[IMAGE_META_SIZE];
-    store_le32(&meta[0], IMAGE_META_MAGIC);
-    store_le32(&meta[4], st->image_size);
-    store_le32(&meta[8], computed_crc);
-    store_le32(&meta[12], crc32_ieee(meta, IMAGE_META_CRC_COVERAGE));
+    _Alignas(FLASH_WRITE_UNIT) uint8_t meta[IMAGE_META_SIZE];
+    image_meta_encode(meta, st->image_size, expected_crc);
 
     /* The commit point. Power loss before/during this write: metadata absent
      * or torn (header CRC fails) -> stay in bootloader. After it: the new,
-     * already-CRC-verified image boots. 16 bytes = 2 write units. */
+     * already-CRC-verified image boots. 16 bytes = 2 write units. A failed
+     * write may have left part of the record: drop the session (the next
+     * ERASE then erases the metadata block, see update_start_plan). */
     if (!st->hal->flash_program(METADATA_ADDR, meta, IMAGE_META_SIZE)) {
+        reset_session(st);
         return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
     }
 
@@ -216,38 +246,64 @@ void can_update_init(can_update_state_t *st, const can_update_hal_t *hal,
     reset_session(st);
 }
 
+bool can_update_accepts_frame(const can_update_state_t *st, uint32_t id,
+                              uint8_t dlc, const uint8_t data[8])
+{
+    const uint8_t cmd = data[0];
+
+    if (id != st->cmd_id || dlc != 8u ||
+        cmd < CAN_UPDATE_CMD_HELLO || cmd > CAN_UPDATE_CMD_INFO) {
+        return false;
+    }
+    const uint8_t mask = k_fill_mask[cmd - CAN_UPDATE_CMD_HELLO];
+    for (uint8_t i = 1u; i < 8u; i++) {
+        if (((mask >> i) & 1u) != 0u && data[i] != CAN_UPDATE_FILL_BYTE) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool can_update_owns_flash(const can_update_state_t *st)
+{
+    return st->phase >= CAN_UPDATE_PHASE_SIZED;
+}
+
 bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
                              const uint8_t data[8], uint8_t reply_data[8],
                              can_update_action_t *out_action)
 {
     *out_action = CAN_UPDATE_ACTION_NONE;
 
-    if (id != st->cmd_id) {
-        return false;  /* not ours — silently ignore */
+    /* Not a protocol frame (other ID, app traffic, our own reply marker):
+     * answering it would only put noise on the reply ID. */
+    if (!can_update_accepts_frame(st, id, dlc, data)) {
+        return false;
     }
 
     const uint8_t cmd = data[0];
 
-    if (dlc != 8u) {
-        /* Protocol frames are always DLC 8; anything else is malformed. */
-        return make_reply(reply_data, cmd, CAN_UPDATE_ERR_STATE, 0u);
-    }
-
-    /* HELLO restarts the session from any phase (see can_update.h). */
-    if (cmd == CAN_UPDATE_CMD_HELLO) {
-        return handle_hello(st, data, reply_data);
-    }
-
-    /* Every other command is valid in exactly one phase — fail closed. */
+    /* HELLO restarts the session from any phase; every other command is
+     * valid in exactly one phase, or is an exact repeat of the previous
+     * command whose ACK the host did not see (see can_update.h). */
     switch (cmd) {
+    case CAN_UPDATE_CMD_HELLO:
+        return handle_hello(st, data, reply_data);
     case CAN_UPDATE_CMD_SIZE:
         if (st->phase == CAN_UPDATE_PHASE_GREETED) {
             return handle_size(st, data, reply_data);
+        }
+        if (st->phase == CAN_UPDATE_PHASE_SIZED &&
+            load_le32(&data[2]) == st->image_size) {
+            return make_reply(reply_data, cmd, CAN_UPDATE_OK, 0u);
         }
         break;
     case CAN_UPDATE_CMD_ERASE:
         if (st->phase == CAN_UPDATE_PHASE_SIZED) {
             return handle_erase(st, reply_data);
+        }
+        if (st->phase == CAN_UPDATE_PHASE_TRANSFER && st->bytes_received == 0u) {
+            return make_reply(reply_data, cmd, CAN_UPDATE_OK, 0u);
         }
         break;
     case CAN_UPDATE_CMD_DATA:
@@ -259,6 +315,11 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
         if (st->phase == CAN_UPDATE_PHASE_TRANSFERRED) {
             return handle_verify(st, data, reply_data);
         }
+        if (st->phase == CAN_UPDATE_PHASE_VERIFIED &&
+            load_le32(&data[2]) == load_le32(st->hal->flash_base + METADATA_ADDR +
+                                              offsetof(image_meta_t, image_crc32))) {
+            return make_reply(reply_data, cmd, CAN_UPDATE_OK, 0u);
+        }
         break;
     case CAN_UPDATE_CMD_GO:
         if (st->phase == CAN_UPDATE_PHASE_VERIFIED) {
@@ -268,7 +329,7 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
         }
         break;
     default:
-        break;  /* unknown command */
+        return false;  /* INFO: answered by the integration layer */
     }
 
     return make_reply(reply_data, cmd, CAN_UPDATE_ERR_STATE, 0u);

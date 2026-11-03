@@ -38,11 +38,20 @@ extern "C" {
 #define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3) */
 
 /* CAN update mode (VBTBKR[4] entry) resets after this long without an
- * update-protocol frame (command byte HELLO..INFO) on the command ID; other
- * traffic on that ID, such as the master's app polls, does not count. Before ERASE the old app boots again, after ERASE the
- * update-in-progress marker parks the board in DFU + CAN. Must exceed the
- * host flasher's longest silent gap mid-session (~8 s: 2 s ACK timeout x 4
- * attempts). The parked DFU + CAN loop has no timeout. */
+ * accepted update-protocol frame (can_update_accepts_frame: command ID,
+ * DLC 8, command byte HELLO..INFO, 0xFF padding); other traffic on that ID,
+ * such as the master's app polls, does not count. Before ERASE the old app
+ * boots again, after ERASE the update-in-progress marker parks the board in
+ * DFU + CAN. The parked DFU + CAN loop has no timeout.
+ *
+ * Must exceed the host flasher's longest silent gap mid-session:
+ *   - ordinary commands: 2 s ACK timeout x 4 attempts, ~8 s;
+ *   - ERASE: the board is busy erasing for a few seconds and the timer
+ *     restarts only once ERASE has been handled. If that ACK is lost, the
+ *     host resends ERASE after its own ERASE timeout (15 s in can_flash.py
+ *     and the Airform flasher, counted from its send), which therefore lands
+ *     before this timeout by the erase time, and is re-ACKed without a
+ *     second erase. Do not lower this below the hosts' ERASE timeout. */
 #define CAN_UPDATE_IDLE_TIMEOUT_MS 15000u
 
 /* -----------------------------------------------------------------------------

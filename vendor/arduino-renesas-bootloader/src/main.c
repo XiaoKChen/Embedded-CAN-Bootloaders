@@ -397,10 +397,24 @@ static bool can_flash_erase_app_and_metadata(void)
   return true;
 }
 
+/* Flash owner latch between the two update transports of the parked loop:
+ * the USB DFU download owns flash from block 0 until manifest, abort or
+ * failure (dfu_owns_flash); the CAN session owns it from SIZE until it
+ * returns to IDLE/GREETED (can_update_owns_flash). Each side refuses to
+ * start while the other owns it, so their erases and writes never
+ * interleave. A reset releases both. */
+static bool dfu_owns_flash;
+
+static bool can_flash_locked(void)
+{
+  return dfu_owns_flash;
+}
+
 static const can_update_hal_t can_hal = {
   .flash_erase_app_and_metadata = can_flash_erase_app_and_metadata,
   .flash_program                = can_flash_program,
   .flash_base                   = (const uint8_t *) 0,  /* code flash is mapped at 0 */
+  .flash_locked                 = can_flash_locked,
 };
 
 static can_update_state_t can_state;
@@ -437,12 +451,13 @@ static void can_load_ids(void)
  * identify a board parked in the bootloader. Answered here, not in the update
  * engine, because the reply is 5 frames (the engine emits one per frame).
  *
- * Reply on CAN_ID_BOOT_TO_HOST (frozen contract):
+ * Reply on can_reply_id (frozen contract):
  *   frame 0  {0x79, 0x07, name_len, protocol_version, 0xFF, 0xFF, 0xFF, 0xFF}
  *   frames 1..4  the 32-byte product-name field, 8 bytes each in order,
  *                ASCII, 0x00-padded beyond name_len.
  *
- * Name source: dfu_config_parse of the 76-byte block at DFU_CONFIG_ADDR (data
+ * Name source: dfu_config_parse of the v1 (76 B) or v2 (80 B) block at
+ * DFU_CONFIG_ADDR (data
  * flash, read only when dfu_config_readable proved the window readable — see
  * flash_lp_open_df_read_ready). Unproven window or absent/invalid block ->
  * name_len = 0 and all 32 name bytes 0x00. A build without DFU_CUSTOM_NAME
@@ -482,11 +497,12 @@ static void can_service_info(void)
 
 /* Poll one frame through the update engine, transmit its reply, and perform
  * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
- * Returns true once an update-protocol frame (command byte HELLO..INFO) on
- * can_cmd_id has been handled; the CAN-only mode's idle timeout restarts only
- * on those. Provisioned boards share can_cmd_id with their app's request ID,
- * so the master's periodic app polls (ISO-TP, first byte 0x10/0x2x/0x3x) land
- * here too and must not keep a stranded board in CAN-only mode. */
+ * Returns true once an accepted update-protocol frame has been handled
+ * (can_update_accepts_frame: can_cmd_id, DLC 8, command byte HELLO..INFO,
+ * 0xFF padding); the CAN-only mode's idle timeout restarts only on those.
+ * Provisioned boards share can_cmd_id with their app's request ID, so the
+ * master's periodic app polls (ISO-TP) land here too: they get no reply and
+ * must not keep a stranded board in CAN-only mode. */
 static bool can_service_once(void)
 {
   /* Zero-init: out-params are written by the callees before use, but gcc 7
@@ -501,10 +517,14 @@ static bool can_service_once(void)
     return false;  /* empty FIFO, or bus-off (driver re-initialized itself) */
   }
 
+  if (!can_update_accepts_frame(&can_state, id, dlc, data)) {
+    return false;
+  }
+
   /* INFO is intercepted before the update engine: its 5-frame reply does not
    * fit the engine's one-reply-per-frame contract. Answering it does not touch
    * or advance the update session state. */
-  if (id == can_cmd_id && data[0] == CAN_UPDATE_CMD_INFO) {
+  if (data[0] == CAN_UPDATE_CMD_INFO) {
     can_service_info();
     return true;
   }
@@ -517,8 +537,7 @@ static bool can_service_once(void)
     can_initialized = false;
     NVIC_SystemReset();   /* clean re-entry through the boot decision */
   }
-  return id == can_cmd_id &&
-         data[0] >= CAN_UPDATE_CMD_HELLO && data[0] <= CAN_UPDATE_CMD_INFO;
+  return true;
 }
 
 #ifndef CAN_DIAG
@@ -573,7 +592,7 @@ static void can_xcvr_usb_rail_power_on(void)
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
  * through the GO reset above, an external reset, or (production build) the
  * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without an
- * update-protocol frame on can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
+ * accepted update-protocol frame, so a pulled wire never leaves the board deaf to USB: before
  * ERASE the old app boots again, after ERASE boot_decide's marker check
  * parks it in DFU + CAN. The timebase is board_millis(): board_init()
  * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same
@@ -1152,6 +1171,11 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
 #ifdef CAN_LOADER
   if (block_num == 0) {
     dfu_received_len = 0;
+    /* A CAN session past SIZE owns flash: refuse rather than interleave. */
+    if (can_update_owns_flash(&can_state)) {
+      tud_dfu_finish_flashing(DFU_STATUS_ERR_WRITE);
+      return;
+    }
     /* Before the first app erase below: from here on an interrupted
      * download parks in the bootloader instead of booting a partial sketch.
      * If the marker cannot be set, abort with the app slot untouched. */
@@ -1159,6 +1183,7 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
       tud_dfu_finish_flashing(DFU_STATUS_ERR_ERASE);
       return;
     }
+    dfu_owns_flash = true;
   }
   dfu_received_len += length;
 #endif
@@ -1205,6 +1230,7 @@ void tud_dfu_manifest_cb(uint8_t alt)
 
 #ifdef CAN_LOADER
   dfu_write_image_metadata();
+  dfu_owns_flash = false;
 #endif
 
   // flashing op for manifest is complete without error
@@ -1238,6 +1264,9 @@ void tud_dfu_abort_cb(uint8_t alt)
 {
   (void) alt;
   //printf("Host aborted transfer\r\n");
+#ifdef CAN_LOADER
+  dfu_owns_flash = false;
+#endif
 }
 
 // Invoked when a DFU_DETACH request is received

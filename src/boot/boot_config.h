@@ -49,10 +49,12 @@ extern "C" {
  *   - ERASE: the board is busy erasing for a few seconds and the timer
  *     restarts only once ERASE has been handled. If that ACK is lost, the
  *     host resends ERASE after its own ERASE timeout (15 s in can_flash.py
- *     and the Airform flasher, counted from its send), which therefore lands
- *     before this timeout by the erase time, and is re-ACKed without a
- *     second erase. Do not lower this below the hosts' ERASE timeout. */
-#define CAN_UPDATE_IDLE_TIMEOUT_MS 15000u
+ *     and the Airform flasher, counted from its send) plus its retry gap,
+ *     and the resend is re-ACKed without a second erase. 20 s keeps that
+ *     resend inside this timeout with margin even if the erase were
+ *     instant. Must stay strictly above the hosts' ERASE timeout plus a
+ *     retry gap. */
+#define CAN_UPDATE_IDLE_TIMEOUT_MS 20000u
 
 /* When CAN is down (init failed, or the driver reports a failed bus-off
  * recovery), the parked DFU + CAN loop retries can_polled_init() at most this

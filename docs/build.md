@@ -244,7 +244,7 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   2. `VBTBKR[4]` = `CAN_UPDATE_MAGIC` (`0xB007CAFE`, written by the app,
      PRC1-unlocked) → cleared → CAN-only update mode at 250 kbit/s on
      D4 (CTX0/P103) / D5 (CRX0/P102). External 5 V CAN transceiver required.
-     **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (15 s,
+     **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (20 s,
      `src/boot/boot_config.h`) with no accepted update-protocol frame on the
      command ID, the board resets. Accepted means DLC 8, command byte
      `0x01`–`0x07` and `0xFF` in every unused byte
@@ -252,10 +252,10 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      that ID gets no reply and does not count: a provisioned board's boot
      command ID equals its app request ID, so the master's periodic app polls
      (ISO-TP) also arrive there and would otherwise hold a stranded board in
-     CAN-only mode. The timer restarts after each handled frame; 15 s is
-     above the hosts' ~8 s worst-case retry gap, and a host's ERASE retry
-     (15 s ERASE timeout, counted from its send) still lands before it
-     because the timer restarts only once the erase is done. If the session
+     CAN-only mode. The timer restarts after each handled frame; 20 s is
+     above the hosts' ~8 s worst-case retry gap, and strictly above a
+     host's ERASE retry (15 s ERASE timeout plus its retry gap, counted
+     from its send), so that retry still lands before it. If the session
      never reached ERASE, the old app boots again. Once ERASE has started, the
      update-in-progress marker parks the board in DFU + CAN. The parked
      DFU + CAN loop itself has no timeout. If the CAN driver reports a failed

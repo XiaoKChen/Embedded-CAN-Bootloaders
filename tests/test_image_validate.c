@@ -1,7 +1,7 @@
 /**
  * @file    test_image_validate.c
  * @brief   Host-side Unity tests for image_validate, boot_decide, the record
- *          encoder.
+ *          encoder and update_start_plan.
  *
  * Adapted from .claude/template/bootloader/test_image_validate.c to the
  * metadata-block layout: a 256 KB byte buffer stands in for code flash, the
@@ -13,7 +13,9 @@
  *               update), the no-record SP-word fallback, a corrupt record,
  *               and torn markers falling back to the SP check. The SP
  *               alignment and image-bounded entry point, image_check_bounds
- *               before a record exists, and image_meta_encode.
+ *               before a record exists, image_meta_encode, and every
+ *               update_start_plan outcome with boot_decide checked after
+ *               each erase/program step the plan implies (power loss).
  * Not covered:  The jump to the application and the flash writes (on target
  *               only).
  *
@@ -301,6 +303,93 @@ static void test_decide_marker_one_word_wrong_falls_back(void)
     TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
 }
 
+/* -----------------------------------------------------------------------------
+ * update_start_plan — what a starting update erases (retry window, #40 item 1)
+ * ----------------------------------------------------------------------------- */
+static void erase_app_first_block(void)
+{
+    memset(&s_flash[APP_BASE], 0xFF, FLASH_BLOCK_SIZE);
+}
+
+static void erase_metadata_block(void)
+{
+    memset(&s_flash[METADATA_ADDR], 0xFF, METADATA_BLOCK_SIZE);
+}
+
+/* Perform the plan's steps the way main.c's flash_mark_update_pending does,
+ * and require that power loss after any one of them leaves before_marker
+ * (the old outcome) or, once the marker is in place, PARK. In particular
+ * the SP fallback never boots a partial image. */
+static void assert_plan_steps_never_boot_partial(boot_decision_t before_marker)
+{
+    const update_start_t plan = update_start_plan(s_flash);
+    if (plan == UPDATE_START_MARKER_IN_PLACE) {
+        TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+        return;
+    }
+    if (plan == UPDATE_START_ERASE_APP_THEN_METADATA) {
+        erase_app_first_block();
+        TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    }
+    erase_metadata_block();
+    TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    write_pending_marker(IMAGE_PENDING_MAGIC, 0xFFFFFFFFu);  /* torn marker */
+    TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_plan_retry_after_interrupted_update_keeps_marker(void)
+{
+    /* Interrupted after DATA block 0: marker, no record, bootable-looking SP. */
+    erase_metadata_record();
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(UPDATE_START_MARKER_IN_PLACE, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_valid_record_erases_metadata_only(void)
+{
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);  /* old app intact */
+}
+
+static void test_plan_completed_update_erases_metadata_only(void)
+{
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);  /* + record */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);
+}
+
+static void test_plan_no_record_bootable_sp_erases_metadata_only(void)
+{
+    erase_metadata_record();  /* SWD-flashed image */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);
+}
+
+static void test_plan_marker_with_torn_record_erases_app_first(void)
+{
+    s_flash[METADATA_ADDR + 12u] ^= 0x01u;
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_failing_record_erases_app_first(void)
+{
+    s_flash[APP_BASE + 9u] ^= 0x40u;  /* e.g. a stale record after an SWD flash */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_erased_flash_erases_app_first(void)
+{
+    memset(s_flash, 0xFF, sizeof(s_flash));
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -333,5 +422,12 @@ int main(void)
     RUN_TEST(test_decide_corrupt_record_parks);
     RUN_TEST(test_decide_torn_marker_first_word_only_falls_back);
     RUN_TEST(test_decide_marker_one_word_wrong_falls_back);
+    RUN_TEST(test_plan_retry_after_interrupted_update_keeps_marker);
+    RUN_TEST(test_plan_valid_record_erases_metadata_only);
+    RUN_TEST(test_plan_completed_update_erases_metadata_only);
+    RUN_TEST(test_plan_no_record_bootable_sp_erases_metadata_only);
+    RUN_TEST(test_plan_marker_with_torn_record_erases_app_first);
+    RUN_TEST(test_plan_failing_record_erases_app_first);
+    RUN_TEST(test_plan_erased_flash_erases_app_first);
     return UNITY_END();
 }

@@ -7,6 +7,8 @@
  * before it is trusted, and the expensive payload CRC runs last. All
  * multi-byte reads and writes go through explicit little-endian byte
  * accesses — no misaligned or aliased direct loads from the buffer.
+ * update_start_plan() checks the cheap marker case first, so a retried
+ * update does not pay for boot_decide()'s payload CRC.
  *
  * @see     image_validate.h, test_image_validate.c
  */
@@ -49,6 +51,17 @@ static bool pending_marker_present(const uint8_t *flash_base)
     const uint8_t *pending = flash_base + METADATA_ADDR + IMAGE_PENDING_OFFSET;
     return load_le32(&pending[0]) == IMAGE_PENDING_MAGIC &&
            load_le32(&pending[4]) == (uint32_t)~IMAGE_PENDING_MAGIC;
+}
+
+static bool record_area_blank(const uint8_t *flash_base)
+{
+    const uint8_t *meta = flash_base + METADATA_ADDR;
+    for (uint32_t i = 0u; i < IMAGE_META_SIZE; i++) {
+        if (meta[i] != 0xFFu) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* -----------------------------------------------------------------------------
@@ -134,4 +147,15 @@ boot_decision_t boot_decide(const uint8_t *flash_base)
         return BOOT_DECISION_APP;
     }
     return BOOT_DECISION_PARK;
+}
+
+update_start_t update_start_plan(const uint8_t *flash_base)
+{
+    if (pending_marker_present(flash_base) && record_area_blank(flash_base)) {
+        return UPDATE_START_MARKER_IN_PLACE;
+    }
+    if (boot_decide(flash_base) == BOOT_DECISION_APP) {
+        return UPDATE_START_ERASE_METADATA;
+    }
+    return UPDATE_START_ERASE_APP_THEN_METADATA;
 }

@@ -11,7 +11,7 @@
  * Owns:         The image_meta_t layout and the coverage of its two CRCs; the
  *               minimum image size; the marker's offset, size and magic.
  * Not here:     The metadata magic (boot_config.h); encoding a record,
- *               validation and the boot decision
+ *               validation, the boot decision and the update-start plan
  *               (image_validate.h); addresses (memory_map.h).
  * Invariants:   The record is written LAST during an update: power loss at
  *               any earlier instant leaves no valid record over a partial
@@ -22,7 +22,9 @@
  *               record as stored in flash.
  *               The marker is programmed right after the metadata block is
  *               erased and BEFORE the first app-slot erase (CAN ERASE and USB
- *               DFU block 0). It sits in its own write unit, so the record at
+ *               DFU block 0); a retried update that finds the marker set and
+ *               the record area blank keeps both as they are
+ *               (update_start_plan). It sits in its own write unit, so the record at
  *               offset 0 is later programmed into the same block without a
  *               second erase. Marker present + no valid record = an
  *               interrupted update: park in the bootloader, never take the

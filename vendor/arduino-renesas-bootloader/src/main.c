@@ -329,12 +329,21 @@ static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
 
 /* ---- can_update engine flash HAL (r_flash_lp) --------------------------
  * Power-loss outcomes of every mutation here are enumerated in
- * src/boot/can_update.h; in short: the metadata block is erased and the
- * update-in-progress marker programmed before any app byte is disturbed,
- * and the record is written last, so an interruption at any instant leaves
- * either the old app intact or the marker parking the device in this
+ * src/boot/can_update.h; in short: the update-in-progress marker is in
+ * place before the app slot is erased (update_start_plan decides what that
+ * costs), and the record is written last, so an interruption at any instant
+ * leaves either the old app intact or the marker parking the device in this
  * bootloader (boot_decide). The bootloader's own 8 flash blocks
  * (0x0000-0x3FFF) are never touched. Shared with the USB DFU download. */
+
+/* One block per IRQ-off window, so USB stays serviceable between blocks. */
+static bool flash_erase_block(uint32_t addr)
+{
+  __disable_irq();
+  fsp_err_t err = R_FLASH_LP_Erase(g_flash.p_ctrl, addr, 1);
+  __enable_irq();
+  return err == FSP_SUCCESS;
+}
 
 static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
@@ -349,21 +358,28 @@ static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
   return memcmp((const void *) addr, data, len) == 0;
 }
 
-/* Erase the metadata block (invalidates the old record) and program the
- * update-in-progress marker. Callers must not erase any app block unless
- * this returns true: until then a power loss boots the still-intact old app
- * through the SP-word fallback. */
+/* Leave the update-in-progress marker programmed and the record area blank.
+ * Callers must not erase any app block unless this returns true: until then
+ * a power loss still boots the old app, or parks. update_start_plan keeps
+ * the marker of an interrupted update (erasing it would hand the partial
+ * image to the SP-word fallback), and erases the APP_BASE block first when
+ * the slot is not bootable, for the same reason. */
 static bool flash_mark_update_pending(void)
 {
-  __disable_irq();
-  int err = R_FLASH_LP_Erase(g_flash.p_ctrl, METADATA_ADDR, 1);
-  __enable_irq();
-  if (err != FSP_SUCCESS) {
+  update_start_t plan = update_start_plan((const uint8_t *) FLASH_BASE);
+  if (plan == UPDATE_START_MARKER_IN_PLACE) {
+    return true;
+  }
+  if (plan == UPDATE_START_ERASE_APP_THEN_METADATA && !flash_erase_block(APP_BASE)) {
+    return false;
+  }
+  if (!flash_erase_block(METADATA_ADDR)) {
     return false;
   }
   /* Non-const so the source stays in RAM, like every other write here: code
    * flash is not readable while it is in P/E mode. */
-  uint32_t marker[2] = { IMAGE_PENDING_MAGIC, (uint32_t) ~IMAGE_PENDING_MAGIC };
+  _Alignas(FLASH_WRITE_UNIT) uint32_t marker[2] = { IMAGE_PENDING_MAGIC,
+                                                    (uint32_t) ~IMAGE_PENDING_MAGIC };
   return can_flash_program(METADATA_ADDR + IMAGE_PENDING_OFFSET,
                            (const uint8_t *) marker, sizeof(marker));
 }
@@ -373,14 +389,8 @@ static bool can_flash_erase_app_and_metadata(void)
   if (!flash_mark_update_pending()) {
     return false;
   }
-
-  /* App slot, one block per IRQ-off window so USB stays serviceable when
-   * CAN runs inside the DFU loop. */
   for (uint32_t block = 0; block < (APP_SLOT_SIZE / FLASH_BLOCK_SIZE); block++) {
-    __disable_irq();
-    int err = R_FLASH_LP_Erase(g_flash.p_ctrl, APP_BASE + block * FLASH_BLOCK_SIZE, 1);
-    __enable_irq();
-    if (err != FSP_SUCCESS) {
+    if (!flash_erase_block(APP_BASE + block * FLASH_BLOCK_SIZE)) {
       return false;
     }
   }

@@ -1,7 +1,7 @@
 /**
  * @file    image_validate.h
  * @brief   Pure-logic validation of the application image, the boot
- *          decision, and the record encoder.
+ *          decision, and the record and erase plan of an update.
  *
  * Operates on a byte buffer standing in for code flash, so it compiles and
  * unit-tests on the host (tests/). Per rules/bootloader.md: never jump to an
@@ -22,8 +22,12 @@
  * the metadata block (0x3F800): the stale record no longer matches the new
  * image and parks the board.
  *
+ * update_start_plan() decides what an update must erase before it touches
+ * the app slot, so that no prefix of those erases can take the SP fallback
+ * into a partial image (retried and interrupted updates included).
+ *
  * Owns:         The image validation checks, the app-or-park decision, the
- *               metadata record encoding.
+ *               metadata record encoding and the update-start plan.
  * Not here:     The record and marker layout (image_header.h); the jump to
  *               the application (boot5() in the fork's src/main.c); the
  *               flash writes themselves (the callers' HAL).
@@ -71,6 +75,18 @@ typedef enum {
     BOOT_DECISION_APP,       /* jump to the image at APP_BASE                 */
 } boot_decision_t;
 
+/* What an update must do to the metadata block (and the app slot's first
+ * block) before it erases the rest of the app slot. */
+typedef enum {
+    UPDATE_START_MARKER_IN_PLACE = 0,     /* marker set, record area blank:
+                                             erase nothing, keep the marker   */
+    UPDATE_START_ERASE_METADATA,          /* slot bootable: erase the block,
+                                             program the marker               */
+    UPDATE_START_ERASE_APP_THEN_METADATA, /* slot not bootable: erase the
+                                             APP_BASE block first, so the SP
+                                             fallback finds no SP word        */
+} update_start_t;
+
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
@@ -112,6 +128,18 @@ void image_meta_encode(uint8_t out[IMAGE_META_SIZE], uint32_t image_size,
  * @return BOOT_DECISION_APP or BOOT_DECISION_PARK.
  */
 boot_decision_t boot_decide(const uint8_t *flash_base);
+
+/**
+ * Decide what a starting update erases before the marker is in place.
+ *
+ * Marker present and record area blank (an earlier update was interrupted)
+ * -> keep both: erasing would drop the marker and let the SP fallback boot
+ * the partial image. Otherwise the metadata block is erased; when the slot
+ * is not bootable now (boot_decide() == PARK) the APP_BASE block goes first.
+ *
+ * @param flash_base  Same buffer contract as image_validate().
+ */
+update_start_t update_start_plan(const uint8_t *flash_base);
 
 #ifdef __cplusplus
 }

@@ -308,17 +308,29 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
 - After a completed DFU download the bootloader now computes CRC32 over the
   received image and writes the metadata record, so DFU-uploaded sketches
   are CRC-validated on later boots too (research §5.2, risk R7).
-- **Update-in-progress marker.** Both update paths erase the metadata block
-  and program the marker (`IMAGE_PENDING_MAGIC` + its complement, its own
-  8-byte write unit at offset `0x10`) *before* the first app-slot erase: CAN
-  in `ERASE`, USB DFU on download block 0. The record at offset 0 is
-  programmed last, into the same block without a second erase: CAN in
-  `VERIFY`, DFU at manifest. If the marker cannot be programmed, the update
-  is refused (CAN `ERASE` NAK, DFU `errERASE`) with the app slot untouched.
+- **Update-in-progress marker.** Both update paths put the marker
+  (`IMAGE_PENDING_MAGIC` + its complement, its own 8-byte write unit at
+  offset `0x10`) in place *before* the first app-slot erase: CAN in `ERASE`,
+  USB DFU on download block 0. What that takes is decided by
+  `update_start_plan` (`src/boot/image_validate.h`, host-tested):
+  - Marker already set and record area blank (a retry after an interrupted
+    update): nothing is erased, the marker stays.
+  - Slot bootable now (valid record, or no record and a stock-valid SP
+    word): erase the metadata block, program the marker.
+  - Slot not bootable (a record that fails a check, a torn record, an erased
+    slot): erase the app's first block at `0x4000` first, then as above.
+
+  The record at offset 0 is programmed last, into the same block without a
+  second erase: CAN in `VERIFY`, DFU at manifest. If the marker cannot be
+  put in place, the update is refused (CAN `ERASE` NAK, DFU `errERASE`)
+  with the rest of the app slot untouched.
 - Power loss at any instant never bricks the board, and the bootloader
   region is never self-written:
   - Before the marker is in place (including a torn marker write, which
-    cannot match), the old app slot is still intact and boots.
+    cannot match), the board does what it did before the update: the old,
+    still intact app boots, or a slot that was not bootable parks (its
+    first block was erased first, so the SP fallback finds no SP word).
   - From the marker until the record is written, the board parks in the
-    bootloader. It never boots a half-written image.
+    bootloader. It never boots a half-written image, also when the update
+    is retried after an interruption.
   - Once the record is written, the new, CRC-validated image boots.

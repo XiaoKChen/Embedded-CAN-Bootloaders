@@ -95,7 +95,9 @@ CFLAGS += --warn-no-undef
 
 include $(TOP)/examples/build_system/make/rules.mk
 
-LD_FILE = $(FAMILY_PATH)/linker/gcc/$(MCU_VARIANT).ld
+# ra4m1.ld with the FLASH region bounded to the 16 KB bootloader region; the
+# other UNO R4 Makefiles link ra4m1.ld unbounded (Opta's BOSSA + DFU needs 32 KB).
+LD_FILE = $(FAMILY_PATH)/linker/gcc/$(MCU_VARIANT)_minima_boot.ld
 
 # ---------------------------------------------------------------------------
 # can_polled.c compiles against the self-contained vendored device headers
@@ -110,7 +112,7 @@ $(BUILD)/obj/src/drivers/can_polled.o: CFLAGS = $(CAN_POLLED_CFLAGS)
 # ---------------------------------------------------------------------------
 # Size gate: the bootloader region is 8 x 2 KB (memory_map.h BOOT_SIZE); a
 # .bin that no longer fits must fail the build, not brick a board. The same
-# 16 KB is ra4m1.ld's FLASH_IMAGE_LENGTH (which bounds the link) and
+# 16 KB is ra4m1_minima_boot.ld's FLASH_IMAGE_LENGTH (which bounds the link) and
 # memory_map.h's BOOT_SIZE: change all three together.
 # ---------------------------------------------------------------------------
 BOOT_REGION_LIMIT = 16384

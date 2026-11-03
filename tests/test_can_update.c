@@ -790,6 +790,22 @@ static void test_vector_unit_only_image_programs_nothing_and_fails_verify(void)
 /* -----------------------------------------------------------------------------
  * Flash ownership between CAN and USB DFU (#40 item 19)
  * ----------------------------------------------------------------------------- */
+static void test_flash_locked_by_dfu_naks_size_without_claiming_flash(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    s_flash_locked = true;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_GREETED, s_state.phase);
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+
+    s_flash_locked = false;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+}
+
 static void test_flash_locked_by_dfu_naks_erase_without_erasing(void)
 {
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
@@ -898,6 +914,7 @@ int main(void)
     RUN_TEST(test_verify_record_failure_drops_to_idle_and_restart_recovers);
     RUN_TEST(test_vector_unit_stays_erased_until_verify_then_programmed_once);
     RUN_TEST(test_vector_unit_only_image_programs_nothing_and_fails_verify);
+    RUN_TEST(test_flash_locked_by_dfu_naks_size_without_claiming_flash);
     RUN_TEST(test_flash_locked_by_dfu_naks_erase_without_erasing);
     RUN_TEST(test_flash_locked_by_dfu_naks_data_and_verify);
     RUN_TEST(test_owns_flash_from_size_until_hello);

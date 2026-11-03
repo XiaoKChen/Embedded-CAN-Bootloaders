@@ -287,9 +287,9 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     words before it writes the record (NAK `0x03` otherwise);
   - a DATA or VERIFY flash failure (NAK `0x02`) ends the session: the host
     must restart from HELLO;
-  - CAN and USB DFU never write flash at the same time: ERASE/DATA/VERIFY NAK
-    `0x05` while a DFU download is in progress, and a DFU download fails to
-    start while a CAN session is past SIZE. A reset releases both; a stalled
+  - CAN and USB DFU never write flash at the same time: SIZE, ERASE, DATA
+    and VERIFY NAK `0x05` while a DFU download is in progress, and a DFU
+    download fails to start while a CAN session is past SIZE. A reset releases both; a stalled
     CAN session is also released by a new HELLO, a stalled DFU download by
     a new download, an abort or a USB unplug/reset.
 - **Per-device CAN IDs.** The command/reply IDs default to `0x79E`/`0x79F` but

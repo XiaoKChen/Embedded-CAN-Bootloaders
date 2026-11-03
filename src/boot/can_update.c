@@ -121,6 +121,11 @@ static bool handle_size(can_update_state_t *st, const uint8_t data[8], uint8_t r
 {
     const uint32_t image_size = load_le32(&data[2]);
 
+    /* SIZE claims flash (can_update_owns_flash): not while USB DFU owns it. */
+    if (st->hal->flash_locked()) {
+        return make_reply(reply, CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_STATE, 0u);
+    }
+
     if (image_size < IMAGE_MIN_SIZE || image_size > APP_SLOT_SIZE) {
         return make_reply(reply, CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_SIZE, 0u);
     }

@@ -184,7 +184,8 @@ typedef struct {
     const uint8_t *flash_base;
 
     /* True while another transport (the USB DFU download) owns flash:
-     * ERASE, DATA and VERIFY then NAK err 0x05 without touching flash. */
+     * SIZE, ERASE, DATA and VERIFY then NAK err 0x05 without touching flash
+     * or claiming it. */
     bool (*flash_locked)(void);
 } can_update_hal_t;
 

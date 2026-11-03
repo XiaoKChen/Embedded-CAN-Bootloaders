@@ -314,8 +314,9 @@ static bool can_flash_erase_app_and_metadata(void)
  * the USB DFU download owns flash from block 0 until manifest, abort or
  * failure (dfu_owns_flash); the CAN session owns it from SIZE until it
  * returns to IDLE/GREETED (can_update_owns_flash). Each side refuses to
- * start while the other owns it, so their erases and writes never
- * interleave. A reset releases both. */
+ * start while the other owns it (DFU block 0 fails, CAN SIZE NAKs), and
+ * CAN ERASE/DATA/VERIFY also NAK while DFU owns it, so their erases and
+ * writes never interleave. A reset releases both. */
 static bool dfu_owns_flash;
 
 static bool can_flash_locked(void)

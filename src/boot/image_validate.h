@@ -9,6 +9,16 @@
  * Check order (fail closed, first failure wins):
  *   magic -> header CRC -> size bounds -> initial SP -> entry point ->
  *   payload CRC.
+ *
+ * boot_decide() turns that result plus the update-in-progress marker
+ * (image_header.h) into the bootloader's app-or-park decision:
+ *   record valid ........................... APP (marker irrelevant)
+ *   record present, any later check fails .. PARK
+ *   no record (magic / header CRC) + marker  PARK (interrupted update)
+ *   no record, no marker ................... stock SP-word fallback, for
+ *                                            images flashed without a record
+ *                                            (e.g. SWD): APP iff the SP word
+ *                                            at APP_BASE is 0x20xx_xxxx
  * ============================================================================= */
 
 #ifndef IMAGE_VALIDATE_H
@@ -36,6 +46,11 @@ typedef enum {
     IMAGE_ERR_PAYLOAD_CRC,  /* image CRC32 mismatch                            */
 } image_validate_result_t;
 
+typedef enum {
+    BOOT_DECISION_PARK = 0,  /* stay in the bootloader (DFU + CAN)            */
+    BOOT_DECISION_APP,       /* jump to the image at APP_BASE                 */
+} boot_decision_t;
+
 /* -----------------------------------------------------------------------------
  * Public API
  * ----------------------------------------------------------------------------- */
@@ -50,6 +65,15 @@ typedef enum {
  * @return IMAGE_VALID when every check passes; the first failure otherwise.
  */
 image_validate_result_t image_validate(const uint8_t *flash_base);
+
+/**
+ * Decide whether to boot the application or park in the bootloader (rules in
+ * the file header above).
+ *
+ * @param flash_base  Same buffer contract as image_validate().
+ * @return BOOT_DECISION_APP or BOOT_DECISION_PARK.
+ */
+boot_decision_t boot_decide(const uint8_t *flash_base);
 
 #ifdef __cplusplus
 }

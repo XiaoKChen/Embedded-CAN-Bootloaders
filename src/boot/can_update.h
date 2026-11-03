@@ -17,7 +17,8 @@
  *   Host -> boot (byte0 = command), required order
  *   HELLO -> SIZE -> ERASE -> DATA... -> VERIFY -> GO:
  *     0x01 HELLO   byte1 = protocol version (0x01)
- *     0x02 ERASE   (erases metadata block FIRST, then the app slot)
+ *     0x02 ERASE   (erases the metadata block and programs the update-in-
+ *                  progress marker FIRST, then erases the app slot)
  *     0x03 DATA    byte1 = seq (uint8, starts at 0, mod 256 across the whole
  *                  transfer), bytes2..7 = 6 image bytes (final frame may carry
  *                  fewer valid bytes — the receiver counts against image_size)
@@ -42,13 +43,23 @@
  * session (documented deviation for host-retry robustness; every other
  * command is strictly ordered and NAKs err 0x05 out of order).
  *
- * Fail-safe (power loss at any instant):
- *   after ERASE ............. metadata erased -> image invalid -> stay in boot
- *   between DATA blocks ..... metadata still erased -> stay in boot
+ * Fail-safe (power loss at any instant; outcomes per boot_decide in
+ * image_validate.h, marker layout in image_header.h):
+ *   before ERASE ............ nothing written -> old app boots
+ *   during ERASE, before the
+ *   marker is programmed .... record erased/torn, marker absent/torn (cannot
+ *                             match), app slot untouched -> SP-word fallback
+ *                             boots the old, intact app
+ *   rest of ERASE, between
+ *   DATA blocks ............. marker present, no record -> stay in boot
+ *                             (DFU + CAN)
  *   during VERIFY metadata
- *   write ................... metadata torn/partial -> header CRC fails ->
- *                             stay in boot
+ *   write ................... record torn/partial -> header CRC fails,
+ *                             marker present -> stay in boot
  *   after VERIFY ............ new image fully validated -> boots
+ * Link loss with power on: CAN update mode (main.c) resets after
+ * CAN_UPDATE_IDLE_TIMEOUT_MS without a command frame, landing in the row
+ * above that matches how far the session got.
  * There is no state that bricks: the bootloader region is never written.
  * ============================================================================= */
 
@@ -98,8 +109,9 @@ extern "C" {
  * Flash HAL seam — the only way the engine reaches hardware
  * ----------------------------------------------------------------------------- */
 typedef struct {
-    /* Erase the metadata block FIRST (invalidates the old image before any
-     * app byte is disturbed — fail closed), then the whole app slot. */
+    /* Erase the metadata block and program the update-in-progress marker
+     * FIRST (an interrupted update then parks instead of booting a partial
+     * image — fail closed), then erase the whole app slot. */
     bool (*flash_erase_app_and_metadata)(void);
 
     /* Program `len` bytes (multiple of FLASH_WRITE_UNIT) at absolute flash

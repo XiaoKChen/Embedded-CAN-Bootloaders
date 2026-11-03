@@ -4,7 +4,10 @@
  * Adapted from .claude/template/bootloader/test_image_validate.c to the
  * metadata-block layout: a 256 KB byte buffer stands in for code flash, the
  * app image sits at APP_BASE and the 16-byte metadata record at METADATA_ADDR.
- * Every image_validate_result_t outcome gets a test (rules/testing.md).
+ * Every image_validate_result_t outcome gets a test (rules/testing.md), and
+ * every boot_decide() branch: valid record (with and without the update-in-
+ * progress marker), marker-only (interrupted update), the no-record SP-word
+ * fallback, a corrupt record, and torn markers falling back to the SP check.
  * ============================================================================= */
 
 #include <string.h>
@@ -159,6 +162,85 @@ static void test_corrupt_payload_fails_payload_crc(void)
     TEST_ASSERT_EQUAL(IMAGE_ERR_PAYLOAD_CRC, image_validate(s_flash));
 }
 
+/* -----------------------------------------------------------------------------
+ * boot_decide — record + update-in-progress marker -> APP / PARK
+ * ----------------------------------------------------------------------------- */
+static void write_pending_marker(uint32_t first, uint32_t second)
+{
+    uint8_t *pending = &s_flash[METADATA_ADDR + IMAGE_PENDING_OFFSET];
+    store_le32(&pending[0], first);
+    store_le32(&pending[4], second);
+}
+
+static void erase_metadata_record(void)
+{
+    memset(&s_flash[METADATA_ADDR], 0xFF, IMAGE_META_SIZE);
+}
+
+static void test_decide_valid_image_boots(void)
+{
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+static void test_decide_valid_image_with_marker_boots(void)
+{
+    /* The normal state after a completed update: marker AND record. */
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+static void test_decide_marker_without_record_parks(void)
+{
+    /* Interrupted update: the partial image's SP word looks bootable, but the
+     * marker forbids the stock fallback. */
+    erase_metadata_record();
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_decide_marker_with_torn_record_parks(void)
+{
+    /* Power loss mid-VERIFY write: magic landed, header CRC did not. */
+    s_flash[METADATA_ADDR + 12u] ^= 0x01u;
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_decide_no_record_valid_sp_falls_back_to_boot(void)
+{
+    erase_metadata_record();  /* e.g. an SWD-flashed image */
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+static void test_decide_no_record_erased_sp_parks(void)
+{
+    erase_metadata_record();
+    patch_app_word(0u, 0xFFFFFFFFu);  /* erased app slot */
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_decide_corrupt_record_parks(void)
+{
+    s_flash[APP_BASE + 9u] ^= 0x40u;  /* record intact, payload CRC fails */
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_decide_torn_marker_first_word_only_falls_back(void)
+{
+    /* Power loss mid-marker write: the app slot is not yet erased, so the
+     * fallback booting the old image is the safe outcome. */
+    erase_metadata_record();
+    write_pending_marker(IMAGE_PENDING_MAGIC, 0xFFFFFFFFu);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+static void test_decide_marker_one_word_wrong_falls_back(void)
+{
+    erase_metadata_record();
+    write_pending_marker(IMAGE_PENDING_MAGIC ^ 0x00000100u, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -177,5 +259,14 @@ int main(void)
     RUN_TEST(test_entry_in_metadata_block_fails);
     RUN_TEST(test_entry_thumb_bit_clear_fails);
     RUN_TEST(test_corrupt_payload_fails_payload_crc);
+    RUN_TEST(test_decide_valid_image_boots);
+    RUN_TEST(test_decide_valid_image_with_marker_boots);
+    RUN_TEST(test_decide_marker_without_record_parks);
+    RUN_TEST(test_decide_marker_with_torn_record_parks);
+    RUN_TEST(test_decide_no_record_valid_sp_falls_back_to_boot);
+    RUN_TEST(test_decide_no_record_erased_sp_parks);
+    RUN_TEST(test_decide_corrupt_record_parks);
+    RUN_TEST(test_decide_torn_marker_first_word_only_falls_back);
+    RUN_TEST(test_decide_marker_one_word_wrong_falls_back);
     return UNITY_END();
 }

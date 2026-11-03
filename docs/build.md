@@ -114,14 +114,16 @@ The build fails if the `.bin` exceeds the 16 384-byte bootloader region
 gcc 14.2.1:
 
 ```
-SIZE GATE OK: 15576 / 16384 bytes
+SIZE GATE OK: 15768 / 16384 bytes
 ```
 
-That leaves **808 B** of headroom (per-device CAN-ID support ~120 B, the
+That leaves **616 B** of headroom (per-device CAN-ID support ~120 B, the
 data-flash read-readiness guard 32 B, the CAN-mode USB-regulator power-up
-88 B). A diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
-self-bisecting boot staircase for CAN bring-up debugging) also fits the gate
-but is never shipped; with `CAN_DIAG=0` (default) the diag code is fully
+88 B, the interrupted-flash marker + boot decision + CAN idle timeout 192 B).
+A diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
+self-bisecting boot staircase for CAN bring-up debugging) fitted the gate by
+only 16–32 B before the interrupted-flash change and likely no longer fits;
+it is never shipped and CI does not build it; with `CAN_DIAG=0` (default) the diag code is fully
 compiled out. For reference: the same source built with the old
 gcc 7.2.1 is ~656 B larger (`SIZE GATE OK: 16112 / 16384`), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
@@ -206,10 +208,29 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   2. `VBTBKR[4]` = `CAN_UPDATE_MAGIC` (`0xB007CAFE`, written by the app,
      PRC1-unlocked) → cleared → CAN-only update mode at 250 kbit/s on
      D4 (CTX0/P103) / D5 (CRX0/P102). External 5 V CAN transceiver required.
-  3. App validation: CRC metadata block at `0x3F800` (see
-     `src/boot/image_header.h`) is authoritative; metadata absent/corrupt
-     falls back to the stock initial-SP check; metadata intact but image
-     invalid stays in the bootloader — with **both** DFU and CAN alive.
+     **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (15 s,
+     `src/boot/boot_config.h`) with no update-protocol frame (command byte
+     `0x01`–`0x07`) on the command ID, the board resets. Other traffic on
+     that ID does not count: a provisioned board's boot command ID equals its
+     app request ID, so the master's periodic app polls (ISO-TP) also arrive
+     there and would otherwise hold a stranded board in CAN-only mode. The
+     timer restarts after each handled update-protocol frame, and 15 s is well
+     above the host flasher's ~8 s worst-case retry gap. If the session never
+     reached ERASE, the old app boots again. Once ERASE has started, the
+     update-in-progress marker parks the board in DFU + CAN. The parked
+     DFU + CAN loop itself has no timeout.
+  3. App validation (`boot_decide`, `src/boot/image_validate.h`): the CRC
+     metadata record at `0x3F800` (see `src/boot/image_header.h`) is
+     authoritative.
+     - Valid record: the app boots.
+     - Record present but the image fails any check: stay in the bootloader.
+     - No valid record but the **update-in-progress marker** (8 bytes at
+       `0x3F810`) present: an interrupted CAN or DFU update, so stay in the
+       bootloader.
+     - Neither record nor marker (e.g. an image flashed over SWD): the stock
+       initial-SP check decides.
+
+     Staying in the bootloader always means **both** DFU and CAN are alive.
 - Protocol: `src/boot/can_update.h` (HELLO/SIZE/ERASE/DATA/VERIFY/GO; host tool
   in `tools/can-flash/`).
 - **Per-device CAN IDs.** The command/reply IDs default to `0x79E`/`0x79F` but
@@ -271,8 +292,19 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   - Host helper: `python can_flash.py --info --interface <if> --channel <ch>`
     prints the reported product name.
 - After a completed DFU download the bootloader now computes CRC32 over the
-  received image and writes a fresh metadata block, so DFU-uploaded sketches
+  received image and writes the metadata record, so DFU-uploaded sketches
   are CRC-validated on later boots too (research §5.2, risk R7).
-- Power loss at any instant leaves either a validated image (boots) or an
-  invalid/absent metadata block (parks in the bootloader) — never a brick;
-  the bootloader region is never self-written.
+- **Update-in-progress marker.** Both update paths erase the metadata block
+  and program the marker (`IMAGE_PENDING_MAGIC` + its complement, its own
+  8-byte write unit at offset `0x10`) *before* the first app-slot erase: CAN
+  in `ERASE`, USB DFU on download block 0. The record at offset 0 is
+  programmed last, into the same block without a second erase: CAN in
+  `VERIFY`, DFU at manifest. If the marker cannot be programmed, the update
+  is refused (CAN `ERASE` NAK, DFU `errERASE`) with the app slot untouched.
+- Power loss at any instant never bricks the board, and the bootloader
+  region is never self-written:
+  - Before the marker is in place (including a torn marker write, which
+    cannot match), the old app slot is still intact and boots.
+  - From the marker until the record is written, the board parks in the
+    bootloader. It never boots a half-written image.
+  - Once the record is written, the new, CRC-validated image boots.

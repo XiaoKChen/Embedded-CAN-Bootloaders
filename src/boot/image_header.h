@@ -9,6 +9,15 @@
  * image_crc32 covers flash [APP_BASE, APP_BASE + image_size).
  * header_crc32 covers the first 12 bytes of this record as stored in flash.
  *
+ * Update-in-progress marker: 8 bytes at METADATA_ADDR + IMAGE_PENDING_OFFSET,
+ * programmed right after the metadata block is erased and BEFORE the first
+ * app-slot erase (CAN ERASE and USB DFU block 0). It sits in its own write
+ * unit, so the record at offset 0 is later programmed into the same block
+ * without a second erase. Marker present + no valid record = an interrupted
+ * update: park in the bootloader, never take the stock SP-word fallback
+ * (boot_decide in image_validate.h). A torn marker write cannot match both
+ * words, and at that instant the app slot is still intact.
+ *
  * Pure host-compilable header: <stdint.h> only, no target includes.
  * ============================================================================= */
 
@@ -18,6 +27,7 @@
 #include <stdint.h>
 
 #include "boot_config.h"  /* IMAGE_META_MAGIC */
+#include "memory_map.h"   /* FLASH_WRITE_UNIT, METADATA_BLOCK_SIZE */
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +48,21 @@ typedef struct {
 
 _Static_assert(sizeof(image_meta_t) == IMAGE_META_SIZE,
                "image_meta_t must be exactly 16 bytes (4 x uint32_t, no padding)");
+
+/* -----------------------------------------------------------------------------
+ * Update-in-progress marker — two little-endian words: magic, ~magic
+ * ----------------------------------------------------------------------------- */
+#define IMAGE_PENDING_OFFSET 0x10u        /* from METADATA_ADDR               */
+#define IMAGE_PENDING_SIZE   8u           /* exactly one code-flash write unit */
+#define IMAGE_PENDING_MAGIC  0xB007F1A5u  /* second word is its complement    */
+
+_Static_assert(IMAGE_PENDING_OFFSET >= IMAGE_META_SIZE,
+               "pending marker must not overlap the metadata record");
+_Static_assert(IMAGE_PENDING_OFFSET % FLASH_WRITE_UNIT == 0u &&
+               IMAGE_PENDING_SIZE == FLASH_WRITE_UNIT,
+               "pending marker must be exactly one aligned write unit");
+_Static_assert(IMAGE_PENDING_OFFSET + IMAGE_PENDING_SIZE <= METADATA_BLOCK_SIZE,
+               "pending marker must lie inside the metadata block");
 
 #ifdef __cplusplus
 }

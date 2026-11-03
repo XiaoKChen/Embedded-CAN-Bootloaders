@@ -324,34 +324,12 @@ static bool flash_lp_open_df_read_ready(void)
 
 /* ---- can_update engine flash HAL (r_flash_lp) --------------------------
  * Power-loss outcomes of every mutation here are enumerated in
- * src/boot/can_update.h; in short: the metadata block is erased first and
- * rewritten last, so an interruption at any instant leaves the image
- * invalid and the device parked in this bootloader. The bootloader's own
- * 8 flash blocks (0x0000-0x3FFF) are never touched. */
-
-static bool can_flash_erase_app_and_metadata(void)
-{
-  /* Metadata block FIRST: invalidates the old image before any app byte is
-   * disturbed (fail closed). */
-  __disable_irq();
-  int err = R_FLASH_LP_Erase(g_flash.p_ctrl, METADATA_ADDR, 1);
-  __enable_irq();
-  if (err != FSP_SUCCESS) {
-    return false;
-  }
-
-  /* App slot, one block per IRQ-off window so USB stays serviceable when
-   * CAN runs inside the DFU loop. */
-  for (uint32_t block = 0; block < (APP_SLOT_SIZE / FLASH_BLOCK_SIZE); block++) {
-    __disable_irq();
-    err = R_FLASH_LP_Erase(g_flash.p_ctrl, APP_BASE + block * FLASH_BLOCK_SIZE, 1);
-    __enable_irq();
-    if (err != FSP_SUCCESS) {
-      return false;
-    }
-  }
-  return true;
-}
+ * src/boot/can_update.h; in short: the metadata block is erased and the
+ * update-in-progress marker programmed before any app byte is disturbed,
+ * and the record is written last, so an interruption at any instant leaves
+ * either the old app intact or the marker parking the device in this
+ * bootloader (boot_decide). The bootloader's own 8 flash blocks
+ * (0x0000-0x3FFF) are never touched. Shared with the USB DFU download. */
 
 static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
@@ -364,6 +342,44 @@ static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
   /* Read-back verify: a failed verify is a failed write, never "probably
    * fine" (rules/bootloader.md). */
   return memcmp((const void *) addr, data, len) == 0;
+}
+
+/* Erase the metadata block (invalidates the old record) and program the
+ * update-in-progress marker. Callers must not erase any app block unless
+ * this returns true: until then a power loss boots the still-intact old app
+ * through the SP-word fallback. */
+static bool flash_mark_update_pending(void)
+{
+  __disable_irq();
+  int err = R_FLASH_LP_Erase(g_flash.p_ctrl, METADATA_ADDR, 1);
+  __enable_irq();
+  if (err != FSP_SUCCESS) {
+    return false;
+  }
+  /* Non-const so the source stays in RAM, like every other write here: code
+   * flash is not readable while it is in P/E mode. */
+  uint32_t marker[2] = { IMAGE_PENDING_MAGIC, (uint32_t) ~IMAGE_PENDING_MAGIC };
+  return can_flash_program(METADATA_ADDR + IMAGE_PENDING_OFFSET,
+                           (const uint8_t *) marker, sizeof(marker));
+}
+
+static bool can_flash_erase_app_and_metadata(void)
+{
+  if (!flash_mark_update_pending()) {
+    return false;
+  }
+
+  /* App slot, one block per IRQ-off window so USB stays serviceable when
+   * CAN runs inside the DFU loop. */
+  for (uint32_t block = 0; block < (APP_SLOT_SIZE / FLASH_BLOCK_SIZE); block++) {
+    __disable_irq();
+    int err = R_FLASH_LP_Erase(g_flash.p_ctrl, APP_BASE + block * FLASH_BLOCK_SIZE, 1);
+    __enable_irq();
+    if (err != FSP_SUCCESS) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static const can_update_hal_t can_hal = {
@@ -450,8 +466,13 @@ static void can_service_info(void)
 }
 
 /* Poll one frame through the update engine, transmit its reply, and perform
- * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop. */
-static void can_service_once(void)
+ * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
+ * Returns true once an update-protocol frame (command byte HELLO..INFO) on
+ * can_cmd_id has been handled; the CAN-only mode's idle timeout restarts only
+ * on those. Provisioned boards share can_cmd_id with their app's request ID,
+ * so the master's periodic app polls (ISO-TP, first byte 0x10/0x2x/0x3x) land
+ * here too and must not keep a stranded board in CAN-only mode. */
+static bool can_service_once(void)
 {
   /* Zero-init: out-params are written by the callees before use, but gcc 7
    * LTO cannot prove it and -Werror=maybe-uninitialized trips otherwise. */
@@ -462,7 +483,7 @@ static void can_service_once(void)
   can_update_action_t action = CAN_UPDATE_ACTION_NONE;
 
   if (can_polled_receive(&id, &dlc, data) != CAN_POLLED_OK) {
-    return;  /* empty FIFO, or bus-off (driver re-initialized itself) */
+    return false;  /* empty FIFO, or bus-off (driver re-initialized itself) */
   }
 
   /* INFO is intercepted before the update engine: its 5-frame reply does not
@@ -470,7 +491,7 @@ static void can_service_once(void)
    * or advance the update session state. */
   if (id == can_cmd_id && data[0] == CAN_UPDATE_CMD_INFO) {
     can_service_info();
-    return;
+    return true;
   }
 
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {
@@ -481,6 +502,8 @@ static void can_service_once(void)
     can_initialized = false;
     NVIC_SystemReset();   /* clean re-entry through the boot decision */
   }
+  return id == can_cmd_id &&
+         data[0] >= CAN_UPDATE_CMD_HELLO && data[0] <= CAN_UPDATE_CMD_INFO;
 }
 
 #ifndef CAN_DIAG
@@ -532,10 +555,20 @@ static void can_xcvr_usb_rail_power_on(void)
 }
 #endif /* !CAN_DIAG */
 
-/* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; the only
- * exits are the GO reset above or an external reset. This entry always
- * follows the application's NVIC_SystemReset(), so the flash open runs
- * against whatever FACI/data-flash state survived that software reset — the
+/* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
+ * through the GO reset above, an external reset, or (production build) the
+ * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without an
+ * update-protocol frame on can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
+ * ERASE the old app boots again, after ERASE boot_decide's marker check
+ * parks it in DFU + CAN. The timebase is board_millis(): board_init()
+ * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same
+ * clock main()'s 500 ms double-tap window uses. Ticks lost in the IRQ-off
+ * flash windows only lengthen the timeout, and the timer restarts after
+ * each handled frame because ERASE blocks this loop for seconds.
+ *
+ * This entry always follows the application's NVIC_SystemReset(), so the
+ * flash open runs against whatever FACI/data-flash state survived that
+ * software reset — the
  * gated helper (never a raw DFU_CONFIG_ADDR read) is what keeps a dirty
  * entry state from bus-faulting into a locked-up board. If the open fails,
  * the board still parks and serves CAN on the compiled default IDs. */
@@ -620,8 +653,15 @@ static void run_can_update_mode(void)
     NVIC_SystemReset();  /* CAN unusable: reset into the normal boot path */
   }
   can_initialized = true;
+  uint32_t last_frame_ms = board_millis();
   while (1) {
-    can_service_once();
+    if (can_service_once()) {
+      last_frame_ms = board_millis();
+    } else if ((board_millis() - last_frame_ms) >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+      can_polled_deinit();  /* as the GO path: deinit before the reset */
+      can_initialized = false;
+      NVIC_SystemReset();
+    }
   }
 #endif /* CAN_DIAG */
 }
@@ -845,7 +885,7 @@ __WEAK void run_bootloader() {
     led_blinking_task();
 #ifdef CAN_LOADER
     if (can_initialized) {
-      can_service_once();
+      (void) can_service_once();  /* parked: no idle timeout */
     }
 #endif
   }
@@ -903,24 +943,14 @@ int main(void)
 	set_double_tap_data(0);
 
 #ifdef CAN_LOADER
-  /* Validate -> decide (rules/bootloader.md): the CRC metadata block at
-   * METADATA_ADDR is authoritative. Metadata absent/corrupt falls back to
-   * the stock SP-word check (documented deviation, for images flashed by
-   * tools that write no metadata, e.g. SWD). Metadata intact but the image
-   * failing any check fails closed into the bootloader. */
-  int app_valid;
-  switch (image_validate((const uint8_t *) 0)) {
-    case IMAGE_VALID:
-      app_valid = 1;
-      break;
-    case IMAGE_ERR_MAGIC:
-    case IMAGE_ERR_HEADER_CRC:
-      app_valid = (((*(uint32_t *) SKETCH_FLASH_OFFSET) & 0xFF000000) == 0x20000000);
-      break;
-    default:
-      app_valid = 0;
-      break;
-  }
+  /* Validate -> decide (rules/bootloader.md; pure logic in
+   * src/boot/image_validate.h): a valid CRC record boots. A record failing
+   * any check, or the update-in-progress marker without a valid record (an
+   * interrupted CAN or DFU update), parks here with DFU + CAN. Only with
+   * neither record nor marker does the stock SP-word check apply
+   * (documented deviation, for images flashed by tools that write no
+   * record, e.g. SWD). */
+  int app_valid = (boot_decide((const uint8_t *) 0) == BOOT_DECISION_APP);
 #else
   int app_valid = (((*(uint32_t *) SKETCH_FLASH_OFFSET) & 0xFF000000) == 0x20000000);
 #endif
@@ -1043,23 +1073,18 @@ static uint32_t _offset;
 static uint32_t dfu_received_len;
 
 /* Research §5.2 / risk R7: stock DFU uploads carry no CRC. After a completed
- * DFU download, compute CRC32 over the received image and write a fresh
- * metadata block, so DFU-uploaded sketches are CRC-validated on later boots.
- * Every early return leaves the boot decision on the stock SP-check fallback
- * — degraded validation, never a brick. */
+ * DFU download, compute CRC32 over the received image and write the metadata
+ * record, so DFU-uploaded sketches are CRC-validated on later boots. Block 0
+ * of the download already erased the metadata block and programmed the
+ * update-in-progress marker (tud_dfu_download_cb); offset 0 is still erased,
+ * so the record is programmed WITHOUT a second erase. A failed record write
+ * leaves the marker alone: the board parks in the bootloader (fail closed). */
 static void dfu_write_image_metadata(void)
 {
   /* An oversized sketch (> APP_SLOT_SIZE) already overwrote the metadata
-   * block; leave its bytes alone (research §5.1: such images are simply
-   * unvalidated). */
+   * block, marker included; leave its bytes alone (research §5.1: such
+   * images are simply unvalidated and take the SP-word fallback). */
   if (dfu_received_len == 0 || dfu_received_len > APP_SLOT_SIZE) {
-    return;
-  }
-
-  __disable_irq();
-  int err = R_FLASH_LP_Erase(g_flash.p_ctrl, METADATA_ADDR, 1);
-  __enable_irq();
-  if (err != FSP_SUCCESS) {
     return;
   }
 
@@ -1098,6 +1123,13 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
 #ifdef CAN_LOADER
   if (block_num == 0) {
     dfu_received_len = 0;
+    /* Before the first app erase below: from here on an interrupted
+     * download parks in the bootloader instead of booting a partial sketch.
+     * If the marker cannot be set, abort with the app slot untouched. */
+    if (!flash_mark_update_pending()) {
+      tud_dfu_finish_flashing(DFU_STATUS_ERR_ERASE);
+      return;
+    }
   }
   dfu_received_len += length;
 #endif

@@ -6,8 +6,9 @@
  * poly 0xEDB88320, init 0xFFFFFFFF, final XOR 0xFFFFFFFF).
  *
  * Covers:       The "123456789" check value, empty input, a single byte, an
- *               all-0xFF write unit, and that crc32_ieee is one-shot (a
- *               concatenation is not resumable from its parts).
+ *               all-0xFF write unit, and crc32_ieee_update: zlib-style
+ *               chaining over every split of a buffer equals the one-shot
+ *               CRC, and an empty chunk leaves the running value unchanged.
  *
  * @see     crc32.h, rules/testing.md
  */
@@ -51,13 +52,23 @@ static void test_all_0xff_write_unit(void)
     TEST_ASSERT_EQUAL_HEX32(0x2144DF1Cu, crc32_ieee(erased, sizeof(erased)));
 }
 
-static void test_incremental_vs_whole_differs_by_design(void)
+static void test_update_over_any_split_matches_one_shot(void)
 {
-    /* crc32_ieee is one-shot (no running-state API); a concatenation is NOT
-     * the CRC of the parts. Guard against accidental "resumable" misuse. */
-    const uint8_t part_a[] = {'1', '2', '3', '4'};
-    const uint8_t whole[]  = {'1', '2', '3', '4', '1', '2', '3', '4'};
-    TEST_ASSERT_NOT_EQUAL(crc32_ieee(part_a, 4u), crc32_ieee(whole, 8u));
+    /* The DFU path feeds the running CRC one USB block at a time; every split
+     * point must give the same result as one pass over the whole buffer. */
+    const uint8_t *msg = (const uint8_t *)"123456789";
+    for (uint32_t split = 0u; split <= 9u; split++) {
+        const uint32_t head = crc32_ieee_update(0u, msg, split);
+        TEST_ASSERT_EQUAL_HEX32(0xCBF43926u,
+                                crc32_ieee_update(head, &msg[split], 9u - split));
+    }
+}
+
+static void test_update_with_empty_chunk_is_identity(void)
+{
+    const uint32_t running = crc32_ieee((const uint8_t *)"a", 1u);
+    TEST_ASSERT_EQUAL_HEX32(running,
+                            crc32_ieee_update(running, (const uint8_t *)"", 0u));
 }
 
 int main(void)
@@ -67,6 +78,7 @@ int main(void)
     RUN_TEST(test_empty_input_is_zero);
     RUN_TEST(test_single_byte_a);
     RUN_TEST(test_all_0xff_write_unit);
-    RUN_TEST(test_incremental_vs_whole_differs_by_design);
+    RUN_TEST(test_update_over_any_split_matches_one_shot);
+    RUN_TEST(test_update_with_empty_chunk_is_identity);
     return UNITY_END();
 }

@@ -1,6 +1,7 @@
 /**
  * @file    test_image_validate.c
- * @brief   Host-side Unity tests for image_validate and boot_decide.
+ * @brief   Host-side Unity tests for image_validate, boot_decide, the record
+ *          encoder and update_start_plan.
  *
  * Adapted from .claude/template/bootloader/test_image_validate.c to the
  * metadata-block layout: a 256 KB byte buffer stands in for code flash, the
@@ -10,8 +11,15 @@
  *               every boot_decide() branch: valid record (with and without
  *               the update-in-progress marker), marker-only (interrupted
  *               update), the no-record SP-word fallback, a corrupt record,
- *               and torn markers falling back to the SP check.
- * Not covered:  The jump to the application (on target only).
+ *               and torn markers falling back to the SP check. The SP
+ *               alignment and image-bounded entry point (past the vector
+ *               words), image_check_bounds before a record exists,
+ *               image_check_staged (vector unit in RAM, rest in flash),
+ *               image_meta_encode, and every
+ *               update_start_plan outcome with boot_decide checked after
+ *               each erase/program step the plan implies (power loss).
+ * Not covered:  The jump to the application and the flash writes (on target
+ *               only).
  *
  * @see     image_validate.h, image_header.h, rules/testing.md
  */
@@ -26,7 +34,7 @@
 /* -----------------------------------------------------------------------------
  * Fixture: a minimal valid image built in a fake 256 KB flash
  * ----------------------------------------------------------------------------- */
-#define TEST_IMAGE_SIZE 64u
+#define TEST_IMAGE_SIZE 0x200u                  /* holds the entry at +0x100 */
 #define TEST_INITIAL_SP SRAM_END                /* full-descending stack top   */
 #define TEST_ENTRY      ((APP_BASE + 0x100u) | 1u)  /* Thumb bit set           */
 
@@ -62,6 +70,11 @@ static void build_valid_image(void)
     store_le32(&app[4], TEST_ENTRY);       /* vector 1: reset entry */
 
     write_metadata(TEST_IMAGE_SIZE, crc32_ieee(app, TEST_IMAGE_SIZE));
+}
+
+static void erase_metadata_record(void)
+{
+    memset(&s_flash[METADATA_ADDR], 0xFF, IMAGE_META_SIZE);
 }
 
 /* Patch the app's SP/entry words; the payload CRC check runs AFTER the SP and
@@ -156,6 +169,54 @@ static void test_entry_in_metadata_block_fails(void)
     TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
 }
 
+static void test_entry_past_image_end_fails(void)
+{
+    /* Inside the slot but past the bytes the record covers: unchecked flash. */
+    patch_app_word(4u, (APP_BASE + TEST_IMAGE_SIZE) | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+}
+
+static void test_entry_inside_vector_words_fails(void)
+{
+    /* Inside the image, but it would execute the SP/entry words as code. */
+    patch_app_word(4u, (APP_BASE + IMAGE_MIN_SIZE - 2u) | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+    patch_app_word(4u, APP_BASE | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+}
+
+static void test_entry_right_after_vector_words_is_allowed(void)
+{
+    patch_app_word(4u, (APP_BASE + IMAGE_MIN_SIZE) | 1u);
+    write_metadata(TEST_IMAGE_SIZE, crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+static void test_entry_at_last_halfword_of_image_is_allowed(void)
+{
+    patch_app_word(4u, (APP_BASE + TEST_IMAGE_SIZE - 2u) | 1u);
+    write_metadata(TEST_IMAGE_SIZE, crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+static void test_sp_not_8_byte_aligned_fails(void)
+{
+    patch_app_word(0u, SRAM_END - 4u);  /* inside SRAM, only word-aligned */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_validate(s_flash));
+}
+
+static void test_check_bounds_without_record(void)
+{
+    /* The update paths check the vectors before the record exists. */
+    erase_metadata_record();
+    const uint8_t *app = &s_flash[APP_BASE];
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_check_bounds(app, TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SIZE, image_check_bounds(app, IMAGE_MIN_SIZE - 1u));
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_check_bounds(app, 0x100u));
+    patch_app_word(0u, 0xFFFFFFFFu);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_check_bounds(app, TEST_IMAGE_SIZE));
+}
+
 static void test_entry_thumb_bit_clear_fails(void)
 {
     patch_app_word(4u, APP_BASE + 0x100u);  /* in range but ARM-state address */
@@ -169,6 +230,72 @@ static void test_corrupt_payload_fails_payload_crc(void)
 }
 
 /* -----------------------------------------------------------------------------
+ * image_check_staged — the commit check, vector unit still in RAM
+ * ----------------------------------------------------------------------------- */
+static uint8_t s_vector_unit[IMAGE_VECTOR_UNIT_SIZE];
+
+/* Move the image's vector unit to RAM and leave it erased in flash, as both
+ * update paths do until they commit. Returns the whole image's CRC. */
+static uint32_t stage_vector_unit(void)
+{
+    uint8_t *app = &s_flash[APP_BASE];
+    const uint32_t crc = crc32_ieee(app, TEST_IMAGE_SIZE);
+    memcpy(s_vector_unit, app, IMAGE_VECTOR_UNIT_SIZE);
+    memset(app, 0xFF, IMAGE_VECTOR_UNIT_SIZE);
+    return crc;
+}
+
+static void test_staged_image_passes_with_vector_unit_erased_in_flash(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                      TEST_IMAGE_SIZE, crc));
+}
+
+static void test_staged_image_crc_mismatch_fails(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_ERR_PAYLOAD_CRC,
+                      image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                         TEST_IMAGE_SIZE, crc ^ 1u));
+    s_flash[APP_BASE + TEST_IMAGE_SIZE - 1u] ^= 0x01u;  /* last byte from flash */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_PAYLOAD_CRC,
+                      image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                         TEST_IMAGE_SIZE, crc));
+}
+
+static void test_staged_image_checks_the_ram_vectors(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SIZE, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                         IMAGE_MIN_SIZE - 1u, crc));
+    store_le32(&s_vector_unit[4], APP_BASE | 1u);  /* entry inside the vectors */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                          TEST_IMAGE_SIZE, crc));
+    store_le32(&s_vector_unit[0], 0xFFFFFFFFu);    /* erased SP */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                       TEST_IMAGE_SIZE, crc));
+}
+
+/* -----------------------------------------------------------------------------
+ * image_meta_encode — the one record encoder
+ * ----------------------------------------------------------------------------- */
+static void test_meta_encode_matches_layout_and_validates(void)
+{
+    uint8_t expected[IMAGE_META_SIZE];
+    memcpy(expected, &s_flash[METADATA_ADDR], IMAGE_META_SIZE);  /* write_metadata */
+
+    uint8_t encoded[IMAGE_META_SIZE];
+    image_meta_encode(encoded, TEST_IMAGE_SIZE,
+                      crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expected, encoded, IMAGE_META_SIZE);
+
+    erase_metadata_record();
+    memcpy(&s_flash[METADATA_ADDR], encoded, IMAGE_META_SIZE);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+/* -----------------------------------------------------------------------------
  * boot_decide — record + update-in-progress marker -> APP / PARK
  * ----------------------------------------------------------------------------- */
 static void write_pending_marker(uint32_t first, uint32_t second)
@@ -176,11 +303,6 @@ static void write_pending_marker(uint32_t first, uint32_t second)
     uint8_t *pending = &s_flash[METADATA_ADDR + IMAGE_PENDING_OFFSET];
     store_le32(&pending[0], first);
     store_le32(&pending[4], second);
-}
-
-static void erase_metadata_record(void)
-{
-    memset(&s_flash[METADATA_ADDR], 0xFF, IMAGE_META_SIZE);
 }
 
 static void test_decide_valid_image_boots(void)
@@ -247,6 +369,93 @@ static void test_decide_marker_one_word_wrong_falls_back(void)
     TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
 }
 
+/* -----------------------------------------------------------------------------
+ * update_start_plan — what a starting update erases (retry window, #40 item 1)
+ * ----------------------------------------------------------------------------- */
+static void erase_app_first_block(void)
+{
+    memset(&s_flash[APP_BASE], 0xFF, FLASH_BLOCK_SIZE);
+}
+
+static void erase_metadata_block(void)
+{
+    memset(&s_flash[METADATA_ADDR], 0xFF, METADATA_BLOCK_SIZE);
+}
+
+/* Perform the plan's steps the way main.c's flash_mark_update_pending does,
+ * and require that power loss after any one of them leaves before_marker
+ * (the old outcome) or, once the marker is in place, PARK. In particular
+ * the SP fallback never boots a partial image. */
+static void assert_plan_steps_never_boot_partial(boot_decision_t before_marker)
+{
+    const update_start_t plan = update_start_plan(s_flash);
+    if (plan == UPDATE_START_MARKER_IN_PLACE) {
+        TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+        return;
+    }
+    if (plan == UPDATE_START_ERASE_APP_THEN_METADATA) {
+        erase_app_first_block();
+        TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    }
+    erase_metadata_block();
+    TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    write_pending_marker(IMAGE_PENDING_MAGIC, 0xFFFFFFFFu);  /* torn marker */
+    TEST_ASSERT_EQUAL(before_marker, boot_decide(s_flash));
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+}
+
+static void test_plan_retry_after_interrupted_update_keeps_marker(void)
+{
+    /* Interrupted after DATA block 0: marker, no record, bootable-looking SP. */
+    erase_metadata_record();
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(UPDATE_START_MARKER_IN_PLACE, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_valid_record_erases_metadata_only(void)
+{
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);  /* old app intact */
+}
+
+static void test_plan_completed_update_erases_metadata_only(void)
+{
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);  /* + record */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);
+}
+
+static void test_plan_no_record_bootable_sp_erases_metadata_only(void)
+{
+    erase_metadata_record();  /* SWD-flashed image */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_APP);
+}
+
+static void test_plan_marker_with_torn_record_erases_app_first(void)
+{
+    s_flash[METADATA_ADDR + 12u] ^= 0x01u;
+    write_pending_marker(IMAGE_PENDING_MAGIC, ~IMAGE_PENDING_MAGIC);
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_failing_record_erases_app_first(void)
+{
+    s_flash[APP_BASE + 9u] ^= 0x40u;  /* e.g. a stale record after an SWD flash */
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
+static void test_plan_erased_flash_erases_app_first(void)
+{
+    memset(s_flash, 0xFF, sizeof(s_flash));
+    TEST_ASSERT_EQUAL(UPDATE_START_ERASE_APP_THEN_METADATA, update_start_plan(s_flash));
+    assert_plan_steps_never_boot_partial(BOOT_DECISION_PARK);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -263,8 +472,18 @@ int main(void)
     RUN_TEST(test_sp_above_sram_end_fails);
     RUN_TEST(test_entry_in_bootloader_fails);
     RUN_TEST(test_entry_in_metadata_block_fails);
+    RUN_TEST(test_entry_past_image_end_fails);
+    RUN_TEST(test_entry_inside_vector_words_fails);
+    RUN_TEST(test_entry_right_after_vector_words_is_allowed);
+    RUN_TEST(test_entry_at_last_halfword_of_image_is_allowed);
+    RUN_TEST(test_sp_not_8_byte_aligned_fails);
+    RUN_TEST(test_check_bounds_without_record);
     RUN_TEST(test_entry_thumb_bit_clear_fails);
     RUN_TEST(test_corrupt_payload_fails_payload_crc);
+    RUN_TEST(test_staged_image_passes_with_vector_unit_erased_in_flash);
+    RUN_TEST(test_staged_image_crc_mismatch_fails);
+    RUN_TEST(test_staged_image_checks_the_ram_vectors);
+    RUN_TEST(test_meta_encode_matches_layout_and_validates);
     RUN_TEST(test_decide_valid_image_boots);
     RUN_TEST(test_decide_valid_image_with_marker_boots);
     RUN_TEST(test_decide_marker_without_record_parks);
@@ -274,5 +493,12 @@ int main(void)
     RUN_TEST(test_decide_corrupt_record_parks);
     RUN_TEST(test_decide_torn_marker_first_word_only_falls_back);
     RUN_TEST(test_decide_marker_one_word_wrong_falls_back);
+    RUN_TEST(test_plan_retry_after_interrupted_update_keeps_marker);
+    RUN_TEST(test_plan_valid_record_erases_metadata_only);
+    RUN_TEST(test_plan_completed_update_erases_metadata_only);
+    RUN_TEST(test_plan_no_record_bootable_sp_erases_metadata_only);
+    RUN_TEST(test_plan_marker_with_torn_record_erases_app_first);
+    RUN_TEST(test_plan_failing_record_erases_app_first);
+    RUN_TEST(test_plan_erased_flash_erases_app_first);
     return UNITY_END();
 }

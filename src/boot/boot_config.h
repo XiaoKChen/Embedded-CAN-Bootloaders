@@ -6,8 +6,8 @@
  * update mode idle timeout) and the handoff magics.
  *
  * Owns:         The default CAN update IDs and bitrate, the CAN update mode
- *               idle timeout, the CAN-update handoff magic and the image
- *               metadata magic.
+ *               idle timeout, the parked loop's CAN re-init interval, the
+ *               CAN-update handoff magic and the image metadata magic.
  * Not here:     Flash/RAM addresses (memory_map.h); per-device ID overrides
  *               (dfu_config.h).
  * Depends on:   <stdint.h> only: a pure host-compilable header, no target
@@ -38,12 +38,31 @@ extern "C" {
 #define CAN_BITRATE_BPS     250000u      /* HOCO-tolerance margin (research §5.3) */
 
 /* CAN update mode (VBTBKR[4] entry) resets after this long without an
- * update-protocol frame (command byte HELLO..INFO) on the command ID; other
- * traffic on that ID, such as the master's app polls, does not count. Before ERASE the old app boots again, after ERASE the
- * update-in-progress marker parks the board in DFU + CAN. Must exceed the
- * host flasher's longest silent gap mid-session (~8 s: 2 s ACK timeout x 4
- * attempts). The parked DFU + CAN loop has no timeout. */
-#define CAN_UPDATE_IDLE_TIMEOUT_MS 15000u
+ * accepted update-protocol frame (can_update_accepts_frame: command ID,
+ * DLC 8, command byte HELLO..INFO, 0xFF padding; INFO counts only once a
+ * session is past IDLE); other traffic on that ID, such as the master's app
+ * polls, does not count. Before ERASE the old app boots again, after ERASE
+ * the update-in-progress marker parks the board in DFU + CAN. The parked
+ * DFU + CAN loop never resets on idle (see its ownership timeout below).
+ *
+ * Must exceed the host flasher's longest silent gap mid-session:
+ *   - ordinary commands: 2 s ACK timeout x 4 attempts, ~8 s;
+ *   - ERASE: the board is busy erasing for a few seconds and the timer
+ *     restarts only once ERASE has been handled. If that ACK is lost, the
+ *     host resends ERASE after its own ERASE timeout (15 s in can_flash.py
+ *     and the Airform flasher, counted from its send) plus its retry gap,
+ *     and the resend is re-ACKed without a second erase. 20 s keeps that
+ *     resend inside this timeout with margin even if the erase were
+ *     instant. Must stay strictly above the hosts' ERASE timeout plus a
+ *     retry gap.
+ * The parked DFU + CAN loop uses the same bound as the ownership timeout of
+ * a stalled CAN session or DFU download (main.c flash_ownership_timeouts). */
+#define CAN_UPDATE_IDLE_TIMEOUT_MS 20000u
+
+/* When CAN is down (init failed, or the driver reports a failed bus-off
+ * recovery), the parked DFU + CAN loop retries can_polled_init() at most this
+ * often; CAN update mode resets instead. */
+#define CAN_REINIT_INTERVAL_MS 1000u
 
 /* -----------------------------------------------------------------------------
  * Handoff & image magics

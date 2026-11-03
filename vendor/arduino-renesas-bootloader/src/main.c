@@ -36,6 +36,7 @@
 #endif
 
 #include "flash.h"
+#include "can_diag.h"  /* no-op hooks unless CAN_LOADER && CAN_DIAG */
 
 #ifdef CAN_LOADER
 /* Flash-over-CAN update path (UNO R4 Minima): pure-logic engine + validation
@@ -48,18 +49,39 @@
 #include "drivers/can_polled.h"
 
 static bool can_initialized = false;
+static uint32_t can_reinit_ms;  /* last CAN drop or init attempt (board_millis) */
+
+/* CAN0 is unusable until can_polled_init() succeeds again. The parked loop's
+ * next init waits CAN_REINIT_INTERVAL_MS from this drop: the driver has just
+ * run (and failed) its own forced re-init. */
+static void can_mark_down(void)
+{
+  can_initialized = false;
+  can_reinit_ms = board_millis();
+}
 #endif
 
-uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];
+/* Flash program source of the DFU download: one whole code flash block
+ * (PROGRAM_BLOCK_SIZE), aligned to the 8 B write unit. */
+_Alignas(8) uint8_t aucbuffer[PROGRAM_BLOCK_SIZE];
+#ifndef CAN_LOADER
 uint16_t auclen = 0;
 uint16_t auc_block_num = 0;
+#endif
 
+/* Only called for data-flash background operations (data_flash_bgo below is
+ * false), so the CAN_LOADER build, whose DFU session tracks its own length,
+ * keeps it a no-op. */
 void bgo_callback(flash_callback_args_t *p_args)
 {
+#ifdef CAN_LOADER
+  (void) p_args;
+#else
   if (p_args->event == FLASH_EVENT_WRITE_COMPLETE && auclen > 0) {
     tud_dfu_finish_flashing(DFU_STATUS_OK);
     auclen = 0;
   }
+#endif
 }
 
 void flash_ready_interrupt_handler();
@@ -97,15 +119,23 @@ enum  {
 
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
 
+/* Set by tud_dfu_detach_cb (inside tud_task); the main loop drains USB for
+ * DFU_DETACH_DRAIN_MS and resets, so tud_task is never re-entered. */
+static bool dfu_detach_requested;
+#define DFU_DETACH_DRAIN_MS 100u
+
 void led_blinking_task(void);
 void set_double_tap_data(uint32_t data);
 
+/* Jump sequence per rules/bootloader.md: IRQs off first, then deinit every
+ * peripheral the bootloader touched, stop SysTick and clear its pending bit,
+ * disable and clear every NVIC interrupt, then VTOR, CONTROL, MSP and the
+ * reset vector. The application re-enables IRQs itself. */
 void boot5(uint32_t address) {
+  __disable_irq();
 
 #ifdef CAN_LOADER
-  /* Jump rule (rules/bootloader.md): deinit every peripheral the bootloader
-   * touched. No current caller reaches here with CAN up, but keep the jump
-   * sequence self-contained. */
+  /* No current caller reaches here with CAN up; kept self-contained. */
   if (can_initialized) {
     can_polled_deinit();
     can_initialized = false;
@@ -124,20 +154,34 @@ void boot5(uint32_t address) {
     R_MPU_SPMON->SP[0].CTL = 0;
 #endif
 
-  __disable_irq(); // Note: remember to enable IRQ in application
+  SysTick->CTRL = 0;
+  SysTick->LOAD = 0;
+  SysTick->VAL  = 0;
+  SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+  for (uint32_t i = 0; i < sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0]); i++) {
+    NVIC->ICER[i] = 0xFFFFFFFFu;
+    NVIC->ICPR[i] = 0xFFFFFFFFu;
+  }
   __DSB();
   __ISB();
 
-  // Disable SysTick
-  SysTick->CTRL = 0;
+  SCB->VTOR = address;
+  __DSB();
+  __ISB();
 
-  SCB->VTOR  = address;
-
-  uint32_t mainStackPointer = *(volatile uint32_t *)(address);
-  __set_MSP(mainStackPointer);
-  uint32_t programResetHandlerAddress = *(volatile uint32_t *) (address + 4);
-  void (* programResetHandler)(void) = (void (*)(void)) programResetHandlerAddress;
-  programResetHandler();
+  /* Both vector words go into registers before MSP moves: nothing may use
+   * the old stack after that. CONTROL = 0 selects MSP in privileged thread
+   * mode and clears FPCA (no lazy FP context carried into the app). MSP and
+   * the branch are one asm block, so the compiler cannot spill to the stack
+   * between them. */
+  uint32_t app_sp    = *(const volatile uint32_t *) address;
+  uint32_t app_entry = *(const volatile uint32_t *) (address + 4u);
+  __set_CONTROL(0);
+  __ISB();
+  __asm volatile ("msr msp, %0\n"
+                  "bx  %1\n"
+                  : : "r" (app_sp), "r" (app_entry) : "memory");
+  __builtin_unreachable();
 }
 
 #if defined(RENESAS_CORTEX_M23)
@@ -158,6 +202,14 @@ void boot5(uint32_t address) {
 
 _Static_assert(SKETCH_FLASH_OFFSET == APP_BASE,
                "memory_map.h APP_BASE must match the stock SKETCH_FLASH_OFFSET");
+
+/* drivers/can_polled.c derives its bit timing from PCLKB = 24 MHz and its
+ * timeouts from ICLK = 48 MHz (can_polled.h): pin the BSP clock tree. */
+_Static_assert(BSP_CFG_CLOCK_SOURCE == BSP_CLOCKS_SOURCE_CLOCK_HOCO && BSP_HOCO_HZ == 48000000,
+               "CAN driver assumes the 48 MHz HOCO as the system clock");
+_Static_assert(BSP_CFG_ICLK_DIV == BSP_CLOCKS_SYS_CLOCK_DIV_1 &&
+               BSP_CFG_PCLKB_DIV == BSP_CLOCKS_SYS_CLOCK_DIV_2,
+               "CAN driver assumes ICLK = 48 MHz and PCLKB = 24 MHz");
 
 static void set_can_update_request(uint32_t data)
 {
@@ -192,116 +244,13 @@ static void set_can_update_request(uint32_t data)
  * always keeps serving CAN, never a dead board). */
 #define DATA_FLASH_TDSTOP_SETTLE_US  6u
 
-static bool dfu_config_readable = false;
-
-#ifdef CAN_DIAG
-/* ---- CAN_DIAG bench instrumentation (throwaway) --------------------------
- * Stage-marker frames {0xD1, stage, ...} emitted during the magic-entry path
- * (run_can_update_mode) so a bench candump shows exactly where entry dies.
- * The real update engine stays fully functional. Nothing in any CAN_DIAG
- * block compiles in a CAN_DIAG=0 build (byte-identical). One deliberate
- * SUBTRACTION: the production USB-rail power-up (can_xcvr_usb_rail_power_on)
- * is compiled OUT of CAN_DIAG builds, so the staircase keeps reproducing the
- * unpowered-rail failure it diagnosed and the diag image stays inside the
- * 16 KiB gate. */
-#define CAN_DIAG_MARKER              0xD1u
-#define CAN_DIAG_STAGE_CAN_UP        0x00u  /* after default-ID can_polled_init  */
-#define CAN_DIAG_STAGE_FLASH_GATE    0x01u  /* after flash_lp_open_df_read_ready */
-#define CAN_DIAG_STAGE_IDS_LOADED    0x02u  /* after can_load_ids                */
-#define CAN_DIAG_STAGE_REFILTER      0x03u  /* after re-init on the loaded ID    */
-#define CAN_DIAG_STAGE_STAIR_RESULT  0xE4u  /* DIAG4 staircase verdict frame     */
-#define CAN_DIAG_STAGE_STAIR_LOG     0xE5u  /* DIAG4 failed-attempt register log */
-#define CAN_DIAG_STAGE_HEARTBEAT     0xFBu
-#define CAN_DIAG_NO_REINIT           0xEEu  /* stage-3 status: IDs = defaults    */
-/* Crude ~500 ms heartbeat period by busy loop count: no SysTick guaranteed in
- * this loop, and no interrupts allowed. One empty-FIFO service pass is a
- * handful of register reads at 48 MHz — order-of-magnitude is all we need. */
-#define CAN_DIAG_HEARTBEAT_LOOPS     500000u
-
-/* DIAG3 retry-bisect knobs. One attempt is bounded by the driver's ~200 ms
- * SENTDATA wait (twice, with the second-send probe) plus the 100 ms settle,
- * so the 3 s budget dominates when sends time out slowly and the attempt cap
- * when they fail fast; both together keep the loop finite even if SysTick
- * (board_millis) were dead. */
-#define CAN_DIAG_RETRY_MAX_ATTEMPTS  30u
-#define CAN_DIAG_RETRY_BUDGET_MS     3000u
-#define CAN_DIAG_RETRY_SETTLE_MS     100u
-#define CAN_DIAG_SECOND_SEND         0x80u  /* b2 flag: 2nd TX of the attempt */
-
-static uint16_t can_diag_open_err;   /* fsp_err_t of R_FLASH_LP_Open  */
-static uint16_t can_diag_reset_err;  /* fsp_err_t of R_FLASH_LP_Reset */
-
-static void can_diag_send(uint32_t id, uint8_t stage, uint8_t b2, uint8_t b3,
-                          uint8_t b4, uint8_t b5, uint8_t b6, uint8_t b7)
-{
-  const uint8_t frame[8] = { CAN_DIAG_MARKER, stage, b2, b3, b4, b5, b6, b7 };
-  (void) can_polled_send(id, 8, frame);  /* diag marker: loss is acceptable */
-}
-
-/* ---- DIAG3: retry-based bring-up bisect ----------------------------------
- * DIAG2 established that one init+send right after board_init() NEVER
- * transmits while the identical calls later in the DFU path do. One attempt
- * here = can_polled_init -> marker send -> (on failure) ONE more send on the
- * SAME init -> deinit + 100 ms settle -> retry, until a frame is ACKed on
- * the wire or the budget runs out. The first frame that arrives carries the
- * whole story:
- *   b2  attempt number (1-based); bit7 SET = the frame went out on the
- *       SECOND send of its attempt — init was fine and only the first TX
- *       after bring-up is lost (first-TX quirk, not settle time)
- *   b3  init status of the winning attempt
- *   b4  previous attempt's last send status (0xFF = none, first attempt)
- *   b5  RSTSR1 low byte (bit2 SWRF = software-reset entry), b6 RSTSR2
- *   b7  previous attempt's TECR, captured right after its failed send and
- *       before deinit: 0 = the controller never drove the bus (mode/sync
- *       problem); >= 8 and climbing toward 128+ = it DID transmit but every
- *       frame died on the wire (bit-timing/ACK problem)
- * On total failure the last attempt's init is deliberately left in place
- * (module clocked, registers safe to poll) and *out_sent stays false. */
-static can_polled_status_t can_diag_bringup_retry(uint8_t stage, bool *out_sent)
-{
-  uint8_t rstsr1_lo = (uint8_t) R_SYSTEM->RSTSR1;
-  uint8_t rstsr2    = (uint8_t) R_SYSTEM->RSTSR2;
-  uint8_t prev_send = 0xFFu;                       /* no previous attempt */
-  uint8_t prev_tecr = 0;
-  can_polled_status_t init_status = CAN_POLLED_ERROR;
-  uint32_t start_ms = board_millis();
-
-  *out_sent = false;
-  for (uint8_t attempt = 1; ; attempt++) {
-    init_status = can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT);
-
-    uint8_t frame[8] = { CAN_DIAG_MARKER, stage, attempt, (uint8_t) init_status,
-                         prev_send, rstsr1_lo, rstsr2, prev_tecr };
-    can_polled_status_t send_status = init_status;
-    if (init_status == CAN_POLLED_OK) {
-      send_status = can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame);
-      if (send_status != CAN_POLLED_OK) {
-        /* Priming probe: retry on the SAME init, no delay, no reinit. */
-        frame[2] = (uint8_t) (attempt | CAN_DIAG_SECOND_SEND);
-        send_status = can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame);
-      }
-    }
-    if (send_status == CAN_POLLED_OK) {
-      *out_sent = true;
-      return init_status;
-    }
-    if ((attempt >= CAN_DIAG_RETRY_MAX_ATTEMPTS) ||
-        ((board_millis() - start_ms) >= CAN_DIAG_RETRY_BUDGET_MS)) {
-      return init_status;  /* leave the last init up: register polls stay safe */
-    }
-    prev_send = (uint8_t) send_status;
-    prev_tecr = R_CAN0->TECR;      /* before deinit's reset clears the counter */
-    can_polled_deinit();
-    R_BSP_SoftwareDelay(CAN_DIAG_RETRY_SETTLE_MS, BSP_DELAY_UNITS_MILLISECONDS);
-  }
-}
-#endif /* CAN_DIAG */
+bool dfu_config_readable = false;  /* declared in flash.h for usb_descriptors.c */
 
 static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
 {
 #ifdef CAN_DIAG
   /* Same calls/short-circuits as stock, with the fsp_err_t values latched
-   * for the stage-1 marker frame. */
+   * for the stage-1 marker frame (can_diag.c). */
   can_diag_open_err = (uint16_t) R_FLASH_LP_Open(g_flash.p_ctrl, g_flash.p_cfg);
   if (can_diag_open_err != (uint16_t) FSP_SUCCESS) {
     return false;
@@ -329,41 +278,86 @@ static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
 
 /* ---- can_update engine flash HAL (r_flash_lp) --------------------------
  * Power-loss outcomes of every mutation here are enumerated in
- * src/boot/can_update.h; in short: the metadata block is erased and the
- * update-in-progress marker programmed before any app byte is disturbed,
- * and the record is written last, so an interruption at any instant leaves
- * either the old app intact or the marker parking the device in this
+ * src/boot/can_update.h; in short: the update-in-progress marker is in
+ * place before the app slot is erased (update_start_plan decides what that
+ * costs), and the image's vector unit and then the record are written last,
+ * after the image's CRC has passed, so an interruption at any instant
+ * leaves either the old app intact or the marker parking the device in this
  * bootloader (boot_decide). The bootloader's own 8 flash blocks
  * (0x0000-0x3FFF) are never touched. Shared with the USB DFU download. */
 
+/* Both helpers close the data-flash read gate on any failure: a failed P/E
+ * operation may leave the FACI in P/E mode, where reading DFU_CONFIG_ADDR is
+ * not safe, so INFO and the USB name strings fall back to their defaults
+ * until the next reset re-proves the gate. */
+
+/* The bootloader never erases or writes its own region (rules/bootloader.md):
+ * both helpers refuse a range outside [APP_BASE, end of the metadata block)
+ * before touching the flash driver. */
+static bool flash_update_range_ok(uint32_t addr, uint32_t len)
+{
+  const uint32_t update_end = METADATA_ADDR + METADATA_BLOCK_SIZE;
+  return addr >= APP_BASE && addr <= update_end && len <= update_end - addr;
+}
+
+/* One block per IRQ-off window, so USB stays serviceable between blocks. */
+static bool flash_erase_block(uint32_t addr)
+{
+  if (!flash_update_range_ok(addr, FLASH_BLOCK_SIZE)) {
+    return false;
+  }
+  __disable_irq();
+  fsp_err_t err = R_FLASH_LP_Erase(g_flash.p_ctrl, addr, 1);
+  __enable_irq();
+  if (err != FSP_SUCCESS) {
+    dfu_config_readable = false;
+    return false;
+  }
+  return true;
+}
+
 static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
+  if (!flash_update_range_ok(addr, len)) {
+    return false;
+  }
   __disable_irq();
   int err = R_FLASH_LP_Write(g_flash.p_ctrl, (uint32_t) data, addr, len);
   __enable_irq();
-  if (err != FSP_SUCCESS) {
-    return false;
-  }
   /* Read-back verify: a failed verify is a failed write, never "probably
    * fine" (rules/bootloader.md). */
-  return memcmp((const void *) addr, data, len) == 0;
+  if (err != FSP_SUCCESS || memcmp((const void *) addr, data, len) != 0) {
+    dfu_config_readable = false;
+    return false;
+  }
+  return true;
 }
 
-/* Erase the metadata block (invalidates the old record) and program the
- * update-in-progress marker. Callers must not erase any app block unless
- * this returns true: until then a power loss boots the still-intact old app
- * through the SP-word fallback. */
+/* Leave the update-in-progress marker programmed and the record area blank.
+ * Callers must not erase any app block unless this returns true: until then
+ * a power loss still boots the old app, or parks. update_start_plan keeps
+ * the marker of an interrupted update (erasing it would hand the partial
+ * image to the SP-word fallback), and erases the APP_BASE block first when
+ * the slot is not bootable, for the same reason. */
 static bool flash_mark_update_pending(void)
 {
-  __disable_irq();
-  int err = R_FLASH_LP_Erase(g_flash.p_ctrl, METADATA_ADDR, 1);
-  __enable_irq();
-  if (err != FSP_SUCCESS) {
+  update_start_t plan = update_start_plan((const uint8_t *) FLASH_BASE);
+  if (plan == UPDATE_START_MARKER_IN_PLACE) {
+    return true;
+  }
+  /* The SP-word fallback reads only the first word: it must read erased
+   * before the marker's block may be erased. */
+  if (plan == UPDATE_START_ERASE_APP_THEN_METADATA &&
+      (!flash_erase_block(APP_BASE) || *(const volatile uint32_t *) APP_BASE != 0xFFFFFFFFu)) {
+    return false;
+  }
+  if (!flash_erase_block(METADATA_ADDR)) {
     return false;
   }
   /* Non-const so the source stays in RAM, like every other write here: code
    * flash is not readable while it is in P/E mode. */
-  uint32_t marker[2] = { IMAGE_PENDING_MAGIC, (uint32_t) ~IMAGE_PENDING_MAGIC };
+  _Alignas(FLASH_WRITE_UNIT) uint32_t marker[2] = { IMAGE_PENDING_MAGIC,
+                                                    (uint32_t) ~IMAGE_PENDING_MAGIC };
   return can_flash_program(METADATA_ADDR + IMAGE_PENDING_OFFSET,
                            (const uint8_t *) marker, sizeof(marker));
 }
@@ -373,24 +367,43 @@ static bool can_flash_erase_app_and_metadata(void)
   if (!flash_mark_update_pending()) {
     return false;
   }
-
-  /* App slot, one block per IRQ-off window so USB stays serviceable when
-   * CAN runs inside the DFU loop. */
   for (uint32_t block = 0; block < (APP_SLOT_SIZE / FLASH_BLOCK_SIZE); block++) {
-    __disable_irq();
-    int err = R_FLASH_LP_Erase(g_flash.p_ctrl, APP_BASE + block * FLASH_BLOCK_SIZE, 1);
-    __enable_irq();
-    if (err != FSP_SUCCESS) {
+    if (!flash_erase_block(APP_BASE + block * FLASH_BLOCK_SIZE)) {
       return false;
     }
   }
   return true;
 }
 
+/* Flash owner latch between the two update transports of the parked loop:
+ * the USB DFU download owns flash from block 0 until manifest, abort,
+ * failure, unmount, the next (re)enumeration or its ownership timeout
+ * (dfu_owns_flash); the CAN session owns it from SIZE until it
+ * returns to IDLE/GREETED, its ownership timeout included
+ * (can_update_owns_flash). Each side refuses to
+ * start while the other owns it (DFU block 0 fails, CAN SIZE NAKs), and
+ * CAN ERASE/DATA/VERIFY also NAK while DFU owns it, so their erases and
+ * writes never interleave. A reset releases both. */
+static bool dfu_owns_flash;
+static uint32_t dfu_last_block_ms;  /* board_millis of the last accepted DFU block */
+static uint32_t can_last_frame_ms;  /* board_millis of the last accepted CAN frame */
+
+/* A transport that goes silent while it owns flash must not lock the other
+ * out until a reset: after CAN_UPDATE_IDLE_TIMEOUT_MS without an accepted
+ * frame (CAN) or block (DFU) its ownership ends. Nothing is erased; the
+ * marker keeps the board parked until an update completes. */
+static void flash_ownership_timeouts(void);
+
+static bool can_flash_locked(void)
+{
+  return dfu_owns_flash;
+}
+
 static const can_update_hal_t can_hal = {
   .flash_erase_app_and_metadata = can_flash_erase_app_and_metadata,
   .flash_program                = can_flash_program,
   .flash_base                   = (const uint8_t *) 0,  /* code flash is mapped at 0 */
+  .flash_locked                 = can_flash_locked,
 };
 
 static can_update_state_t can_state;
@@ -423,16 +436,33 @@ static void can_load_ids(void)
 #endif
 }
 
+/* Replies are best effort (the host retries). A failed bus-off recovery marks
+ * CAN down: CAN update mode then resets, the parked loop re-inits it. */
+static void can_send_reply(const uint8_t frame[8])
+{
+  if (can_polled_send(can_reply_id, 8, frame) == CAN_POLLED_RECOVERY_FAILED) {
+    can_mark_down();
+  }
+}
+
+/* Every exit from a CAN service path re-runs the boot decision. */
+static void can_deinit_and_reset(void)
+{
+  can_polled_deinit();  /* deinit every peripheral this path touched */
+  NVIC_SystemReset();
+}
+
 /* INFO (host CMD 0x07): report the device's USB product name so a host can
  * identify a board parked in the bootloader. Answered here, not in the update
  * engine, because the reply is 5 frames (the engine emits one per frame).
  *
- * Reply on CAN_ID_BOOT_TO_HOST (frozen contract):
+ * Reply on can_reply_id (frozen contract):
  *   frame 0  {0x79, 0x07, name_len, protocol_version, 0xFF, 0xFF, 0xFF, 0xFF}
  *   frames 1..4  the 32-byte product-name field, 8 bytes each in order,
  *                ASCII, 0x00-padded beyond name_len.
  *
- * Name source: dfu_config_parse of the 76-byte block at DFU_CONFIG_ADDR (data
+ * Name source: dfu_config_parse of the v1 (76 B) or v2 (80 B) block at
+ * DFU_CONFIG_ADDR (data
  * flash, read only when dfu_config_readable proved the window readable — see
  * flash_lp_open_df_read_ready). Unproven window or absent/invalid block ->
  * name_len = 0 and all 32 name bytes 0x00. A build without DFU_CUSTOM_NAME
@@ -463,52 +493,61 @@ static void can_service_info(void)
   frame[2] = name_len;                     /* 0..32 */
   frame[3] = CAN_UPDATE_PROTOCOL_VERSION;  /* same version HELLO reports (1) */
   memset(&frame[4], CAN_UPDATE_FILL_BYTE, 4);
-  (void) can_polled_send(can_reply_id, 8, frame);
+  can_send_reply(frame);
 
   for (uint32_t off = 0; off < DFU_CONFIG_STR_MAX; off += 8u) {
-    (void) can_polled_send(can_reply_id, 8, &name[off]);
+    can_send_reply(&name[off]);
   }
 }
 
 /* Poll one frame through the update engine, transmit its reply, and perform
  * the GO reset. Shared by the CAN-only mode and the combined DFU+CAN loop.
- * Returns true once an update-protocol frame (command byte HELLO..INFO) on
- * can_cmd_id has been handled; the CAN-only mode's idle timeout restarts only
- * on those. Provisioned boards share can_cmd_id with their app's request ID,
- * so the master's periodic app polls (ISO-TP, first byte 0x10/0x2x/0x3x) land
- * here too and must not keep a stranded board in CAN-only mode. */
+ * Returns true once an accepted update-protocol frame has been handled
+ * (can_update_accepts_frame: can_cmd_id, DLC 8, command byte HELLO..INFO,
+ * 0xFF padding), except INFO while the session is IDLE; the CAN-only mode's
+ * idle timeout restarts only on those. Provisioned boards share can_cmd_id
+ * with their app's request ID, so the master's periodic app polls (ISO-TP)
+ * land here too: they get no reply and must not keep a stranded board in
+ * CAN-only mode. Neither may a host that only scans with INFO. */
 static bool can_service_once(void)
 {
-  /* Zero-init: out-params are written by the callees before use, but gcc 7
-   * LTO cannot prove it and -Werror=maybe-uninitialized trips otherwise. */
+  /* Zero-init: out-params are written by the callees before use, but gcc
+   * cannot always prove it under LTO, and -Werror=maybe-uninitialized would
+   * trip. */
   uint32_t id = 0;
   uint8_t dlc = 0;
   uint8_t data[8] = {0};
   uint8_t reply[8] = {0};
   can_update_action_t action = CAN_UPDATE_ACTION_NONE;
 
-  if (can_polled_receive(&id, &dlc, data) != CAN_POLLED_OK) {
-    return false;  /* empty FIFO, or bus-off (driver re-initialized itself) */
+  can_polled_status_t status = can_polled_receive(&id, &dlc, data);
+  if (status == CAN_POLLED_RECOVERY_FAILED) {
+    can_mark_down();
+  }
+  if (status != CAN_POLLED_OK) {
+    return false;  /* empty FIFO, bus-off (the controller recovers), or CAN down */
+  }
+
+  if (!can_update_accepts_frame(&can_state, id, dlc, data)) {
+    return false;
   }
 
   /* INFO is intercepted before the update engine: its 5-frame reply does not
    * fit the engine's one-reply-per-frame contract. Answering it does not touch
-   * or advance the update session state. */
-  if (id == can_cmd_id && data[0] == CAN_UPDATE_CMD_INFO) {
+   * or advance the update session state, so it counts as activity only
+   * inside a session. */
+  if (data[0] == CAN_UPDATE_CMD_INFO) {
     can_service_info();
-    return true;
+    return can_state.phase != CAN_UPDATE_PHASE_IDLE;
   }
 
   if (can_update_handle_frame(&can_state, id, dlc, data, reply, &action)) {
-    (void) can_polled_send(can_reply_id, 8, reply);  /* host retries on loss */
+    can_send_reply(reply);
   }
   if (action == CAN_UPDATE_ACTION_RESET) {
-    can_polled_deinit();  /* deinit every peripheral this path touched */
-    can_initialized = false;
-    NVIC_SystemReset();   /* clean re-entry through the boot decision */
+    can_deinit_and_reset();
   }
-  return id == can_cmd_id &&
-         data[0] >= CAN_UPDATE_CMD_HELLO && data[0] <= CAN_UPDATE_CMD_INFO;
+  return true;
 }
 
 #ifndef CAN_DIAG
@@ -532,9 +571,8 @@ static bool can_service_once(void)
  *      hw/bsp/ra/family.c:138; RA4M1 USBMC b7 "Regulator ON/OFF control")
  * then let the regulator soak before the first CAN access. Harmless on
  * boards without the dependency: the LDO merely energizes an unused VCC_USB
- * pad. Compiled OUT of CAN_DIAG builds — the staircase must keep reproducing
- * the unpowered-rail conditions it diagnosed, and the diag image is 32 B
- * under the 16 KiB gate. */
+ * pad. Compiled OUT of CAN_DIAG builds — the staircase (can_diag.c) must
+ * keep reproducing the unpowered-rail conditions it diagnosed. */
 #define CAN_USB_RAIL_SCKE_TIMEOUT_LOOPS  1000u
 #define CAN_USB_RAIL_SETTLE_MS           5u
 
@@ -561,9 +599,10 @@ static void can_xcvr_usb_rail_power_on(void)
 #endif /* !CAN_DIAG */
 
 /* CAN update mode (entered via the VBTBKR[4] magic): CAN-only loop; it exits
- * through the GO reset above, an external reset, or (production build) the
- * idle-timeout reset after CAN_UPDATE_IDLE_TIMEOUT_MS without an
- * update-protocol frame on can_cmd_id, so a pulled wire never leaves the board deaf to USB: before
+ * through the GO reset above, an external reset, or (production build) a
+ * reset when the driver reports a failed bus-off recovery or after
+ * CAN_UPDATE_IDLE_TIMEOUT_MS without an accepted update-protocol frame, so a
+ * pulled wire never leaves the board deaf to USB: before
  * ERASE the old app boots again, after ERASE boot_decide's marker check
  * parks it in DFU + CAN. The timebase is board_millis(): board_init()
  * started SysTick (1 ms, tinyusb RA family.c) and enabled IRQs, the same
@@ -580,94 +619,42 @@ static void can_xcvr_usb_rail_power_on(void)
 static void run_can_update_mode(void)
 {
 #ifdef CAN_DIAG
-  /* Stage 0 (DIAG3): retry-based CAN bring-up on the COMPILED default IDs
-   * BEFORE any flash call — the real bisect target. The winning frame's
-   * attempt count quantifies the settle time this path needs; if every
-   * attempt fails the board still parks and serves the CAN loop below on the
-   * last init (deliberate: a diag board never resets off the bench). */
-  bool stage0_sent;
-  can_polled_status_t init_status = can_diag_bringup_retry(CAN_DIAG_STAGE_CAN_UP,
-                                                           &stage0_sent);
-  can_initialized = (init_status == CAN_POLLED_OK);
-  (void) stage0_sent;  /* the bench reads success off the wire, not this flag */
-
-  /* Stage 1: the data-flash read gate. byte7 = DFLCTL as found on entry —
-   * directly tests the "DFLEN survived the software reset" hypothesis the
-   * gate comment above documents. */
-  uint8_t dflctl_on_entry = (uint8_t) R_FACI_LP->DFLCTL;
-  dfu_config_readable = flash_lp_open_df_read_ready();
-  can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_FLASH_GATE,
-                dfu_config_readable ? 1u : 0u,
-                (uint8_t) can_diag_open_err, (uint8_t) (can_diag_open_err >> 8),
-                (uint8_t) can_diag_reset_err, (uint8_t) (can_diag_reset_err >> 8),
-                dflctl_on_entry);
-
-  /* Stage 2: per-device IDs from the v2 config block (or defaults). */
-  can_load_ids();
-  can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_IDS_LOADED,
-                dfu_config_readable ? 1u : 0u,
-                (uint8_t) can_cmd_id, (uint8_t) (can_cmd_id >> 8),
-                (uint8_t) can_reply_id, (uint8_t) (can_reply_id >> 8), 0);
-
-  /* Stage 3: re-filter onto the loaded cmd ID when it differs from the
-   * default; the marker goes out on the LOADED reply ID so the bench proves
-   * that ID actually transmits. */
-  uint8_t refilter_status = CAN_DIAG_NO_REINIT;
-  if (can_cmd_id != CAN_ID_HOST_TO_BOOT) {
-    can_polled_deinit();
-    init_status = can_polled_init(CAN_BITRATE_BPS, can_cmd_id);
-    can_initialized = (init_status == CAN_POLLED_OK);
-    refilter_status = (uint8_t) init_status;
-  }
-  can_diag_send(can_reply_id, CAN_DIAG_STAGE_REFILTER, refilter_status,
-                0, 0, 0, 0, 0);
-
-  /* Engine matches on whatever cmd ID is now in effect (stock semantics).
-   * Deliberate diag deviation: a failed CAN init parks here instead of
-   * resetting into the normal boot path — a diag board must stay on the
-   * bench, and every init failure path above leaves the CAN module clocked
-   * (module-stop is released before any failing step), so the register
-   * polls below stay safe. */
-  can_update_init(&can_state, &can_hal, can_cmd_id);
-
-  uint32_t hb_loops = 0;
-  uint8_t hb_seq = 0;
-  while (1) {
-    can_service_once();
-    if (++hb_loops >= CAN_DIAG_HEARTBEAT_LOOPS) {
-      hb_loops = 0;
-      can_diag_send(can_reply_id, CAN_DIAG_STAGE_HEARTBEAT, hb_seq, 0, 0, 0, 0, 0);
-      /* Every 4th heartbeat also on the default reply ID, so the board is
-       * provably alive no matter which reply ID the bench watches. */
-      if (((hb_seq & 3u) == 0u) && (can_reply_id != CAN_ID_BOOT_TO_HOST)) {
-        can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_HEARTBEAT, hb_seq, 0, 0, 0, 0, 0);
-      }
-      hb_seq++;
-    }
-  }
+  /* Stage 0 of the bench markers (can_diag.c): CAN up on the default IDs
+   * BEFORE any flash call. */
+  can_initialized = can_diag_entry_bringup();
 #else
   /* Power the CAN transceiver rail (USB LDO) BEFORE any CAN register access
    * — see can_xcvr_usb_rail_power_on above for the board-level dependency. */
   can_xcvr_usb_rail_power_on();
+#endif
 
   dfu_config_readable = flash_lp_open_df_read_ready();
 
   can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
   can_update_init(&can_state, &can_hal, can_cmd_id);
+#ifdef CAN_DIAG
+  /* Stages 1-3, then serve CAN with a heartbeat. A diag board never resets
+   * off the bench, also when CAN init failed: every init failure leaves the
+   * module clocked, so the register polls stay safe. */
+  can_initialized = can_diag_entry_report(dfu_config_readable, can_cmd_id,
+                                          can_reply_id, can_initialized);
+  while (1) {
+    (void) can_service_once();
+    can_diag_heartbeat(can_reply_id);
+  }
+#else
   if (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) != CAN_POLLED_OK) {
     NVIC_SystemReset();  /* CAN unusable: reset into the normal boot path */
   }
   can_initialized = true;
   uint32_t last_frame_ms = board_millis();
-  while (1) {
+  while (can_initialized &&
+         (board_millis() - last_frame_ms) < CAN_UPDATE_IDLE_TIMEOUT_MS) {
     if (can_service_once()) {
       last_frame_ms = board_millis();
-    } else if ((board_millis() - last_frame_ms) >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
-      can_polled_deinit();  /* as the GO path: deinit before the reset */
-      can_initialized = false;
-      NVIC_SystemReset();
     }
   }
+  can_deinit_and_reset();  /* idle timeout, or bus-off recovery failed */
 #endif /* CAN_DIAG */
 }
 #endif /* CAN_LOADER */
@@ -721,146 +708,6 @@ ioport_instance_ctrl_t port_ctrl;
 int pwm_channel = LED_FADE_PWM_OUT_A ? GPT_IO_PIN_GTIOCA : GPT_IO_PIN_GTIOCB;
 #endif
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
-/* ---- DIAG4: one-boot self-bisecting staircase -----------------------------
- * DIAG3 (hardware-confirmed via SWD readback) ruled timing out: 30 bare
- * init+send attempts over 3 s right after board_init() never put a frame on
- * a live, ACKing bus — while the IDENTICAL driver calls after the DFU
- * preamble (IOPORT open -> GPT open/start -> FLASH_LP open/reset ->
- * tud_init) always transmit. So at least one preamble piece is a hard
- * functional prerequisite for CAN0 TX. The staircase finds WHICH in one
- * boot. Bench verdict (2026-07, real bus): step 4 (+tud_init) won on its
- * first attempt after 12 failures across steps 0-3, every one TX-timeout
- * with TEC = 0 in operate mode -> the USB LDO (USBMC.VDCEN) powers the
- * external CAN transceiver rail; production fix in
- * can_xcvr_usb_rail_power_on. The staircase does NOT duplicate the preamble
- * calls (a first cut did, and
- * LTO's constprop clones of tud_init/R_GPT_Open/R_GPT_PeriodSet cost 636 B
- * the 16 KiB region does not have). Instead, the staircase boot jumps into
- * the REAL `bootloader:` path with a can_diag_stair_probe() interleaved
- * after each preamble piece, gated on can_diag_stair_active, and ends in a
- * reset before the DFU loop. Fidelity is exact by construction: the pieces
- * that run are the production calls themselves, in production order.
- *
- * Each probe: can_polled_init on the compiled default IDs, then up to
- * CAN_DIAG_STAIR_SEND_TRIES sends. Every attempt's payload IS the verdict
- * frame, so the first frame on the bus names the winner:
- *   {0xD1, 0xE4, step, attempt, STR lo, STR hi, TECR, ECSR}
- *   step: 0 = bare (would contradict DIAG3), 1 = +IOPORT, 2 = +GPT,
- *         3 = +FLASH_LP open/reset, 4 = +tud_init, 0xFF = nothing worked
- *   (registers sampled after init, just before that attempt's TRMREQ).
- * The success latch stops later probes, so exactly one step ever reports.
- *
- * Every FAILED attempt records {STR, ECSR, TECR} into a one-entry "last
- * failure before success" snapshot, emitted right after the verdict:
- *   {0xD1, 0xE5, idx, STR lo, STR hi, ECSR, TECR, kind}
- *   idx = number of failed attempts preceding the success (0 = none -> no
- *   E5 frame). idx maps back to (step, attempt) because attempts run in
- *   fixed step order, SEND_TRIES per step. STR RSTST/HLTST/SLPST (bits
- *   8/9/10) = mode the controller was REALLY in; TECR = 0 -> it never
- *   drove the bus (mode/clock problem), climbing -> frames died on the
- *   wire; ECSR error-code flags (ADEF/ACKEF/SEF/FEF/AEF/BE0F/BE1F) say HOW
- *   they died — ACKEF = nobody ACKed, stuff/bit errors = bit-timing wrong.
- *   kind: 0xA5 = TX timed out (registers sampled after the driver's abort;
- *   MCTL0 latch evidence not captured), 0xEE = can_polled_init failed.
- * Additionally, attempts 2..SEND_TRIES of any step carry post-failure
- * TECR/ECSR/STR in their OWN E4 payload (same init, sampled pre-send), so
- * a step that wins on attempt >= 2 documents its own failures.
- * (DIAG4 size cuts, in order applied: [1] the spec'd 8-entry per-attempt
- * register log -> one-entry last-failure snapshot; [2] the raw-MCTL TX
- * probe (captured MCTL[0] before the driver's abort-clear) -> driver sends,
- * losing the "did TRMREQ/SENTDATA latch" byte. Both forced by the 16 KiB
- * region: full design measured 16,604 B, snapshot-only 16,472 B, this
- * layout fits. The 0xEE/0xA5 kind byte preserves the E5 frame format.)
- *
- * Run-once / cannot-boot-loop design: VBTBKR[8..11] (VBATT backup domain,
- * the proven mechanism behind the double-tap and CAN-update magics) holds a
- * "staircase done" word. Garbage on the first boot after power-up -> run
- * the staircase, but write the flag FIRST so even a crash mid-staircase
- * cannot re-enter it, then end in one NVIC_SystemReset so the app/DFU/CAN
- * boot decisions always start from clean peripherals (GPT/USB/flash state
- * from the staircase never leaks into the app). If the flag readback ever
- * failed to stick, the board parks in the normal DFU+CAN service loop
- * instead of resetting — degraded but bounded: no reset loop, no brick.
- * Later boots skip every probe until the next power cycle. A pending
- * double-tap or CAN-update magic is left untouched by the staircase boot
- * and honored one boot (~1 s) later. */
-#define CAN_DIAG_STAIR_DONE_DATA   (*((volatile uint32_t *) (uintptr_t) &R_SYSTEM->VBTBKR[8]))
-#define CAN_DIAG_STAIR_DONE_MAGIC  0x5D1A6435u
-#define CAN_DIAG_STAIR_SEND_TRIES  3u
-#define CAN_DIAG_STAIR_STEP_NONE   0xFFu
-#define CAN_DIAG_STAIR_TX_FAILED   0xA5u    /* kind: send timed out          */
-#define CAN_DIAG_STAIR_INIT_FAILED 0xEEu    /* kind: init failed, no TX done */
-
-static bool can_diag_stair_active;          /* this boot is the staircase boot */
-static bool can_diag_stair_won;             /* success latch: stop later probes */
-
-/* One struct, one base address: five separate statics cost five literal-pool
- * entries and the diag build is 16 B from the region limit. */
-static struct {
-  uint16_t str;
-  uint8_t  ecsr;
-  uint8_t  tecr;
-  uint8_t  kind;
-  uint8_t  count;
-} can_diag_stair_fail;
-
-static void can_diag_stair_log_add(uint8_t kind)
-{
-  can_diag_stair_fail.count++;
-  can_diag_stair_fail.str  = R_CAN0->STR;
-  can_diag_stair_fail.ecsr = R_CAN0->ECSR;
-  can_diag_stair_fail.tecr = R_CAN0->TECR;
-  can_diag_stair_fail.kind = kind;
-}
-
-/* One staircase level: bring CAN up, try to get the verdict frame for
- * `step` onto the bus, tear CAN down again (the next preamble piece must
- * run with CAN down, exactly like the production path). No-op on non-
- * staircase boots and after a step has already won. */
-static void can_diag_stair_probe(uint8_t step)
-{
-  if (!can_diag_stair_active || can_diag_stair_won) {
-    return;
-  }
-  if (can_polled_init(CAN_BITRATE_BPS, CAN_ID_HOST_TO_BOOT) != CAN_POLLED_OK) {
-    can_diag_stair_log_add(CAN_DIAG_STAIR_INIT_FAILED);
-    can_polled_deinit();
-    return;
-  }
-  for (uint8_t attempt = 1; attempt <= CAN_DIAG_STAIR_SEND_TRIES; attempt++) {
-    /* The attempt's payload IS the E4 verdict frame; registers sampled just
-     * before the send, so attempts >= 2 carry the previous failure's TECR/
-     * ECSR (same init — can_polled_send's abort clears no error state). */
-    uint16_t str = R_CAN0->STR;
-    const uint8_t frame[8] = { CAN_DIAG_MARKER, CAN_DIAG_STAGE_STAIR_RESULT,
-                               step, attempt, (uint8_t) str, (uint8_t) (str >> 8),
-                               R_CAN0->TECR, R_CAN0->ECSR };
-    if (can_polled_send(CAN_ID_BOOT_TO_HOST, 8, frame) == CAN_POLLED_OK) {
-      if (can_diag_stair_fail.count != 0) {
-        can_diag_send(CAN_ID_BOOT_TO_HOST, CAN_DIAG_STAGE_STAIR_LOG,
-                      can_diag_stair_fail.count,
-                      (uint8_t) can_diag_stair_fail.str,
-                      (uint8_t) (can_diag_stair_fail.str >> 8),
-                      can_diag_stair_fail.ecsr, can_diag_stair_fail.tecr,
-                      can_diag_stair_fail.kind);
-      }
-      can_diag_stair_won = true;
-      break;
-    }
-    can_diag_stair_log_add(CAN_DIAG_STAIR_TX_FAILED);
-  }
-  can_polled_deinit();
-}
-
-static void can_diag_stair_set_done(void)
-{
-  R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_PRC1_UNLOCK;
-  CAN_DIAG_STAIR_DONE_DATA = CAN_DIAG_STAIR_DONE_MAGIC;
-  R_SYSTEM->PRCR = (uint16_t) BSP_PRV_PRCR_LOCK;
-}
-#endif /* CAN_LOADER && CAN_DIAG */
-
 /* ***
  * UNO R4 MINIMA AND C33 BOOTLOADER ** ONLY DFU **
  * *** */
@@ -871,22 +718,8 @@ __WEAK void run_bootloader() {
     board_init_after_tusb();
   }
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
   can_diag_stair_probe(4);  /* + tud_init: the full DFU preamble has now run */
-  if (can_diag_stair_active) {
-    /* Nothing worked? One last round (step 0xFF) so the verdict + snapshot
-     * get a chance on the fully-brought-up board; a no-op if a step won. */
-    can_diag_stair_probe(CAN_DIAG_STAIR_STEP_NONE);
-    if (CAN_DIAG_STAIR_DONE_DATA == CAN_DIAG_STAIR_DONE_MAGIC) {
-      NVIC_SystemReset();  /* staircase boot ends: clean re-entry for the
-                            * real boot decision, run-once flag is set */
-    }
-    /* Flag write did not stick (never observed: the double-tap word proves
-     * VBTBKR works). Resetting would loop forever — park in the normal
-     * DFU+CAN service loop below instead. */
-    can_diag_stair_active = false;
-  }
-#endif
+  can_diag_stair_end();     /* staircase boot: reset into the boot decision */
 
 #ifdef CAN_LOADER
   /* Recovery/parked mode keeps BOTH transports alive (research §5.2): DFU
@@ -894,16 +727,29 @@ __WEAK void run_bootloader() {
   can_load_ids();  /* per-device IDs from the v2 config block (or defaults) */
   can_update_init(&can_state, &can_hal, can_cmd_id);
   can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
+  can_reinit_ms = board_millis();
 #endif
-
   while (1)
   {
     tud_task(); // tinyusb device task
     led_blinking_task();
+    if (dfu_detach_requested) {
+      uint32_t start_ms = board_millis();
+      while (board_millis() - start_ms < DFU_DETACH_DRAIN_MS) {
+        tud_task();  /* complete the DFU_DETACH status stage */
+      }
+      NVIC_SystemReset();
+    }
 #ifdef CAN_LOADER
     if (can_initialized) {
-      (void) can_service_once();  /* parked: no idle timeout */
+      if (can_service_once()) {  /* parked: no idle reset, only the ownership timeout */
+        can_last_frame_ms = board_millis();
+      }
+    } else if ((board_millis() - can_reinit_ms) >= CAN_REINIT_INTERVAL_MS) {
+      can_reinit_ms = board_millis();  /* init failed, or bus-off recovery did */
+      can_initialized = (can_polled_init(CAN_BITRATE_BPS, can_cmd_id) == CAN_POLLED_OK);
     }
+    flash_ownership_timeouts();
 #endif
   }
 }
@@ -913,23 +759,11 @@ int main(void)
 {
   board_init();
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
-  /* DIAG4 staircase entry (replaces DIAG3's E0 loop): runs once per power
-   * cycle, from the exact spot DIAG3 confirmed bare CAN TX dead. The only
-   * new instruction before probe 0 is the VBTBKR[8] flag read here — a
-   * VBATT read cannot be the E0 killer, since E0 failed with no VBTBKR
-   * access at all. The staircase boot rides the real `bootloader:` preamble
-   * with probes interleaved and ends in one software reset, so the
-   * double-tap / CAN-magic / app decisions below always start from clean
-   * peripherals; a pending magic survives that boot untouched and is
-   * honored one boot later. See the staircase block above run_bootloader()
-   * for the design and the no-boot-loop argument. */
-  if (CAN_DIAG_STAIR_DONE_DATA != CAN_DIAG_STAIR_DONE_MAGIC) {
-    can_diag_stair_set_done();  /* BEFORE the run: a crash cannot re-enter */
-    can_diag_stair_active = true;
+  /* CAN_DIAG builds: once per power cycle, run the DIAG4 staircase along
+   * the real preamble below (can_diag.c). */
+  if (can_diag_stair_begin()) {
     goto bootloader;
   }
-#endif
 
   // set magic for double tap
   if (BOOT_DOUBLE_TAP_DATA == DOUBLE_TAP_MAGIC) {
@@ -978,15 +812,11 @@ int main(void)
 
 bootloader:
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
   can_diag_stair_probe(0);  /* bare: board_init only (DIAG3's E0 conditions) */
-#endif
 
   R_IOPORT_Open(&port_ctrl, &pin_cfg);
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
   can_diag_stair_probe(1);  /* + IOPORT open */
-#endif
 
 #ifdef LED_FADE_PWM_CHANNEL
   R_GPT_Open(&pwm_ctrl, &pwm_cfg);
@@ -995,9 +825,7 @@ bootloader:
   R_GPT_Start(&pwm_ctrl);
 #endif
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
   can_diag_stair_probe(2);  /* + GPT open/period/duty/start (no-op without the fade) */
-#endif
 
 #if BSP_FEATURE_FLASH_HP_VERSION
   R_FLASH_HP_Open(g_flash.p_ctrl, g_flash.p_cfg);
@@ -1016,9 +844,7 @@ bootloader:
  #endif
 #endif
 
-#if defined(CAN_LOADER) && defined(CAN_DIAG)
   can_diag_stair_probe(3);  /* + FLASH_LP open/reset (data-flash gate) */
-#endif
 
   run_bootloader();
 
@@ -1045,12 +871,21 @@ bootloader:
 void tud_mount_cb(void)
 {
   blink_interval_ms = BLINK_MOUNTED;
+#ifdef CAN_LOADER
+  /* Every (re)enumeration ends a download: tinyusb 0.17 does not call
+   * tud_umount_cb on a bus reset, e.g. after a killed dfu-util with the
+   * cable still in, so a mount is what reliably follows it. */
+  dfu_owns_flash = false;
+#endif
 }
 
 // Invoked when device is unmounted
 void tud_umount_cb(void)
 {
   blink_interval_ms = BLINK_NOT_MOUNTED;
+#ifdef CAN_LOADER
+  dfu_owns_flash = false;  /* a download cut off by unplug never completes */
+#endif
 }
 
 // Invoked when usb bus is suspended
@@ -1083,41 +918,184 @@ uint32_t tud_dfu_get_timeout_cb(uint8_t alt, uint8_t state)
   return 0;
 }
 
+#ifdef CAN_LOADER
+/* ---- USB DFU download into the app slot -----------------------------------
+ * Only alt 0 (@CodeFlash) downloads: alt 1 is advertised as @DataFlash, but
+ * the stock callbacks below would write the app slot for it, so here it
+ * fails with errTARGET before any flash operation. Uploads read the app slot
+ * on either alt. A session starts only at block 0, which takes the flash
+ * owner latch and puts the update-in-progress marker in place
+ * (flash_mark_update_pending) before any app byte changes. Blocks must then
+ * arrive in order and full-size except the last: the descriptor's 64 B
+ * transfer size (CFG_TUD_DFU_XFER_BUFSIZE) is the only one accepted
+ * (dfu-util raises a smaller -t to 64 by itself), so dfu_received_len
+ * alone says where every byte goes and aucbuffer fills to exactly one flash
+ * block; nothing may reach METADATA_ADDR. A flash block is erased on its
+ * first byte and programmed + read back when full; the APP_BASE block skips
+ * its vector unit (SP + reset vector), which waits in dfu_vector_unit. The
+ * manifest programs the buffered tail, then commits only if
+ * image_check_staged passes (the running CRC of the bytes received equals
+ * the CRC of the vector unit followed by flash, and the vectors are in
+ * bounds): the vector unit first, then the record. Any failure ends the
+ * session with a DFU error status and leaves the marker, so the board parks
+ * until an update completes; the SP word stays erased until the commit. */
+_Static_assert(PROGRAM_BLOCK_SIZE == FLASH_BLOCK_SIZE,
+               "aucbuffer must hold exactly one code flash block");
+_Static_assert(PROGRAM_BLOCK_SIZE % CFG_TUD_DFU_XFER_BUFSIZE == 0,
+               "full-size DFU blocks must tile a flash block");
+
+static uint32_t dfu_received_len;
+static uint32_t dfu_received_crc;  /* crc32_ieee_update over the bytes received */
+static _Alignas(FLASH_WRITE_UNIT) uint8_t dfu_vector_unit[IMAGE_VECTOR_UNIT_SIZE];
+
+/* Program `len` buffered bytes of the block at block_addr. The APP_BASE
+ * block leaves its vector unit erased and keeps it for dfu_commit_image. */
+static bool dfu_program_block(uint32_t block_addr, uint32_t len)
+{
+  uint32_t skip = 0;
+  if (block_addr == APP_BASE) {
+    memcpy(dfu_vector_unit, aucbuffer, IMAGE_VECTOR_UNIT_SIZE);
+    skip = IMAGE_VECTOR_UNIT_SIZE;
+  }
+  return len == skip || can_flash_program(block_addr + skip, &aucbuffer[skip], len - skip);
+}
+
+static void dfu_session_fail(uint8_t status)
+{
+  dfu_owns_flash = false;
+  tud_dfu_finish_flashing(status);
+}
+
+// Invoked when received DFU_DNLOAD (wLength>0) following by DFU_GETSTATUS (state=DFU_DNBUSY) requests
+void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, uint16_t length)
+{
+  if (alt != 0) {
+    dfu_session_fail(DFU_STATUS_ERR_TARGET);
+    return;
+  }
+
+  if (block_num == 0) {
+    dfu_owns_flash = false;  /* block 0 always starts a new session */
+    if (can_update_owns_flash(&can_state)) {
+      dfu_session_fail(DFU_STATUS_ERR_WRITE);  /* a CAN session holds flash */
+      return;
+    }
+    if (!flash_mark_update_pending()) {
+      dfu_session_fail(DFU_STATUS_ERR_ERASE);  /* no marker yet: boots or parks as before */
+      return;
+    }
+    dfu_received_len = 0;
+    dfu_received_crc = 0;
+    dfu_owns_flash = true;
+  }
+
+  uint32_t fill = dfu_received_len % PROGRAM_BLOCK_SIZE;
+  if (!dfu_owns_flash ||
+      dfu_received_len != (uint32_t) block_num * CFG_TUD_DFU_XFER_BUFSIZE ||
+      fill + length > sizeof(aucbuffer) ||
+      length > APP_SLOT_SIZE - dfu_received_len) {
+    dfu_session_fail(DFU_STATUS_ERR_ADDRESS);  /* out of order, after a short block, or too large */
+    return;
+  }
+
+  uint32_t block_addr = APP_BASE + dfu_received_len - fill;
+  if (fill == 0 && !flash_erase_block(block_addr)) {
+    dfu_session_fail(DFU_STATUS_ERR_ERASE);
+    return;
+  }
+  memcpy(&aucbuffer[fill], data, length);
+  dfu_received_len += length;
+  dfu_received_crc = crc32_ieee_update(dfu_received_crc, data, length);
+  dfu_last_block_ms = board_millis();
+  if (fill + length == sizeof(aucbuffer) && !dfu_program_block(block_addr, sizeof(aucbuffer))) {
+    dfu_session_fail(DFU_STATUS_ERR_WRITE);
+    return;
+  }
+  tud_dfu_finish_flashing(DFU_STATUS_OK);
+}
+
+/* Program the buffered tail, check what flash holds, then commit: the
+ * vector unit, then the record. */
+static uint8_t dfu_commit_image(void)
+{
+  if (!dfu_owns_flash) {
+    return DFU_STATUS_ERR_NOTDONE;  /* no download, or it already failed */
+  }
+  uint32_t fill = dfu_received_len % PROGRAM_BLOCK_SIZE;
+  if (fill != 0) {
+    uint32_t padded = (fill + FLASH_WRITE_UNIT - 1u) & ~(FLASH_WRITE_UNIT - 1u);
+    memset(&aucbuffer[fill], 0xFF, padded - fill);
+    if (!dfu_program_block(APP_BASE + dfu_received_len - fill, padded)) {
+      return DFU_STATUS_ERR_WRITE;
+    }
+  }
+  image_validate_result_t staged = image_check_staged(dfu_vector_unit, (const uint8_t *) APP_BASE,
+                                                      dfu_received_len, dfu_received_crc);
+  if (staged == IMAGE_ERR_PAYLOAD_CRC) {
+    return DFU_STATUS_ERR_VERIFY;
+  }
+  if (staged != IMAGE_VALID) {
+    return DFU_STATUS_ERR_FIRMWARE;
+  }
+  /* Power loss from here: marker set, no record -> parks (can_update.h). */
+  if (!can_flash_program(APP_BASE, dfu_vector_unit, IMAGE_VECTOR_UNIT_SIZE)) {
+    return DFU_STATUS_ERR_WRITE;
+  }
+  _Alignas(FLASH_WRITE_UNIT) uint8_t meta[IMAGE_META_SIZE];
+  image_meta_encode(meta, dfu_received_len, dfu_received_crc);
+  return can_flash_program(METADATA_ADDR, meta, sizeof(meta)) ? DFU_STATUS_OK
+                                                               : DFU_STATUS_ERR_WRITE;
+}
+
+// Invoked when download process is complete, received DFU_DNLOAD (wLength=0) following by DFU_GETSTATUS (state=Manifest)
+void tud_dfu_manifest_cb(uint8_t alt)
+{
+  (void) alt;
+  uint8_t status = dfu_commit_image();
+  dfu_owns_flash = false;
+  /* No R_FLASH_LP_Close(): the descriptor is manifestation-tolerant, so the
+   * board stays parked here, and later CAN or DFU updates need the driver. */
+  tud_dfu_finish_flashing(status);
+}
+
+// Invoked when received DFU_UPLOAD request: reads stop at the end of the app slot
+uint16_t tud_dfu_upload_cb(uint8_t alt, uint16_t block_num, uint8_t* data, uint16_t length)
+{
+  (void) alt;
+  uint32_t offset = (uint32_t) block_num * length;
+  if (offset >= APP_SLOT_SIZE) {
+    return 0;
+  }
+  uint32_t count = (APP_SLOT_SIZE - offset < length) ? (APP_SLOT_SIZE - offset) : length;
+  memcpy(data, (const uint8_t *) APP_BASE + offset, count);
+  return (uint16_t) count;
+}
+
+// Invoked when the Host has terminated a download or upload transfer
+void tud_dfu_abort_cb(uint8_t alt)
+{
+  (void) alt;
+  dfu_owns_flash = false;  /* the marker stays: an unfinished download parks */
+}
+
+static void flash_ownership_timeouts(void)
+{
+  uint32_t now_ms = board_millis();
+  if (can_update_owns_flash(&can_state) &&
+      now_ms - can_last_frame_ms >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+    can_update_end_session(&can_state);
+  }
+  if (dfu_owns_flash && now_ms - dfu_last_block_ms >= CAN_UPDATE_IDLE_TIMEOUT_MS) {
+    dfu_owns_flash = false;
+  }
+}
+
+#else /* stock callbacks */
+
 #ifndef ZEPHYR_SKETCH_FLASH_OFFSET
 #define ZEPHYR_SKETCH_FLASH_OFFSET SKETCH_FLASH_OFFSET
 #endif
 static uint32_t _offset;
-
-#ifdef CAN_LOADER
-static uint32_t dfu_received_len;
-
-/* Research §5.2 / risk R7: stock DFU uploads carry no CRC. After a completed
- * DFU download, compute CRC32 over the received image and write the metadata
- * record, so DFU-uploaded sketches are CRC-validated on later boots. Block 0
- * of the download already erased the metadata block and programmed the
- * update-in-progress marker (tud_dfu_download_cb); offset 0 is still erased,
- * so the record is programmed WITHOUT a second erase. A failed record write
- * leaves the marker alone: the board parks in the bootloader (fail closed). */
-static void dfu_write_image_metadata(void)
-{
-  /* An oversized sketch (> APP_SLOT_SIZE) already overwrote the metadata
-   * block, marker included; leave its bytes alone (research §5.1: such
-   * images are simply unvalidated and take the SP-word fallback). */
-  if (dfu_received_len == 0 || dfu_received_len > APP_SLOT_SIZE) {
-    return;
-  }
-
-  image_meta_t meta = {
-    .magic        = IMAGE_META_MAGIC,
-    .image_size   = dfu_received_len,
-    .image_crc32  = crc32_ieee((const uint8_t *) APP_BASE, dfu_received_len),
-    .header_crc32 = 0,
-  };
-  meta.header_crc32 = crc32_ieee((const uint8_t *) &meta, IMAGE_META_CRC_COVERAGE);
-
-  (void) can_flash_program(METADATA_ADDR, (const uint8_t *) &meta, sizeof(meta));
-}
-#endif
 
 #if BSP_FEATURE_FLASH_HP_VERSION
 int flash_write_block() {
@@ -1139,21 +1117,19 @@ void tud_dfu_download_cb(uint8_t alt, uint16_t block_num, uint8_t const* data, u
   _offset = alt == 0 ? SKETCH_FLASH_OFFSET : ZEPHYR_SKETCH_FLASH_OFFSET;
   auc_block_num = block_num;
 
-#ifdef CAN_LOADER
-  if (block_num == 0) {
-    dfu_received_len = 0;
-    /* Before the first app erase below: from here on an interrupted
-     * download parks in the bootloader instead of booting a partial sketch.
-     * If the marker cannot be set, abort with the app slot untouched. */
-    if (!flash_mark_update_pending()) {
-      tud_dfu_finish_flashing(DFU_STATUS_ERR_ERASE);
-      return;
-    }
-  }
-  dfu_received_len += length;
-#endif
-
   //printf("\r\nReceived Alt %u BlockNum %u of length %u\r\n", alt, block_num, length);
+
+  /* Bounds the stock path lacked (#40): a new download never inherits an
+   * aborted one's buffered bytes, and blocks that do not tile aucbuffer
+   * (e.g. a short block before the last) are refused before they overrun
+   * it or touch flash. */
+  if (block_num == 0) {
+    auclen = 0;
+  }
+  if (auclen + length > sizeof(aucbuffer)) {
+    tud_dfu_finish_flashing(DFU_STATUS_ERR_ADDRESS);
+    return;
+  }
 
   if ((_offset + (block_num * CFG_TUD_DFU_XFER_BUFSIZE)) % PROGRAM_BLOCK_SIZE == 0) {
     // erase block
@@ -1193,10 +1169,6 @@ void tud_dfu_manifest_cb(uint8_t alt)
   flash_write_block();
   __enable_irq();
 
-#ifdef CAN_LOADER
-  dfu_write_image_metadata();
-#endif
-
   // flashing op for manifest is complete without error
   // Application can perform checksum, should it fail, use appropriate status such as errVERIFY.
   tud_dfu_finish_flashing(DFU_STATUS_OK);
@@ -1213,14 +1185,20 @@ void tud_dfu_manifest_cb(uint8_t alt)
 
 // Invoked when received DFU_UPLOAD request
 // Application must populate data with up to length bytes and
-// Return the number of written bytes
+// Return the number of written bytes. Reads stop at the end of code flash
+// (the end of the app slot): past it they would bus-fault.
 uint16_t tud_dfu_upload_cb(uint8_t alt, uint16_t block_num, uint8_t* data, uint16_t length)
 {
   _offset = alt == 0 ? SKETCH_FLASH_OFFSET : ZEPHYR_SKETCH_FLASH_OFFSET;
 
-  memcpy(data, _offset + (void*)(block_num * length), length);
+  uint32_t addr = _offset + (uint32_t) block_num * length;
+  if (addr >= BSP_ROM_SIZE_BYTES) {
+    return 0;
+  }
+  uint32_t count = (BSP_ROM_SIZE_BYTES - addr < length) ? (BSP_ROM_SIZE_BYTES - addr) : length;
+  memcpy(data, (const void *) addr, count);
 
-  return length;
+  return (uint16_t) count;
 }
 
 // Invoked when the Host has terminated a download or upload transfer
@@ -1228,17 +1206,15 @@ void tud_dfu_abort_cb(uint8_t alt)
 {
   (void) alt;
   //printf("Host aborted transfer\r\n");
+  auclen = 0;  /* the next download starts from an empty buffer */
 }
+#endif /* CAN_LOADER */
 
-// Invoked when a DFU_DETACH request is received
+// Invoked when a DFU_DETACH request is received. This runs inside
+// tud_task(): the drain and reset wait for the main loop (run_bootloader).
 void tud_dfu_detach_cb(void)
 {
-  //printf("Host detach, we should probably reboot\r\n");
-  uint32_t start_ms = board_millis();
-  while (board_millis() - start_ms < 100) {
-    tud_task();
-  }
-  NVIC_SystemReset();
+  dfu_detach_requested = true;
 }
 
 #endif

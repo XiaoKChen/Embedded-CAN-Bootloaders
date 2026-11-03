@@ -11,7 +11,8 @@ INC += \
 	src \
 	$(TOP)/hw \
 
-EXAMPLE_SOURCE += $(wildcard src/*.c)
+# src/can_diag.c is the CAN_DIAG=1 bench build's only (see below).
+EXAMPLE_SOURCE += $(filter-out src/can_diag.c,$(wildcard src/*.c))
 FSP_SOURCE += $(TOP)/hw/mcu/renesas/fsp/ra/fsp/src/r_flash_lp/r_flash_lp.c
 CFLAGS += -DFLASH_LP_CFG_CODE_FLASH_PROGRAMMING_ENABLE -DFLASH_LP_CFG_DATA_FLASH_PROGRAMMING_ENABLE
 CFLAGS += -DUSB_PID=0x0369 -DBOARD_NAME=\"UNO\ R4\ Minima\"
@@ -20,7 +21,9 @@ CFLAGS += -DUSB_PID=0x0369 -DBOARD_NAME=\"UNO\ R4\ Minima\"
 CFLAGS += -DLED_FADE_GPIO=BSP_IO_PORT_01_PIN_11
 CFLAGS += -DDFU_LOADER
 CFLAGS += -DOVERRIDE_VECTOR_TABLE=1
-CFLAGS += -DCODE_FLASH_DESCRIPTOR=\"@CodeFlash\ /0x00000000/8*2Ka,120*2Kg\"
+# The last block (0x3F800) holds the image record and the update-in-progress
+# marker: advertised read-only like the bootloader's 8 blocks.
+CFLAGS += -DCODE_FLASH_DESCRIPTOR=\"@CodeFlash\ /0x00000000/8*2Ka,119*2Kg,1*2Ka\"
 
 # ---------------------------------------------------------------------------
 # Flash-over-CAN update path (docs/research/r4-minima-can-bootloader.md).
@@ -57,15 +60,16 @@ CFLAGS += -fno-delete-null-pointer-checks
 endif
 
 # Bench diagnostic build: stage-marker CAN frames ({0xD1, stage, ...}) on the
-# magic-entry (VBTBKR[4]) path — see the CAN_DIAG blocks in src/main.c. Only
-# meaningful with CAN_LOADER=1. Default off; a CAN_DIAG=0 build is
-# byte-identical to a build without this flag. NOTE: a CAN_DIAG=1 build also
-# OMITS the production USB-rail power-up in the magic path
-# (can_xcvr_usb_rail_power_on in src/main.c) — deliberate, so the staircase
-# keeps reproducing the unpowered-rail failure it diagnosed.
+# magic-entry (VBTBKR[4]) path and the DIAG4 staircase — src/can_diag.{c,h},
+# hooked from src/main.c. Ignored unless CAN_LOADER=1 too. Default off; any
+# other build does not compile can_diag.c and its hooks are no-ops. NOTE: a
+# CAN_DIAG=1 build also OMITS the production USB-rail power-up in the magic
+# path (can_xcvr_usb_rail_power_on in src/main.c) — deliberate, so the
+# staircase keeps reproducing the unpowered-rail failure it diagnosed.
 CAN_DIAG ?= 0
-ifeq ($(CAN_DIAG),1)
+ifeq ($(CAN_LOADER)$(CAN_DIAG),11)
 CFLAGS += -DCAN_DIAG
+EXAMPLE_SOURCE += src/can_diag.c
 endif
 
 # Flash-time-configurable USB DFU manufacturer/product strings, read from a
@@ -91,7 +95,9 @@ CFLAGS += --warn-no-undef
 
 include $(TOP)/examples/build_system/make/rules.mk
 
-LD_FILE = $(FAMILY_PATH)/linker/gcc/$(MCU_VARIANT).ld
+# ra4m1.ld with the FLASH region bounded to the 16 KB bootloader region; the
+# other UNO R4 Makefiles link ra4m1.ld unbounded (Opta's BOSSA + DFU needs 32 KB).
+LD_FILE = $(FAMILY_PATH)/linker/gcc/$(MCU_VARIANT)_minima_boot.ld
 
 # ---------------------------------------------------------------------------
 # can_polled.c compiles against the self-contained vendored device headers
@@ -105,7 +111,9 @@ $(BUILD)/obj/src/drivers/can_polled.o: CFLAGS = $(CAN_POLLED_CFLAGS)
 
 # ---------------------------------------------------------------------------
 # Size gate: the bootloader region is 8 x 2 KB (memory_map.h BOOT_SIZE); a
-# .bin that no longer fits must fail the build, not brick a board.
+# .bin that no longer fits must fail the build, not brick a board. The same
+# 16 KB is ra4m1_minima_boot.ld's FLASH_IMAGE_LENGTH (which bounds the link) and
+# memory_map.h's BOOT_SIZE: change all three together.
 # ---------------------------------------------------------------------------
 BOOT_REGION_LIMIT = 16384
 all: sizegate

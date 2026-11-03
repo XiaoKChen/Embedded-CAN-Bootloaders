@@ -102,7 +102,8 @@ Windows-specific arguments, all no-ops on a Linux host (where plain
   GNU make on Windows ignores a command-line `SHELL` once cmd.exe is latched).
 - `CFLAGS_SKIP="-Wcast-function-type"` — **gcc 7.x only** (it does not know
   this warning flag, which tinyusb adds for gcc >= 8). Do **not** pass it with
-  gcc 14.
+  gcc 14. The CMake wrapper passes it only when configured with
+  `-DBOOTLOADER_CFLAGS_SKIP=-Wcast-function-type` (empty by default).
 
 Artifacts land in `_build/uno_r4/`:
 `arduino-renesas-bootloader.{elf,bin,hex}` + `.elf.map`.
@@ -110,21 +111,30 @@ Artifacts land in `_build/uno_r4/`:
 ### Size gate
 
 The build fails if the `.bin` exceeds the 16 384-byte bootloader region
-(8 × 2 KB blocks, `src/boot/memory_map.h` `BOOT_SIZE`). Current output with
-gcc 14.2.1:
+(8 × 2 KB blocks, `src/boot/memory_map.h` `BOOT_SIZE`). The link itself
+fails first: the Minima's linker script `ra4m1_minima_boot.ld` (next to the
+shared `ra4m1.ld`, which it includes) sets `FLASH_IMAGE_LENGTH = 0x4000`,
+which bounds the FLASH region `fsp.ld` places the image in, and asserts that
+this region is exactly `0x0000–0x3FFF`. The other UNO R4 Makefiles (WiFi,
+Opta) link `ra4m1.ld` directly, unbounded: Opta's BOSSA + DFU bootloader
+needs 32 KB. The 16 KB figure lives in three places (that value,
+`BOOT_SIZE`, and the Makefile's `BOOT_REGION_LIMIT`); change them together.
+Current output with gcc 14.2.1 (#40, after the second review):
 
 ```
-SIZE GATE OK: 14232 / 16384 bytes
+SIZE GATE OK: 15236 / 16384 bytes
 ```
 
-That leaves **2 152 B** of headroom. Since #34 the build reclaims space it
+That leaves **1 148 B** of headroom. Since #34 the build reclaims space it
 used to waste or carry for nothing:
 
 - **Low-flash gap:** functions marked `BOOT_LOW_FLASH`
-  (`src/boot/memory_map.h`: `can_polled_init`, `can_polled_send`,
-  `can_polled_deinit`, `flash_lp_open_df_read_ready`, 776 B) sit between the
-  vector table and the option bytes (`0x00C0–0x03C7`), where the FSP linker
-  script used to pad with `0xFF`. The linker script fails the link if that
+  (`src/boot/memory_map.h`: `can_polled_init`, `can_polled_deinit`,
+  `flash_lp_open_df_read_ready`, 656 B) sit between the vector table and the
+  option bytes (`0x00C0–0x034F`), where the FSP linker script used to pad
+  with `0xFF`. `can_polled_send` is marked too, but LTO inlines it into its
+  only production caller, so it lands in ordinary `.text`; in the `CAN_DIAG`
+  build it stays out of line and the gap fills to `0x03FB`. The linker script fails the link if that
   code ever reaches `0x400`; `0x043C–0x04FF` stays reserved padding.
 - **No flash API table:** `g_flash` no longer points at the `r_flash_lp` API
   table, so the unused public entry points are not linked. Three unused RAM
@@ -135,10 +145,13 @@ used to waste or carry for nothing:
 - **No FSP version records:** `.version` is no longer `KEEP`ed.
 
 The diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
-self-bisecting boot staircase for CAN bring-up debugging) fits again at
-14 864 B (it was 16 456 B and failed the gate before #34);
-it is never shipped and CI does not build it; with `CAN_DIAG=0` (default) the diag code is fully
-compiled out. For reference: the same source built with the old
+self-bisecting boot staircase for CAN bring-up debugging, in
+`vendor/arduino-renesas-bootloader/src/can_diag.{c,h}`) fits at 15 860 B
+(it was 16 456 B and failed the gate before #34). It is never shipped and
+CI does not build it; unless both `CAN_LOADER=1` and `CAN_DIAG=1`,
+`can_diag.c` is not compiled (and its body is guarded, since the other
+boards' Makefiles compile every source in `src/`) and its hooks in
+`main.c` are no-ops. For reference: the same source built with the old
 gcc 7.2.1 was ~656 B larger (measured before #31), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
 the CAN update path is the difference.
@@ -207,6 +220,24 @@ as the ID code stays `0xFF`, which this build keeps).
 3. Stock USB DFU **cannot** replace the bootloader (its descriptor marks
    `0x0000–0x3FFF` read-only) — use 1 or 2.
 
+### Flashing an application over SWD
+
+An application flashed over SWD carries no metadata record. After **any**
+DFU or CAN update the last flash block (`0x3F800`, the metadata record and
+the update-in-progress marker) still holds that update's record; a sector
+erase of the new image's range does not touch it, so the stale record no
+longer matches the new image and the board **parks in the bootloader**
+instead of booting it. Erase that block as well, so the stock SP-word check
+decides (see the boot decision below):
+
+```
+pyocd erase -t r7fa4m1ab --sector 0x3F800
+pyocd flash -e sector -t r7fa4m1ab <app>.hex
+```
+
+A chip erase also works (it erases the bootloader too; reflash it first).
+Flashing the application over DFU or CAN instead writes a fresh record.
+
 ### Unbrick / restore factory bootloader
 
 ```
@@ -222,17 +253,29 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
   2. `VBTBKR[4]` = `CAN_UPDATE_MAGIC` (`0xB007CAFE`, written by the app,
      PRC1-unlocked) → cleared → CAN-only update mode at 250 kbit/s on
      D4 (CTX0/P103) / D5 (CRX0/P102). External 5 V CAN transceiver required.
-     **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (15 s,
-     `src/boot/boot_config.h`) with no update-protocol frame (command byte
-     `0x01`–`0x07`) on the command ID, the board resets. Other traffic on
-     that ID does not count: a provisioned board's boot command ID equals its
-     app request ID, so the master's periodic app polls (ISO-TP) also arrive
-     there and would otherwise hold a stranded board in CAN-only mode. The
-     timer restarts after each handled update-protocol frame, and 15 s is well
-     above the host flasher's ~8 s worst-case retry gap. If the session never
-     reached ERASE, the old app boots again. Once ERASE has started, the
+     **Idle timeout:** after `CAN_UPDATE_IDLE_TIMEOUT_MS` (20 s,
+     `src/boot/boot_config.h`) with no accepted update-protocol frame on the
+     command ID, the board resets. Accepted means DLC 8, command byte
+     `0x01`–`0x07` and `0xFF` in every unused byte
+     (`can_update_accepts_frame`, `src/boot/can_update.h`); INFO is
+     answered but counts only once HELLO has started a session, so a host
+     that only scans cannot hold the board either. Other traffic on that ID
+     gets no reply and does not count: a provisioned board's boot
+     command ID equals its app request ID, so the master's periodic app polls
+     (ISO-TP) also arrive there and would otherwise hold a stranded board in
+     CAN-only mode. The `0xFF` padding is what tells the two apart, so the
+     app protocol on that ID must not pad with `0xFF`: `{0x01, x, 0xFF ×6}`
+     is a HELLO for any `x` (byte 1 is the version, not padding). The timer
+     restarts after each handled frame; 20 s is
+     above the hosts' ~8 s worst-case retry gap, and strictly above a
+     host's ERASE retry (15 s ERASE timeout plus its retry gap, counted
+     from its send), so that retry still lands before it. If the session
+     never reached ERASE, the old app boots again. Once ERASE has started, the
      update-in-progress marker parks the board in DFU + CAN. The parked
-     DFU + CAN loop itself has no timeout.
+     DFU + CAN loop itself never resets on idle (it only ends a stalled
+     session's flash ownership, see below). If the CAN driver reports a failed
+     bus-off recovery, CAN update mode resets the same way; the parked loop
+     retries the CAN bring-up once per second.
   3. App validation (`boot_decide`, `src/boot/image_validate.h`): the CRC
      metadata record at `0x3F800` (see `src/boot/image_header.h`) is
      authoritative.
@@ -241,18 +284,43 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
      - No valid record but the **update-in-progress marker** (8 bytes at
        `0x3F810`) present: an interrupted CAN or DFU update, so stay in the
        bootloader.
-     - Neither record nor marker (e.g. an image flashed over SWD): the stock
-       initial-SP check decides.
+     - Neither record nor marker (an image flashed over SWD with the
+       metadata block erased, see *Flashing an application over SWD*): the
+       stock initial-SP check decides.
+     - The record's checks include an 8-byte-aligned initial SP inside SRAM
+       and an entry point inside the image's own bytes.
 
      Staying in the bootloader always means **both** DFU and CAN are alive.
 - Protocol: `src/boot/can_update.h` (HELLO/SIZE/ERASE/DATA/VERIFY/GO; host tool
-  in `tools/can-flash/`).
+  in `tools/can-flash/`). Since #40:
+  - frames that are not accepted protocol frames (see the idle timeout
+    above), including the `0x79` reply marker, get no reply;
+  - an exact repeat of the previous SIZE, ERASE (before any DATA) or VERIFY
+    is ACKed again without redoing it, so a lost ACK no longer ends a
+    session;
+  - SIZE below 8 bytes NAKs `0x04`; VERIFY also checks the SP and entry
+    words before it writes the record (NAK `0x03` otherwise);
+  - a DATA or VERIFY flash failure (NAK `0x02`) ends the session: the host
+    must restart from HELLO;
+  - CAN and USB DFU never write flash at the same time: SIZE, ERASE, DATA
+    and VERIFY NAK `0x05` while a DFU download is in progress, and a DFU
+    download fails to start while a CAN session is past SIZE. A reset releases both; a stalled
+    CAN session is also released by a new HELLO, a stalled DFU download by
+    a new download, an abort, a USB unplug, or the next USB enumeration
+    (tinyusb 0.17 reports no unmount on a bus reset, so a killed `dfu-util`
+    with the cable still in is released when the host enumerates the
+    board again). Either one is also released after
+    `CAN_UPDATE_IDLE_TIMEOUT_MS` (20 s) without an accepted CAN frame or
+    DFU block; nothing is erased then, the session just ends (CAN: back to
+    IDLE, restart from HELLO) and the marker keeps the board parked.
 - **Per-device CAN IDs.** The command/reply IDs default to `0x79E`/`0x79F` but
   are overridable per board so several parked boards can share one bus, each
   addressed individually. The effective IDs are read at CAN bring-up from the
   DFU config block (`dfu_config_can_ids`, `DFU_CONFIG_ADDR`): the host→boot ID
   becomes the driver's RX acceptance filter and the engine's match ID; every
-  reply/INFO frame is transmitted on the boot→host ID.
+  reply/INFO frame is transmitted on the boot→host ID. A command ID equal to
+  the reply ID falls back to both defaults (the board would hear its own
+  replies).
   - The config block now has two on-disk versions; the bootloader accepts both:
     - **v1** (version byte 1, 76 B, crc32 over `0x00..0x47`) — names only, no
       ID fields → default IDs. Unchanged; existing boards keep working.
@@ -271,7 +339,9 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     unconditionally re-asserts `DFLCTL.DFLEN` (+6 µs settle) before any
     config-block read; if data flash is still unreadable, no read is attempted
     and the board parks with the default IDs and an empty INFO name instead of
-    faulting. (Previously this path could hard-fault into a CPU lockup —
+    faulting. A failed flash erase or program (CAN or DFU update) closes the
+    gate again until the next reset, because it may leave the flash
+    controller in P/E mode; INFO and the USB strings then use the defaults. (Previously this path could hard-fault into a CPU lockup —
     a board silent on every CAN ID after `/enter_bootloader`.)
   - **Transceiver rail power-up (board dependency).** CAN update mode enables
     the USBFS module, USB clock, and the internal USB regulator
@@ -299,26 +369,66 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
       order (frame 1 = bytes 0..7 ... frame 4 = bytes 24..31), ASCII,
       **0x00-padded** beyond `name_len`.
   - Name source: `dfu_config_parse` of the config block (v1 76 B or v2 80 B) at
-    `DFU_CONFIG_ADDR` (`0x40101C00`, data flash — readable because
-    `R_FLASH_LP_Open()` enabled `DFLCTL.DFLEN` before either CAN service path
-    runs). Block absent/invalid, or a build without `DFU_CUSTOM_NAME` ->
-    `name_len = 0` and all 32 name bytes `0x00`.
+    `DFU_CONFIG_ADDR` (`0x40101C00`, data flash — read only once the
+    data-flash gate above has proven it readable; the USB name strings use
+    the same gate). Unproven window, block absent/invalid, or a build without
+    `DFU_CUSTOM_NAME` -> `name_len = 0` and all 32 name bytes `0x00`.
   - Host helper: `python can_flash.py --info --interface <if> --channel <ch>`
     prints the reported product name.
-- After a completed DFU download the bootloader now computes CRC32 over the
-  received image and writes the metadata record, so DFU-uploaded sketches
-  are CRC-validated on later boots too (research §5.2, risk R7).
-- **Update-in-progress marker.** Both update paths erase the metadata block
-  and program the marker (`IMAGE_PENDING_MAGIC` + its complement, its own
-  8-byte write unit at offset `0x10`) *before* the first app-slot erase: CAN
-  in `ERASE`, USB DFU on download block 0. The record at offset 0 is
-  programmed last, into the same block without a second erase: CAN in
-  `VERIFY`, DFU at manifest. If the marker cannot be programmed, the update
-  is refused (CAN `ERASE` NAK, DFU `errERASE`) with the app slot untouched.
+- **USB DFU download** (`CAN_LOADER` builds; #40). Only alt 0
+  (`@CodeFlash`) accepts downloads; alt 1 (`@DataFlash`) fails with
+  `errTARGET` before any flash operation, and the descriptor advertises the
+  metadata block (`0x3F800`) read-only. A download must start at
+  block 0 and send full-size blocks in order, only the last may be short,
+  and nothing may reach `0x3F800`; otherwise it fails with `errADDRESS`.
+  Full-size means the descriptor's 64 B transfer size, the only one
+  accepted: `dfu-util` raises a smaller `-t` (e.g. `-t 63`) to the 64 B
+  control endpoint size by itself, and a host that does send shorter blocks
+  fails at its second block.
+  Every erase and write is checked and read back (`errERASE` / `errWRITE`).
+  At manifest the bootloader programs the buffered tail and commits only if
+  the CRC32 of the image (its first 8 bytes from RAM, see the vector unit
+  below, the rest read back from flash) equals the CRC32 of the bytes
+  received (`errVERIFY`) and the SP/entry words are valid (`errFIRMWARE`),
+  so DFU-uploaded sketches are CRC-validated on later boots too (research
+  §5.2, risk R7). Any failure leaves the marker: the board
+  parks until an update completes. The flash driver stays open after a
+  manifest, so a CAN or DFU update can follow without a reset. Uploads
+  (`dfu-util -U`) stop at the end of the app slot.
+- **Update-in-progress marker.** Both update paths put the marker
+  (`IMAGE_PENDING_MAGIC` + its complement, its own 8-byte write unit at
+  offset `0x10`) in place *before* the first app-slot erase: CAN in `ERASE`,
+  USB DFU on download block 0. What that takes is decided by
+  `update_start_plan` (`src/boot/image_validate.h`, host-tested):
+  - Marker already set and record area blank (a retry after an interrupted
+    update): nothing is erased, the marker stays.
+  - Slot bootable now (valid record, or no record and a stock-valid SP
+    word): erase the metadata block, program the marker.
+  - Slot not bootable (a record that fails a check, a torn record, an erased
+    slot): erase the app's first block at `0x4000` first and confirm its
+    first word reads `0xFFFFFFFF`, then as above.
+
+  The record at offset 0 is programmed last, into the same block without a
+  second erase: CAN in `VERIFY`, DFU at manifest.
+- **Deferred vector unit.** Both update paths program the app's first block
+  from offset 8 and keep its first 8 bytes (initial SP + reset vector) in
+  RAM. They are programmed (and read back) only at the commit, after the CRC
+  and the SP/entry checks pass and right before the record. Until then the
+  SP word at `0x4000` reads erased, so a half-written image fails the stock
+  SP-word check even if the marker were lost (e.g. a marker program cut by
+  power loss that later reads erased). If the marker cannot be
+  put in place, the update is refused (CAN `ERASE` NAK, DFU `errERASE`)
+  with the rest of the app slot untouched.
 - Power loss at any instant never bricks the board, and the bootloader
   region is never self-written:
   - Before the marker is in place (including a torn marker write, which
-    cannot match), the old app slot is still intact and boots.
+    cannot match), the board does what it did before the update: the old,
+    still intact app boots, or a slot that was not bootable parks (its
+    first block was erased first, so the SP fallback finds no SP word).
   - From the marker until the record is written, the board parks in the
-    bootloader. It never boots a half-written image.
+    bootloader. It never boots a half-written image, also when the update
+    is retried after an interruption: the SP word stays erased until the
+    image has passed its CRC.
+  - During the commit (vector unit, then record), the board parks: the
+    marker is set and the record is absent or torn.
   - Once the record is written, the new, CRC-validated image boots.

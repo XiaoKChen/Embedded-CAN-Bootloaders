@@ -9,25 +9,42 @@
  * the block at METADATA_ADDR + IMAGE_PENDING_OFFSET.
  *
  * Owns:         The image_meta_t layout and the coverage of its two CRCs; the
+ *               minimum image size and the deferred vector unit's size; the
  *               marker's offset, size and magic.
- * Not here:     The metadata magic (boot_config.h); validation and the boot
- *               decision (image_validate.h); addresses (memory_map.h).
+ * Not here:     The metadata magic (boot_config.h); encoding a record,
+ *               validation, the boot decision and the update-start plan
+ *               (image_validate.h); addresses (memory_map.h).
  * Invariants:   The record is written LAST during an update: power loss at
  *               any earlier instant leaves no valid record over a partial
  *               image. Before the marker is written the old app is still
  *               intact and boots; after it, the marker parks the device in
- *               the bootloader — never bricked. image_crc32 covers flash [APP_BASE, APP_BASE +
- *               image_size); header_crc32 covers the first 12 bytes of this
- *               record as stored in flash.
- *               The marker is programmed right after the metadata block is
- *               erased and BEFORE the first app-slot erase (CAN ERASE and USB
- *               DFU block 0). It sits in its own write unit, so the record at
+ *               the bootloader — never bricked. image_crc32 covers flash
+ *               [APP_BASE, APP_BASE + image_size); header_crc32 covers the
+ *               first 12 bytes of this record as stored in flash.
+ *               The marker is in place BEFORE the first app-slot erase (CAN
+ *               ERASE and USB DFU block 0), in one of three orders
+ *               (update_start_plan in image_validate.h):
+ *                 - marker set, record area blank (a retried update): nothing
+ *                   is erased, the marker stays;
+ *                 - slot bootable: erase the metadata block, program the
+ *                   marker;
+ *                 - slot not bootable: erase the APP_BASE block (its first
+ *                   word must then read erased), erase the metadata block,
+ *                   program the marker.
+ *               The marker sits in its own write unit, so the record at
  *               offset 0 is later programmed into the same block without a
  *               second erase. Marker present + no valid record = an
  *               interrupted update: park in the bootloader, never take the
  *               stock SP-word fallback (boot_decide in image_validate.h). A
  *               torn marker write cannot match both words, and at that
  *               instant the app slot is still intact.
+ *               The image's vector unit (IMAGE_VECTOR_UNIT_SIZE bytes at
+ *               APP_BASE) is held in RAM and programmed only at commit, after
+ *               the payload CRC and the vector bounds pass and right before
+ *               the record. Until then the SP word reads erased, so a
+ *               half-written image fails the SP-word fallback even if the
+ *               marker were lost (e.g. a marginal marker program that later
+ *               reads erased).
  * Depends on:   <stdint.h>, boot_config.h and memory_map.h: a pure
  *               host-compilable header, no target includes.
  *
@@ -58,9 +75,17 @@ typedef struct {
 
 #define IMAGE_META_SIZE         16u
 #define IMAGE_META_CRC_COVERAGE 12u  /* bytes covered by header_crc32 */
+#define IMAGE_MIN_SIZE          8u   /* the initial SP and reset vector words */
+
+/* The image's first write unit: the initial SP and reset vector words. Both
+ * update paths hold it in RAM and program it only at commit (see the
+ * invariants above). */
+#define IMAGE_VECTOR_UNIT_SIZE  FLASH_WRITE_UNIT
 
 _Static_assert(sizeof(image_meta_t) == IMAGE_META_SIZE,
                "image_meta_t must be exactly 16 bytes (4 x uint32_t, no padding)");
+_Static_assert(IMAGE_VECTOR_UNIT_SIZE == IMAGE_MIN_SIZE,
+               "the deferred vector unit must hold exactly the SP and reset vector");
 
 /* -----------------------------------------------------------------------------
  * Update-in-progress marker — two little-endian words: magic, ~magic

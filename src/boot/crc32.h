@@ -7,6 +7,9 @@
  * the bootloader flash budget matters more than CRC throughput.
  *
  * Invariants:   Golden vector: crc32_ieee("123456789", 9) == 0xCBF43926.
+ *               crc32_ieee_update() follows zlib's crc32(crc, buf, len):
+ *               start from 0 and feed the previous result back in, so any
+ *               split of a buffer yields crc32_ieee() of the whole.
  * Depends on:   Nothing: pure C over a byte buffer — host-testable, no
  *               hardware access.
  *
@@ -23,6 +26,9 @@ extern "C" {
 #endif
 
 uint32_t crc32_ieee(const uint8_t *data, uint32_t len);
+
+/* Running CRC: crc is 0 for the first chunk, then the previous return value. */
+uint32_t crc32_ieee_update(uint32_t crc, const uint8_t *data, uint32_t len);
 
 #ifdef __cplusplus
 }

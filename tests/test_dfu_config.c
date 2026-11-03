@@ -8,7 +8,8 @@
  *
  * Covers:       Every dfu_config_status_t outcome (rules/testing.md), plus the
  *               empty-string boundary, both on-disk versions, and the
- *               per-device CAN-ID fallbacks.
+ *               per-device CAN-ID fallbacks, including equal command and
+ *               reply IDs.
  * Not covered:  Reading the block from data flash on target.
  *
  * @see     dfu_config.h, rules/testing.md
@@ -331,6 +332,29 @@ static void test_v2_bad_crc_yields_default_ids(void)
     TEST_ASSERT_EQUAL_HEX16(CAN_ID_BOOT_TO_HOST, reply_id);
 }
 
+/* cmd == reply: the board would hear its own replies -> both defaults. */
+static void test_v2_equal_ids_fall_back_to_defaults(void)
+{
+    uint16_t cmd_id = 0, reply_id = 0;
+    build_valid_v2_block(TEST_MFR, (uint8_t)strlen(TEST_MFR),
+                         TEST_PROD, (uint8_t)strlen(TEST_PROD), 0x123u, 0x123u);
+    dfu_config_can_ids(s_blob, &cmd_id, &reply_id);
+    TEST_ASSERT_EQUAL_HEX16(CAN_ID_HOST_TO_BOOT, cmd_id);
+    TEST_ASSERT_EQUAL_HEX16(CAN_ID_BOOT_TO_HOST, reply_id);
+}
+
+/* Equal only after the per-field fallback: still both defaults. */
+static void test_v2_cmd_equal_to_default_reply_falls_back(void)
+{
+    uint16_t cmd_id = 0, reply_id = 0;
+    build_valid_v2_block(TEST_MFR, (uint8_t)strlen(TEST_MFR),
+                         TEST_PROD, (uint8_t)strlen(TEST_PROD),
+                         (uint16_t)CAN_ID_BOOT_TO_HOST, 0xFFFFu);
+    dfu_config_can_ids(s_blob, &cmd_id, &reply_id);
+    TEST_ASSERT_EQUAL_HEX16(CAN_ID_HOST_TO_BOOT, cmd_id);
+    TEST_ASSERT_EQUAL_HEX16(CAN_ID_BOOT_TO_HOST, reply_id);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -354,5 +378,7 @@ int main(void)
     RUN_TEST(test_v2_out_of_range_ids_fall_back_individually);
     RUN_TEST(test_v2_mixed_ids_fall_back_only_bad_field);
     RUN_TEST(test_v2_bad_crc_yields_default_ids);
+    RUN_TEST(test_v2_equal_ids_fall_back_to_defaults);
+    RUN_TEST(test_v2_cmd_equal_to_default_reply_falls_back);
     return UNITY_END();
 }

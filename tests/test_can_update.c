@@ -7,8 +7,15 @@
  *
  * Covers:       The happy path end-to-end (transfer -> metadata ->
  *               image_validate == IMAGE_VALID), every NAK path, window rewind
- *               after a seq gap, flash failure injection, and
- *               final-short-block 0xFF padding.
+ *               after a seq gap, flash failure injection (a failed program
+ *               writes part of its data first) dropping the session to IDLE,
+ *               final-short-block 0xFF padding, frame filtering (DLC, command
+ *               range, 0xFF padding, ISO-TP-like app traffic: no reply),
+ *               re-ACKs of exact SIZE/ERASE/VERIFY repeats and of a resent
+ *               final DATA window (nothing reprogrammed), the VERIFY vector
+ *               check, the deferred vector unit (erased until VERIFY, then
+ *               programmed exactly once, before the record), and the flash
+ *               lock / ownership seen by USB DFU.
  * Not covered:  The target flash HAL and the update-in-progress marker write
  *               (the fork's src/main.c; the fake erase is atomic), and INFO.
  *
@@ -29,6 +36,10 @@
 static uint8_t  s_flash[FLASH_SIZE];
 static bool     s_fail_erase;
 static bool     s_fail_next_program;
+static uint32_t s_fail_program_at;       /* fail the program at this address; 0: none */
+static uint32_t s_vector_unit_programs;  /* programs at APP_BASE */
+static bool     s_flash_locked;
+static uint32_t s_erase_count;
 static uint32_t s_last_program_addr;
 static uint32_t s_last_program_len;
 
@@ -37,8 +48,10 @@ static bool fake_erase_app_and_metadata(void)
     if (s_fail_erase) {
         return false;
     }
-    /* Contract: metadata block first, then the app slot. The fake is atomic,
-     * so the ordering only matters on real hardware. */
+    s_erase_count++;
+    /* Contract: the marker is in place before the app slot is erased (what
+     * that erases first is update_start_plan's decision, tested in
+     * test_image_validate.c). The fake is atomic and writes no marker. */
     memset(&s_flash[METADATA_ADDR], 0xFF, METADATA_BLOCK_SIZE);
     memset(&s_flash[APP_BASE], 0xFF, APP_SLOT_SIZE);
     return true;
@@ -46,8 +59,12 @@ static bool fake_erase_app_and_metadata(void)
 
 static bool fake_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
-    if (s_fail_next_program) {
-        s_fail_next_program = false;  /* simulated read-back-verify failure */
+    if (s_fail_next_program || (s_fail_program_at != 0u && addr == s_fail_program_at)) {
+        /* Like a real failed program: the first half landed, then the
+         * read-back verify failed. Those bytes are no longer erased. */
+        s_fail_next_program = false;
+        s_fail_program_at   = 0u;
+        memcpy(&s_flash[addr], data, len / 2u);
         return false;
     }
 
@@ -61,15 +78,24 @@ static bool fake_program(uint32_t addr, const uint8_t *data, uint32_t len)
     }
 
     memcpy(&s_flash[addr], data, len);
+    if (addr == APP_BASE) {
+        s_vector_unit_programs++;
+    }
     s_last_program_addr = addr;
     s_last_program_len  = len;
     return true;
+}
+
+static bool fake_flash_locked(void)
+{
+    return s_flash_locked;
 }
 
 static const can_update_hal_t s_hal = {
     .flash_erase_app_and_metadata = fake_erase_app_and_metadata,
     .flash_program                = fake_program,
     .flash_base                   = s_flash,
+    .flash_locked                 = fake_flash_locked,
 };
 
 /* -----------------------------------------------------------------------------
@@ -204,6 +230,10 @@ void setUp(void)
     memset(s_flash, 0x00, sizeof(s_flash));
     s_fail_erase         = false;
     s_fail_next_program  = false;
+    s_fail_program_at    = 0u;
+    s_vector_unit_programs = 0u;
+    s_flash_locked       = false;
+    s_erase_count        = 0u;
     s_last_program_addr  = 0u;
     s_last_program_len   = 0u;
     s_seq                = 0u;
@@ -257,7 +287,10 @@ static void test_happy_path_full_update(void)
     for (uint32_t i = TEST_IMAGE_SIZE; i < 2u * FLASH_BLOCK_SIZE + TEST_FINAL_PADDED_LEN; i++) {
         TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[APP_BASE + i]);
     }
-    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], TEST_IMAGE_SIZE);
+    /* Everything but the vector unit, which waits for VERIFY. */
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(&s_image[IMAGE_VECTOR_UNIT_SIZE],
+                                 &s_flash[APP_BASE + IMAGE_VECTOR_UNIT_SIZE],
+                                 TEST_IMAGE_SIZE - IMAGE_VECTOR_UNIT_SIZE);
 
     /* VERIFY commits the metadata block. */
     const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
@@ -272,6 +305,7 @@ static void test_happy_path_full_update(void)
                crc32_ieee(expected_meta, IMAGE_META_CRC_COVERAGE));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(expected_meta, &s_flash[METADATA_ADDR],
                                  IMAGE_META_SIZE);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], TEST_IMAGE_SIZE);
 
     /* The flashed result passes the boot-time validator. */
     TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
@@ -294,9 +328,8 @@ static void test_out_of_order_command_naks_state(void)
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
     assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_ERR_STATE, 0u);
 
-    /* Unknown command. */
-    TEST_ASSERT_TRUE(send_cmd(0x7Fu, 0xFFu, false, 0u));
-    assert_reply(0x7Fu, CAN_UPDATE_ERR_STATE, 0u);
+    /* Unknown command: not a protocol frame, so no reply at all. */
+    TEST_ASSERT_FALSE(send_cmd(0x7Fu, 0xFFu, false, 0u));
 }
 
 static void test_go_before_verify_naks_state(void)
@@ -313,6 +346,10 @@ static void test_size_out_of_bounds_naks(void)
                               CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
 
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, 0u));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_SIZE, 0u);
+
+    /* Too small to hold the SP and reset vector words. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, IMAGE_MIN_SIZE - 1u));
     assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_SIZE, 0u);
 
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true,
@@ -394,12 +431,13 @@ static void test_erase_failure_naks_flash_error(void)
     assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_OK, 0u);
 }
 
-static void test_program_failure_naks_and_window_retransmit_recovers(void)
+static void test_program_failure_drops_to_idle_and_restart_recovers(void)
 {
     enter_transfer_phase();
 
-    /* Stream block 0 with the program call rigged to fail: mid-window frames
-     * stay silent, the block-completing frame NAKs err 0x02. */
+    /* Stream block 0 with the program call rigged to fail after writing half
+     * the block: mid-window frames stay silent, the block-completing frame
+     * NAKs err 0x02. */
     s_fail_next_program = true;
     uint32_t off = 0u;
     while (off < FLASH_BLOCK_SIZE) {
@@ -420,11 +458,19 @@ static void test_program_failure_naks_and_window_retransmit_recovers(void)
         off += chunk;
     }
 
-    /* Window discarded: retransmit block 0 from seq 0 and finish the update. */
-    s_seq = 0u;
-    for (uint32_t start = 0u; start < TEST_IMAGE_SIZE; start += FLASH_BLOCK_SIZE) {
-        stream_block(start);
-    }
+    /* Block 0 is half programmed and cannot be programmed again without an
+     * erase: the session is gone, a window retransmit is refused... */
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = 0u;
+    TEST_ASSERT_FALSE(send_frame(d));  /* DATA outside TRANSFER is ignored */
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+
+    /* ...and a restart from HELLO (with a fresh ERASE) completes the update.
+     * The fake's NOR check proves nothing is programmed over stale bytes. */
+    transfer_whole_image();
+    TEST_ASSERT_EQUAL_UINT32(2u, s_erase_count);
     const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
     assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
@@ -441,22 +487,392 @@ static void test_hello_restarts_session_mid_transfer(void)
                               CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
     assert_reply(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_OK, CAN_UPDATE_PROTOCOL_VERSION);
 
-    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_DATA, 0u, false, 0u));
-    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+    /* DATA outside TRANSFER gets no reply (see accepts_frame). */
+    TEST_ASSERT_FALSE(send_cmd(CAN_UPDATE_CMD_DATA, 0u, false, 0u));
 
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
     assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_OK, 0u);
 }
 
-static void test_malformed_dlc_naks_state(void)
+static void test_malformed_dlc_is_ignored(void)
 {
     uint8_t d[8];
     memset(d, 0xFF, sizeof(d));
     d[0] = CAN_UPDATE_CMD_HELLO;
     d[1] = CAN_UPDATE_PROTOCOL_VERSION;
-    TEST_ASSERT_TRUE(can_update_handle_frame(&s_state, CAN_ID_HOST_TO_BOOT, 4u,
-                                             d, s_reply, &s_action));
-    assert_reply(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_FALSE(can_update_handle_frame(&s_state, CAN_ID_HOST_TO_BOOT, 4u,
+                                              d, s_reply, &s_action));
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+}
+
+/* App traffic shares a provisioned board's command ID: ISO-TP single frames
+ * start with 0x01..0x07, but carry data or non-0xFF padding. */
+static void test_accepts_only_padded_protocol_frames(void)
+{
+    static const uint8_t accepted[][8] = {
+        {0x01, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* HELLO           */
+        {0x01, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* HELLO, bad ver. */
+        {0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* ERASE           */
+        {0x04, 0xFF, 0x8B, 0x13, 0x00, 0x00, 0xFF, 0xFF},  /* SIZE            */
+        {0x05, 0xFF, 0x12, 0x34, 0x56, 0x78, 0xFF, 0xFF},  /* VERIFY          */
+        {0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* GO              */
+        {0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* INFO            */
+    };
+    static const uint8_t rejected[][8] = {
+        {0x02, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00},  /* ISO-TP SF, 0x00 pad */
+        {0x07, 0x22, 0xF1, 0x90, 0x01, 0x02, 0x03, 0x04},  /* ISO-TP SF len 7    */
+        {0x01, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* HELLO, byte 2 used */
+        {0x04, 0x00, 0x8B, 0x13, 0x00, 0x00, 0xFF, 0xFF},  /* SIZE, byte 1 used  */
+        {0x05, 0xFF, 0x12, 0x34, 0x56, 0x78, 0x00, 0xFF},  /* VERIFY, byte 6     */
+        {0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00},  /* GO, byte 7         */
+        {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* below HELLO        */
+        {0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* above INFO         */
+        {0x10, 0x14, 0x22, 0xF1, 0x90, 0x00, 0x00, 0x00},  /* ISO-TP first frame */
+        {0x79, 0x05, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF},  /* our own NAK        */
+    };
+    for (uint32_t i = 0u; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+        TEST_ASSERT_TRUE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, accepted[i]));
+        TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 7u, accepted[i]));
+        TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id + 1u, 8u,
+                                                   accepted[i]));
+    }
+    for (uint32_t i = 0u; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, rejected[i]));
+        TEST_ASSERT_FALSE(send_frame(rejected[i]));
+    }
+
+    /* A 3-byte ISO-TP single frame starts with the DATA command byte and DATA
+     * carries payload, so it cannot be told apart by padding: outside TRANSFER
+     * it is ignored (no NAK, no idle-timer refresh), inside TRANSFER it is
+     * DATA (the master's polling is stopped while a host flashes). */
+    static const uint8_t data_like[8] = {0x03, 0x22, 0xF1, 0x90, 0xCC, 0xCC, 0xCC, 0xCC};
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, data_like));
+    TEST_ASSERT_FALSE(send_frame(data_like));
+    enter_transfer_phase();
+    TEST_ASSERT_TRUE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, data_like));
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 7u, data_like));
+}
+
+static void test_unpadded_command_does_not_advance_session(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+
+    /* An app poll that looks like ERASE except for its padding. */
+    uint8_t poll[8] = {CAN_UPDATE_CMD_ERASE, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+    TEST_ASSERT_FALSE(send_frame(poll));
+    TEST_ASSERT_EQUAL_UINT32(0u, s_erase_count);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_SIZED, s_state.phase);
+}
+
+static void test_info_is_left_to_the_integration_layer(void)
+{
+    TEST_ASSERT_FALSE(send_cmd(CAN_UPDATE_CMD_INFO, 0xFFu, false, 0u));
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+}
+
+/* -----------------------------------------------------------------------------
+ * Host retries after a lost ACK (#40 item 12)
+ * ----------------------------------------------------------------------------- */
+static void test_repeated_size_is_reacked(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_OK, 0u);
+
+    /* A different size is not a repeat. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE + 1u));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL_UINT32(TEST_IMAGE_SIZE, s_state.image_size);
+}
+
+static void test_repeated_erase_is_reacked_without_erasing(void)
+{
+    enter_transfer_phase();
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_erase_count);
+
+    /* Once DATA has arrived, ERASE is out of phase again. */
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = 0u;
+    memcpy(&d[2], s_image, 6u);
+    TEST_ASSERT_FALSE(send_frame(d));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_erase_count);
+}
+
+static void test_repeated_verify_is_reacked_without_rewriting(void)
+{
+    transfer_whole_image();
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+
+    /* The fake's NOR check would fail a second record write. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc ^ 1u));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_STATE, 0u);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+/* A lost ACK on the final window: the host resends that window after the
+ * engine has moved to TRANSFERRED. */
+static void test_resent_final_window_is_reacked_without_programming(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    stream_block(FLASH_BLOCK_SIZE);
+    const uint8_t last_window_start = s_seq;
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    const uint8_t final_seq = (uint8_t)(s_seq - 1u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_TRANSFERRED, s_state.phase);
+
+    /* The whole window again: silent until its final frame, then the same
+     * ACK. The fake's NOR check fails any second program of the block. */
+    const uint32_t last_program_addr = s_last_program_addr;
+    s_seq = last_window_start;
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(last_program_addr, s_last_program_addr);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_TRANSFERRED, s_state.phase);
+
+    /* DATA outside the last window is not a protocol frame: no reply. */
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = (uint8_t)(last_window_start - 1u);  /* the previous window's */
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, d));
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = (uint8_t)(final_seq + 1u);
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, d));
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = final_seq;
+    TEST_ASSERT_TRUE(send_frame(d));
+    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_OK, final_seq);
+
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+
+    /* Once VERIFIED, DATA is app traffic again. */
+    TEST_ASSERT_FALSE(send_frame(d));
+}
+
+/* -----------------------------------------------------------------------------
+ * VERIFY commit checks and failures
+ * ----------------------------------------------------------------------------- */
+static void test_verify_rejects_bad_vectors_even_with_matching_crc(void)
+{
+    store_le32(&s_image[0], 0xFFFFFFFFu);  /* no initial SP */
+    transfer_whole_image();
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true,
+                              crc32_ieee(s_image, TEST_IMAGE_SIZE)));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    for (uint32_t i = 0u; i < IMAGE_META_SIZE; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[METADATA_ADDR + i]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+}
+
+static void test_verify_flash_failure_drops_to_idle(void)
+{
+    transfer_whole_image();
+    s_fail_next_program = true;  /* the vector unit, VERIFY's first program */
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
+
+    /* Half a record landed: no retry over it, and GO stays refused. */
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_NOT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+    for (uint32_t i = 0u; i < IMAGE_META_SIZE; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[METADATA_ADDR + i]);
+    }
+}
+
+static void test_verify_record_failure_drops_to_idle_and_restart_recovers(void)
+{
+    transfer_whole_image();
+    s_fail_program_at = METADATA_ADDR;
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);  /* landed before the record */
+    TEST_ASSERT_NOT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+
+    /* A full restart re-erases the slot; the NOR check proves nothing is
+     * programmed over the old vector unit or the half record. */
+    transfer_whole_image();
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+/* -----------------------------------------------------------------------------
+ * Deferred vector unit (#40 second review, W4)
+ * ----------------------------------------------------------------------------- */
+static void test_vector_unit_stays_erased_until_verify_then_programmed_once(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    for (uint32_t i = 0u; i < IMAGE_VECTOR_UNIT_SIZE; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[APP_BASE + i]);  /* SP word erased */
+    }
+    stream_block(FLASH_BLOCK_SIZE);
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+
+    /* With no record and no marker, the SP-word fallback must not boot it. */
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+
+    /* A wrong CRC commits nothing. */
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc ^ 1u));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], IMAGE_VECTOR_UNIT_SIZE);
+
+    /* A repeated VERIFY does not program it again. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+/* An image of only the vector unit: block 0 has nothing left to program
+ * before VERIFY, and VERIFY refuses it (no entry point past the vectors). */
+static void test_vector_unit_only_image_programs_nothing_and_fails_verify(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, IMAGE_MIN_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = 0u;
+    memcpy(&d[2], s_image, 6u);
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = 1u;
+    memcpy(&d[2], &s_image[6], 2u);
+    TEST_ASSERT_TRUE(send_frame(d));
+    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_OK, 1u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_last_program_len);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true,
+                              crc32_ieee(s_image, IMAGE_MIN_SIZE)));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+}
+
+/* -----------------------------------------------------------------------------
+ * Flash ownership between CAN and USB DFU (#40 item 19)
+ * ----------------------------------------------------------------------------- */
+static void test_flash_locked_by_dfu_naks_size_without_claiming_flash(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    s_flash_locked = true;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_GREETED, s_state.phase);
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+
+    s_flash_locked = false;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+}
+
+static void test_flash_locked_by_dfu_naks_erase_without_erasing(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+
+    s_flash_locked = true;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_erase_count);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_SIZED, s_state.phase);
+
+    s_flash_locked = false;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_ERASE, CAN_UPDATE_OK, 0u);
+}
+
+static void test_flash_locked_by_dfu_naks_data_and_verify(void)
+{
+    enter_transfer_phase();
+    s_flash_locked = true;
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = 0u;
+    TEST_ASSERT_TRUE(send_frame(d));
+    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+
+    s_flash_locked = false;
+    transfer_whole_image();
+    s_flash_locked = true;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true,
+                              crc32_ieee(s_image, TEST_IMAGE_SIZE)));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_MAGIC, image_validate(s_flash));
+}
+
+static void test_end_session_releases_flash_without_touching_it(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    const uint32_t last_program_addr = s_last_program_addr;
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+
+    can_update_end_session(&s_state);
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_erase_count);
+    TEST_ASSERT_EQUAL_UINT32(last_program_addr, s_last_program_addr);
+
+    /* The host's next DATA is ignored; it must restart from HELLO. */
+    TEST_ASSERT_FALSE(send_cmd(CAN_UPDATE_CMD_DATA, s_seq, false, 0u));
+}
+
+static void test_owns_flash_from_size_until_hello(void)
+{
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    TEST_ASSERT_TRUE(can_update_owns_flash(&s_state));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
 }
 
 /* Per-device ID: an engine keyed on a non-default cmd_id answers only on that
@@ -500,9 +916,26 @@ int main(void)
     RUN_TEST(test_seq_gap_mid_window_rewinds_and_recovers);
     RUN_TEST(test_verify_wrong_crc_naks_and_leaves_metadata_erased);
     RUN_TEST(test_erase_failure_naks_flash_error);
-    RUN_TEST(test_program_failure_naks_and_window_retransmit_recovers);
+    RUN_TEST(test_program_failure_drops_to_idle_and_restart_recovers);
     RUN_TEST(test_hello_restarts_session_mid_transfer);
-    RUN_TEST(test_malformed_dlc_naks_state);
+    RUN_TEST(test_malformed_dlc_is_ignored);
+    RUN_TEST(test_accepts_only_padded_protocol_frames);
+    RUN_TEST(test_unpadded_command_does_not_advance_session);
+    RUN_TEST(test_info_is_left_to_the_integration_layer);
+    RUN_TEST(test_repeated_size_is_reacked);
+    RUN_TEST(test_repeated_erase_is_reacked_without_erasing);
+    RUN_TEST(test_repeated_verify_is_reacked_without_rewriting);
+    RUN_TEST(test_resent_final_window_is_reacked_without_programming);
+    RUN_TEST(test_verify_rejects_bad_vectors_even_with_matching_crc);
+    RUN_TEST(test_verify_flash_failure_drops_to_idle);
+    RUN_TEST(test_verify_record_failure_drops_to_idle_and_restart_recovers);
+    RUN_TEST(test_vector_unit_stays_erased_until_verify_then_programmed_once);
+    RUN_TEST(test_vector_unit_only_image_programs_nothing_and_fails_verify);
+    RUN_TEST(test_flash_locked_by_dfu_naks_size_without_claiming_flash);
+    RUN_TEST(test_flash_locked_by_dfu_naks_erase_without_erasing);
+    RUN_TEST(test_flash_locked_by_dfu_naks_data_and_verify);
+    RUN_TEST(test_owns_flash_from_size_until_hello);
+    RUN_TEST(test_end_session_releases_flash_without_touching_it);
     RUN_TEST(test_custom_cmd_id_is_matched_and_default_ignored);
     return UNITY_END();
 }

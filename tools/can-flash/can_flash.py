@@ -368,9 +368,13 @@ class CanFlasher:
                 attempts = 0 if target > window else attempts + 1
                 window = target
             elif err == ERR_FLASH_FAILURE:
-                # Bootloader discarded the window and stays in transfer: resend.
-                attempts += 1
-                self._drain()
+                # The block may be half-programmed and cannot be rewritten
+                # without an erase, so the bootloader ends the session (it stays
+                # parked: the update marker is set). Only a new HELLO/ERASE run
+                # can continue.
+                raise FlashError(
+                    "DATA window %d: flash write failed on the board; the session "
+                    "was reset, re-run the flash to start over" % window)
             else:
                 raise FlashError("DATA window %d rejected: %s" % (window, _err_name(err)))
         if self.progress is None:
@@ -678,7 +682,7 @@ class FakeBootloader(threading.Thread):
             msg = self.bus.recv(0.1)
             if msg is None or msg.dlc != FRAME_DLC:
                 continue
-            self._handle(bytes(msg.data))
+            self._handle_frame(bytes(msg.data))
 
     # -- internals -----------------------------------------------------------
     def _reply(self, cmd, err, tail=b""):
@@ -688,7 +692,7 @@ class FakeBootloader(threading.Thread):
             data=_pad_frame(bytes([REPLY_MAGIC, cmd, err]) + tail),
         ))
 
-    def _handle(self, data):
+    def _handle_frame(self, data):
         cmd = data[0]
         if cmd == CMD_HELLO:
             self._state = "hello"

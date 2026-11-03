@@ -6,7 +6,12 @@
  * Implementation notes: register-level, zero interrupts. Register/bit facts
  * cross-checked against FSP sources vendored under
  * vendor/ra4m1-headers/reference/ and the RA4M1 HW manual (R01UM0007) CAN
- * chapter; non-obvious values cite file:line below.
+ * chapter; non-obvious values cite file:line below. The HW manual is not in
+ * this repo; these behaviours are inferred from the RX/RA CAN module
+ * family and FSP, and need the bench: TRMABT latching when an abort
+ * completes and clearing by a write of 0; reset and halt modes waiting for
+ * the frame in progress; reset mode being reachable during bus-off; and
+ * CTLR.BOM = 00 recovering by itself after 128 x 11 recessive bits.
  *
  * @see     can_polled.h
  */
@@ -57,15 +62,40 @@
 #define CAN_MODE_HALT           2U
 #define CAN_STR_MODE_MASK       0x0700U
 
-/* Bit timing on PCLKB = 24 MHz: 16 tq/bit, SS=1, TSEG1=11, TSEG2=4, SJW=1
- * (sample point 75 %). BCR fields hold value-1 (reference/r_can.c:283-288). */
+/* Bit timing on PCLKB = 24 MHz: 16 tq/bit, SS=1, TSEG1=11, TSEG2=4, SJW=4
+ * (sample point 75 %; oscillator tolerance in can_polled.h). BCR fields hold
+ * value-1 (reference/r_can.c:283-288); the hardware requires
+ * TSEG1 > TSEG2 >= SJW (reference/r_can.c:195-206). */
 #define CAN_PCLKB_HZ            24000000UL
-#define CAN_BRP_250K            6U
-#define CAN_BRP_500K            3U
-#define CAN_BCR_SEGMENTS  (((11UL - 1U) << R_CAN0_BCR_TSEG1_Pos) | \
-                           ((4UL - 1U)  << R_CAN0_BCR_TSEG2_Pos) | \
-                           ((1UL - 1U)  << R_CAN0_BCR_SJW_Pos))
+#define CAN_TQ_PER_BIT          16UL
+#define CAN_TSEG1_TQ            11UL
+#define CAN_TSEG2_TQ            4UL
+#define CAN_SJW_TQ              4UL
+#define CAN_BRP(bitrate_bps)    (CAN_PCLKB_HZ / (CAN_TQ_PER_BIT * (bitrate_bps)))
+#define CAN_BRP_250K            CAN_BRP(250000UL)
+#define CAN_BRP_500K            CAN_BRP(500000UL)
+#define CAN_BCR_SEGMENTS  (((CAN_TSEG1_TQ - 1U) << R_CAN0_BCR_TSEG1_Pos) | \
+                           ((CAN_TSEG2_TQ - 1U) << R_CAN0_BCR_TSEG2_Pos) | \
+                           ((CAN_SJW_TQ - 1U)   << R_CAN0_BCR_SJW_Pos))
 /* BCR.CCLKS = 0 selects PCLKB (reference/r_can.h:126-130). */
+
+_Static_assert(1UL + CAN_TSEG1_TQ + CAN_TSEG2_TQ == CAN_TQ_PER_BIT,
+               "SS + TSEG1 + TSEG2 must fill the bit");
+_Static_assert((CAN_TSEG1_TQ > CAN_TSEG2_TQ) && (CAN_TSEG2_TQ >= CAN_SJW_TQ) &&
+               (CAN_TSEG1_TQ <= 16UL) && (CAN_TSEG2_TQ <= 8UL) && (CAN_SJW_TQ <= 4UL),
+               "BCR segment fields out of range");
+/* Lower bounds of the same fields, per the RX/RA CAN module's bit timing
+ * rules (HW manual "Bit Timing Setting", not in this repo; FSP checks only
+ * the ordering above): TSEG1 4..16 tq, TSEG2 2..8 tq, 8..25 tq per bit. */
+_Static_assert((CAN_TSEG1_TQ >= 4UL) && (CAN_TSEG2_TQ >= 2UL) && (CAN_SJW_TQ >= 1UL) &&
+               (CAN_TQ_PER_BIT >= 8UL) && (CAN_TQ_PER_BIT <= 25UL),
+               "bit timing below the CAN module's minimums");
+_Static_assert((CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 250000UL) == 0UL) &&
+               (CAN_PCLKB_HZ % (CAN_TQ_PER_BIT * 500000UL) == 0UL),
+               "PCLKB must divide exactly into 250k and 500k bit/s");
+_Static_assert((CAN_BRP_250K >= 1UL) && (CAN_BRP_250K <= 1024UL) &&
+               (CAN_BRP_500K >= 1UL) && (CAN_BRP_500K <= 1024UL),
+               "BRP out of the 1..1024 range (reference/r_can.c:30-31)");
 
 /* Standard ID sits at bits [28:18] of MB.ID / MKR / FIDCR. */
 #define CAN_SID_MAX             0x7FFUL
@@ -75,6 +105,9 @@
  * one write — write 0x00 twice (reference/r_can.c:1043-1051). */
 #define MCTL_TRMREQ             0x80U
 #define MCTL_SENTDATA           0x01U
+/* TRMABT=0x04 latches a completed transmit abort (device header
+ * R_CAN0_MCTL_TX_TRMABT_Msk). */
+#define MCTL_TRMABT             0x04U
 
 /* RFCR: RFE=bit0 enables the RX FIFO, RFMLF=bit4 message-lost flag,
  * RFEST=bit7 empty flag. Reading MB[28] accesses the FIFO head; writing 0xFF
@@ -87,21 +120,76 @@
 #define CAN_MKIVLR_FIFO_MASK    0x00FFFFFFUL
 #define CAN_NORMAL_MAILBOXES    24U
 
-/* Loop bounds: a mode switch takes a few CAN-clock cycles; a transmit can
- * suffer arbitration loss and error retries. At 48 MHz CPU / 250 kbit/s bus,
- * 2M polls (>= ~5 cycles each) bounds the wait to roughly 200 ms. */
-#define CAN_MODE_TIMEOUT_LOOPS  100000UL
-#define CAN_TX_TIMEOUT_LOOPS    2000000UL
+/* Wait bounds in real time, measured on the DWT cycle counter at ICLK
+ * (48 MHz: HOCO, twice PCLKB — see can_polled.h). A slower ICLK only
+ * lengthens them.
+ * - Mode switch: reset and halt are entered once the frame in progress ends
+ *   (one stuffed 8-byte frame plus an error frame is ~160 bits, 640 us at
+ *   250 kbit/s); 10 ms covers 15 of them.
+ * - Transmit: arbitration losses and error retries; 200 ms.
+ * - Transmit abort: completes when the frame in progress ends (same ~640 us
+ *   worst case); 2 ms covers three.
+ * - Bus-off: the automatic recovery needs 128 x 11 recessive bits, which
+ *   even a saturated bus yields within 128 frame times (~82 ms at
+ *   250 kbit/s); a bus-off that outlasts 1 s means the recovery is not
+ *   happening. */
+#define CAN_CPU_HZ              48000000UL
+#define CAN_CYCLES_PER_US       (CAN_CPU_HZ / 1000000UL)
+#define CAN_MODE_TIMEOUT_US     10000UL
+#define CAN_TX_TIMEOUT_US       200000UL
+#define CAN_TX_ABORT_TIMEOUT_US 2000UL
+#define CAN_BUS_OFF_REINIT_US   1000000UL
 
 /* -----------------------------------------------------------------------------
- * File-local state (plain .bss scalars — no static init order dependencies)
+ * Types
  * ----------------------------------------------------------------------------- */
-static uint32_t s_bitrate_bps;
-static uint32_t s_rx_filter_id;
+
+/* A bounded wait. `polls` is the fallback for a cycle counter that does not
+ * run (no debug block, or stopped): each poll costs at least one cycle, so
+ * the poll cap never ends a wait before `cycles` have elapsed, and without
+ * the counter it still ends after `cycles` polls. */
+typedef struct {
+    uint32_t start;
+    uint32_t cycles;
+    uint32_t polls;
+} can_deadline_t;
+
+/* -----------------------------------------------------------------------------
+ * File-local state (one plain .bss struct — no static init order
+ * dependencies; one base address keeps the BOOT_LOW_FLASH init within the
+ * 832 B region)
+ * ----------------------------------------------------------------------------- */
+static struct {
+    uint32_t       bitrate_bps;
+    uint32_t       rx_filter_id;
+    can_deadline_t bus_off_deadline;  /* forced re-init deadline of the episode */
+    bool           bus_off_seen;      /* a bus-off episode is being timed       */
+    bool           recovery_failed;   /* sticky until can_polled_init()         */
+} s_can;
 
 /* -----------------------------------------------------------------------------
  * Helpers
  * ----------------------------------------------------------------------------- */
+
+/* Enabling the counter is idempotent, so every wait does it and no call
+ * order (deinit before init) can leave a wait on a stopped counter. The
+ * counter is left running for the application. noinline keeps the
+ * BOOT_LOW_FLASH callers inside their 832 B region. */
+static __attribute__((noinline)) can_deadline_t can_deadline_start(uint32_t timeout_us)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    can_deadline_t deadline = { DWT->CYCCNT, timeout_us * CAN_CYCLES_PER_US, 0U };
+    return deadline;
+}
+
+static bool can_deadline_expired(can_deadline_t *deadline)
+{
+    deadline->polls++;
+    return ((DWT->CYCCNT - deadline->start) >= deadline->cycles) ||
+           (deadline->polls >= deadline->cycles);
+}
 
 /* Clear SLPM, request CANM = mode, poll STR until the mode is reached.
  * HW manual: write CTLR, then confirm via STR RSTST/HLTST flags. */
@@ -112,12 +200,35 @@ static can_polled_status_t can_mode_set(uint16_t mode)
     ctlr |= (uint16_t) (mode << R_CAN0_CTLR_CANM_Pos);
     R_CAN0->CTLR = ctlr;
 
-    for (uint32_t i = 0; i < CAN_MODE_TIMEOUT_LOOPS; i++) {
+    can_deadline_t deadline = can_deadline_start(CAN_MODE_TIMEOUT_US);
+    do {
         if ((R_CAN0->STR & CAN_STR_MODE_MASK) == (uint16_t) (mode << R_CAN0_CTLR_CANM_Pos)) {
             return CAN_POLLED_OK;
         }
-    }
+    } while (!can_deadline_expired(&deadline));
     return CAN_POLLED_ERROR;
+}
+
+/* Bring the TX mailbox to MCTL_TX = 0, the only state in which MB[0] may be
+ * rewritten. Writing 0 clears TRMREQ, which requests an abort of a pending
+ * transmit; the abort ends in TRMABT (not sent) or SENTDATA (the frame in
+ * progress went out), and only then is that flag cleared, by another write
+ * of 0, because TRMREQ and a completion flag cannot clear in one write
+ * (reference/r_can.c:1043-1051). Nothing is written while the abort runs.
+ * Returns false if the mailbox is still busy after the abort bound. */
+static bool can_tx_mailbox_release(void)
+{
+    can_deadline_t deadline = can_deadline_start(CAN_TX_ABORT_TIMEOUT_US);
+    do {
+        uint8_t mctl = R_CAN0->MCTL_TX[TX_MAILBOX];
+        if (mctl == 0U) {
+            return true;
+        }
+        if (mctl & (MCTL_TRMREQ | MCTL_TRMABT | MCTL_SENTDATA)) {
+            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
+        }
+    } while (!can_deadline_expired(&deadline));
+    return false;
 }
 
 /* Route one pin to CAN0 (or back to reset state when pfs_value == 0).
@@ -135,11 +246,30 @@ static void can_pin_config(uint32_t port, uint32_t pin, uint32_t pfs_value)
     R_PMISC->PWPR = PWPR_B0WI;                           /* re-lock          */
 }
 
-/* Bus-off recovery: full re-init, then report CAN_POLLED_BUS_OFF so the
- * caller keeps waiting (never proceed with a half-programmed slot). */
-static can_polled_status_t can_bus_off_recover(void)
+/* Bus-off gate for receive/send. CTLR.BOM = 00 makes the controller leave
+ * bus-off by itself as ISO 11898-1 requires (128 x 11 recessive bits), so a
+ * faulty node cannot flood the bus with error frames; meanwhile this reports
+ * CAN_POLLED_BUS_OFF. Only a bus-off that outlasts CAN_BUS_OFF_REINIT_US
+ * forces a re-init, so forced recoveries happen at most once per that
+ * period; a failed one latches CAN_POLLED_RECOVERY_FAILED. */
+static can_polled_status_t can_bus_state(void)
 {
-    (void) can_polled_init(s_bitrate_bps, s_rx_filter_id);
+    if (s_can.recovery_failed) {
+        return CAN_POLLED_RECOVERY_FAILED;
+    }
+    if ((R_CAN0->STR & R_CAN0_STR_BOST_Msk) == 0U) {
+        s_can.bus_off_seen = false;
+        return CAN_POLLED_OK;
+    }
+    if (!s_can.bus_off_seen) {
+        s_can.bus_off_seen     = true;
+        s_can.bus_off_deadline = can_deadline_start(CAN_BUS_OFF_REINIT_US);
+    } else if (can_deadline_expired(&s_can.bus_off_deadline)) {
+        if (can_polled_init(s_can.bitrate_bps, s_can.rx_filter_id) != CAN_POLLED_OK) {
+            s_can.recovery_failed = true;
+            return CAN_POLLED_RECOVERY_FAILED;
+        }
+    }
     return CAN_POLLED_BUS_OFF;
 }
 
@@ -178,7 +308,8 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_
     }
 
     /* FIFO mailbox mode (MBM=1), standard ID (IDFM=00), overwrite (MLM=0),
-     * stay in reset while writing. */
+     * ISO 11898-1 automatic bus-off recovery (BOM=00, as FSP's default,
+     * reference/r_can.c:272), stay in reset while writing. */
     R_CAN0->CTLR = (uint16_t) (R_CAN0_CTLR_MBM_Msk |
                                (CAN_MODE_RESET << R_CAN0_CTLR_CANM_Pos));
 
@@ -213,8 +344,10 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_
     /* Enable RX FIFO after entering operate mode (reference/r_can.c:397-411). */
     R_CAN0->RFCR = R_CAN0_RFCR_RFE_Msk;
 
-    s_bitrate_bps  = bitrate_bps;
-    s_rx_filter_id = rx_filter_id;
+    s_can.bitrate_bps     = bitrate_bps;
+    s_can.rx_filter_id    = rx_filter_id;
+    s_can.bus_off_seen    = false;
+    s_can.recovery_failed = false;
     return CAN_POLLED_OK;
 }
 
@@ -223,8 +356,9 @@ can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[
     if ((id == 0) || (dlc == 0) || (data == 0)) {  /* null pointers */
         return CAN_POLLED_ERROR;
     }
-    if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-        return can_bus_off_recover();
+    can_polled_status_t bus = can_bus_state();
+    if (bus != CAN_POLLED_OK) {
+        return bus;
     }
     if (R_CAN0->RFCR & R_CAN0_RFCR_RFEST_Msk) {
         return CAN_POLLED_NO_DATA;             /* FIFO empty                 */
@@ -255,8 +389,12 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
     if ((id > CAN_SID_MAX) || (dlc > 8U) || ((data == 0) && (dlc > 0U))) {
         return CAN_POLLED_ERROR;
     }
-    if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-        return can_bus_off_recover();
+    can_polled_status_t bus = can_bus_state();
+    if (bus != CAN_POLLED_OK) {
+        return bus;
+    }
+    if (!can_tx_mailbox_release()) {
+        return CAN_POLLED_TIMEOUT;             /* an earlier abort still runs */
     }
 
     R_CAN0->MB[TX_MAILBOX].ID = id << R_CAN0_MB_ID_SID_Pos;  /* IDE=0, RTR=0 */
@@ -267,22 +405,25 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
 
     R_CAN0->MCTL_TX[TX_MAILBOX] = MCTL_TRMREQ;
 
-    for (uint32_t i = 0; i < CAN_TX_TIMEOUT_LOOPS; i++) {
+    can_polled_status_t status = CAN_POLLED_TIMEOUT;
+    can_deadline_t deadline = can_deadline_start(CAN_TX_TIMEOUT_US);
+    do {
         if (R_CAN0->MCTL_TX[TX_MAILBOX] & MCTL_SENTDATA) {
-            /* SENTDATA and TRMREQ cannot clear in one write — write 0 twice
-             * (reference/r_can.c:1043-1051). */
-            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-            return CAN_POLLED_OK;
+            status = CAN_POLLED_OK;
+            break;
         }
         if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-            return can_bus_off_recover();
+            status = CAN_POLLED_BUS_OFF;   /* the next gate call times it */
+            break;
         }
-    }
+    } while (!can_deadline_expired(&deadline));
 
-    R_CAN0->MCTL_TX[TX_MAILBOX] = 0;           /* abort the pending request  */
-    R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-    return CAN_POLLED_TIMEOUT;
+    /* Sent: clears SENTDATA and TRMREQ. Bus-off or timeout: aborts the
+     * request (so it is not sent stale after a bus-off recovery) and waits
+     * the abort out; if that outlasts its bound, the next send's release
+     * finishes it before MB[0] is touched. */
+    (void) can_tx_mailbox_release();
+    return status;
 }
 
 BOOT_LOW_FLASH void can_polled_deinit(void)
@@ -291,10 +432,12 @@ BOOT_LOW_FLASH void can_polled_deinit(void)
      * are stopping the module regardless. */
     (void) can_mode_set(CAN_MODE_RESET);
 
-    R_MSTP->MSTPCRB |= CAN0_MSTP_BIT;
-    (void) R_MSTP->MSTPCRB;
-
-    /* PmnPFS reset value is 0x00000000 (GPIO input, no pull, PSEL clear). */
+    /* Pins back to GPIO before the module stops, so CTX0 is never left
+     * routed to an unclocked peripheral. PmnPFS reset value is 0x00000000
+     * (GPIO input, no pull, PSEL clear). */
     can_pin_config(CAN_TX_PORT, CAN_TX_PIN, 0);
     can_pin_config(CAN_RX_PORT, CAN_RX_PIN, 0);
+
+    R_MSTP->MSTPCRB |= CAN0_MSTP_BIT;
+    (void) R_MSTP->MSTPCRB;
 }

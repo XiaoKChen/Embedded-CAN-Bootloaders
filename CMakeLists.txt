@@ -18,7 +18,8 @@ project(arduino_bootloader_can LANGUAGES NONE)
 enable_testing()
 
 # -----------------------------------------------------------------------------
-# Host-side Unity tests (pure logic: crc32, image_validate, can_update)
+# Host-side Unity tests (pure logic: crc32, image_validate, can_update,
+# dfu_config)
 # -----------------------------------------------------------------------------
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
     add_subdirectory(tests)
@@ -27,8 +28,7 @@ endif()
 # -----------------------------------------------------------------------------
 # Bootloader firmware — custom target invoking the fork's Make build.
 # Requires on PATH: GNU make, a POSIX sh, arm-none-eabi-gcc (see
-# docs/build.md; on this machine the Arduino-installed GNU Arm Embedded
-# 7-2017-q4 toolchain). On Windows additionally pass
+# docs/build.md: the xPack gcc 14.2.1 toolchain). On Windows additionally pass
 #   -DBOOTLOADER_SHELL=<absolute path to sh.exe, path without spaces>
 # and build from a space-free checkout path (e.g. a `subst` drive).
 # -----------------------------------------------------------------------------
@@ -44,15 +44,20 @@ if(BOOTLOADER_SOURCE_DIR MATCHES " ")
         "-DBOOTLOADER_SOURCE_DIR accordingly (docs/build.md).")
 endif()
 
+# gcc 7.x only: -DBOOTLOADER_CFLAGS_SKIP=-Wcast-function-type (gcc 7 does
+# not know the flag tinyusb adds for gcc >= 8). Leave empty for gcc 14.
+set(BOOTLOADER_CFLAGS_SKIP "" CACHE STRING "CFLAGS_SKIP passed to the bootloader make (gcc 7 only)")
+
 set(BOOTLOADER_MAKE_ARGS
     -f Makefile.minima
     BOARD=uno_r4
     TOP=../tinyusb
     CURRENT_PATH=.
     CMDEXE=
-    # gcc 7.x does not know -Wcast-function-type (added by tinyusb for >= 8)
-    CFLAGS_SKIP=-Wcast-function-type
 )
+if(BOOTLOADER_CFLAGS_SKIP)
+    list(APPEND BOOTLOADER_MAKE_ARGS "CFLAGS_SKIP=${BOOTLOADER_CFLAGS_SKIP}")
+endif()
 if(DEFINED BOOTLOADER_SHELL)
     list(APPEND BOOTLOADER_MAKE_ARGS "BOOTLOADER_SHELL=${BOOTLOADER_SHELL}")
 endif()

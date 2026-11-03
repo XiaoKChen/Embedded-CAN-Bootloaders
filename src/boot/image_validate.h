@@ -1,7 +1,7 @@
 /**
  * @file    image_validate.h
- * @brief   Pure-logic validation of the application image and the boot
- *          decision.
+ * @brief   Pure-logic validation of the application image, the boot
+ *          decision, and the record and erase plan of an update.
  *
  * Operates on a byte buffer standing in for code flash, so it compiles and
  * unit-tests on the host (tests/). Per rules/bootloader.md: never jump to an
@@ -14,16 +14,36 @@
  *   no record (magic / header CRC) + marker  PARK (interrupted update)
  *   no record, no marker ................... stock SP-word fallback, for
  *                                            images flashed without a record
- *                                            (e.g. SWD): APP iff the SP word
+ *                                            AND with the metadata block
+ *                                            erased (e.g. SWD after a full
+ *                                            chip erase): APP iff the SP word
  *                                            at APP_BASE is 0x20xx_xxxx
+ * The fallback never sees a half-written update: both update paths keep the
+ * image's vector unit (SP + reset vector, image_header.h) in RAM and program
+ * it only after image_check_staged() passes, right before the record, so the
+ * SP word reads erased until then — also if the marker were lost.
+ * An SWD flash over a board that once took a DFU/CAN update must also erase
+ * the metadata block (0x3F800): the stale record no longer matches the new
+ * image and parks the board.
  *
- * Owns:         The image validation checks and the app-or-park decision.
+ * update_start_plan() decides what an update must erase before it touches
+ * the app slot, so that no prefix of those erases can take the SP fallback
+ * into a partial image (retried and interrupted updates included).
+ * image_check_staged() is the commit check of both update paths.
+ *
+ * Owns:         The image validation checks (also of a staged image before
+ *               its commit), the app-or-park decision, the metadata record
+ *               encoding and the update-start plan.
  * Not here:     The record and marker layout (image_header.h); the jump to
- *               the application (boot5() in the fork's src/main.c).
+ *               the application (boot5() in the fork's src/main.c); the
+ *               flash writes themselves (the callers' HAL).
  * Invariants:   Check order (fail closed, first failure wins): magic ->
  *               header CRC -> size bounds -> initial SP -> entry point ->
  *               payload CRC. The result codes follow that order and are a
- *               frozen contract.
+ *               frozen contract. The initial SP is 8-byte aligned and inside
+ *               (SRAM_BASE, SRAM_END]; the entry point lies inside the
+ *               image's own bytes, past the two vector words
+ *               ([APP_BASE + IMAGE_MIN_SIZE, APP_BASE + image_size)).
  * Errors:       image_validate() returns IMAGE_VALID, or the
  *               image_validate_result_t of the first failed check.
  * Depends on:   image_header.h and memory_map.h; no flash or peripheral
@@ -52,8 +72,8 @@ typedef enum {
     IMAGE_ERR_MAGIC,        /* metadata magic missing (e.g. erased block)      */
     IMAGE_ERR_HEADER_CRC,   /* metadata self-CRC mismatch                      */
     IMAGE_ERR_SIZE,         /* image_size outside [8, APP_SLOT_SIZE]           */
-    IMAGE_ERR_SP,           /* initial SP word outside SRAM                    */
-    IMAGE_ERR_ENTRY,        /* entry outside the app slot or Thumb bit clear   */
+    IMAGE_ERR_SP,           /* initial SP outside SRAM or not 8-byte aligned   */
+    IMAGE_ERR_ENTRY,        /* entry outside the image or Thumb bit clear      */
     IMAGE_ERR_PAYLOAD_CRC,  /* image CRC32 mismatch                            */
 } image_validate_result_t;
 
@@ -61,6 +81,18 @@ typedef enum {
     BOOT_DECISION_PARK = 0,  /* stay in the bootloader (DFU + CAN)            */
     BOOT_DECISION_APP,       /* jump to the image at APP_BASE                 */
 } boot_decision_t;
+
+/* What an update must do to the metadata block (and the app slot's first
+ * block) before it erases the rest of the app slot. */
+typedef enum {
+    UPDATE_START_MARKER_IN_PLACE = 0,     /* marker set, record area blank:
+                                             erase nothing, keep the marker   */
+    UPDATE_START_ERASE_METADATA,          /* slot bootable: erase the block,
+                                             program the marker               */
+    UPDATE_START_ERASE_APP_THEN_METADATA, /* slot not bootable: erase the
+                                             APP_BASE block first, so the SP
+                                             fallback finds no SP word        */
+} update_start_t;
 
 /* -----------------------------------------------------------------------------
  * Public API
@@ -78,6 +110,44 @@ typedef enum {
 image_validate_result_t image_validate(const uint8_t *flash_base);
 
 /**
+ * The size, initial-SP and entry-point checks of image_validate(), for an
+ * image whose record is not written yet (image_check_staged() runs them on
+ * the vector unit before an update commits).
+ *
+ * @param app         The image's first byte (APP_BASE on target); only its
+ *                    first IMAGE_MIN_SIZE bytes are read.
+ * @param image_size  Bytes of the image.
+ * @return IMAGE_VALID, IMAGE_ERR_SIZE, IMAGE_ERR_SP or IMAGE_ERR_ENTRY.
+ */
+image_validate_result_t image_check_bounds(const uint8_t *app, uint32_t image_size);
+
+/**
+ * The commit check of an update: image_check_bounds() on the vector unit
+ * still held in RAM, then the payload CRC computed as the vector unit
+ * followed by flash [app + IMAGE_VECTOR_UNIT_SIZE, app + image_size) — the
+ * bytes the image will hold once the vector unit is programmed at app.
+ *
+ * @param vector_unit  The image's first IMAGE_VECTOR_UNIT_SIZE bytes (RAM).
+ * @param app          The image's first byte in flash (APP_BASE on target);
+ *                     its vector unit is not read (still erased).
+ * @param image_size   Bytes of the image.
+ * @param image_crc32  Expected crc32_ieee of the whole image.
+ * @return IMAGE_VALID, IMAGE_ERR_SIZE, IMAGE_ERR_SP, IMAGE_ERR_ENTRY or
+ *         IMAGE_ERR_PAYLOAD_CRC (bounds first, so the CRC never reads past
+ *         a size below IMAGE_MIN_SIZE).
+ */
+image_validate_result_t image_check_staged(const uint8_t vector_unit[IMAGE_VECTOR_UNIT_SIZE],
+                                           const uint8_t *app, uint32_t image_size,
+                                           uint32_t image_crc32);
+
+/**
+ * Encode the metadata record (magic, size, CRC, header CRC) in its flash
+ * byte order. The one encoder both update paths program.
+ */
+void image_meta_encode(uint8_t out[IMAGE_META_SIZE], uint32_t image_size,
+                       uint32_t image_crc32);
+
+/**
  * Decide whether to boot the application or park in the bootloader (rules in
  * the file header above).
  *
@@ -85,6 +155,20 @@ image_validate_result_t image_validate(const uint8_t *flash_base);
  * @return BOOT_DECISION_APP or BOOT_DECISION_PARK.
  */
 boot_decision_t boot_decide(const uint8_t *flash_base);
+
+/**
+ * Decide what a starting update erases before the marker is in place.
+ *
+ * Marker present and record area blank (an earlier update was interrupted)
+ * -> keep both: erasing would drop the marker and let the SP fallback boot
+ * the partial image. Otherwise the metadata block is erased; when the slot
+ * is not bootable now (boot_decide() == PARK) the APP_BASE block goes first,
+ * and the caller confirms its first word reads erased before going on.
+ * The three orders are listed in image_header.h.
+ *
+ * @param flash_base  Same buffer contract as image_validate().
+ */
+update_start_t update_start_plan(const uint8_t *flash_base);
 
 #ifdef __cplusplus
 }

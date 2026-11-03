@@ -102,7 +102,8 @@ Windows-specific arguments, all no-ops on a Linux host (where plain
   GNU make on Windows ignores a command-line `SHELL` once cmd.exe is latched).
 - `CFLAGS_SKIP="-Wcast-function-type"` — **gcc 7.x only** (it does not know
   this warning flag, which tinyusb adds for gcc >= 8). Do **not** pass it with
-  gcc 14.
+  gcc 14. The CMake wrapper passes it only when configured with
+  `-DBOOTLOADER_CFLAGS_SKIP=-Wcast-function-type` (empty by default).
 
 Artifacts land in `_build/uno_r4/`:
 `arduino-renesas-bootloader.{elf,bin,hex}` + `.elf.map`.

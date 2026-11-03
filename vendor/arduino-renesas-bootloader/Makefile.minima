@@ -61,13 +61,13 @@ endif
 
 # Bench diagnostic build: stage-marker CAN frames ({0xD1, stage, ...}) on the
 # magic-entry (VBTBKR[4]) path and the DIAG4 staircase — src/can_diag.{c,h},
-# hooked from src/main.c. Only meaningful with CAN_LOADER=1. Default off; a
-# CAN_DIAG=0 build does not compile can_diag.c and its hooks are no-ops. NOTE: a CAN_DIAG=1 build also
-# OMITS the production USB-rail power-up in the magic path
-# (can_xcvr_usb_rail_power_on in src/main.c) — deliberate, so the staircase
-# keeps reproducing the unpowered-rail failure it diagnosed.
+# hooked from src/main.c. Ignored unless CAN_LOADER=1 too. Default off; any
+# other build does not compile can_diag.c and its hooks are no-ops. NOTE: a
+# CAN_DIAG=1 build also OMITS the production USB-rail power-up in the magic
+# path (can_xcvr_usb_rail_power_on in src/main.c) — deliberate, so the
+# staircase keeps reproducing the unpowered-rail failure it diagnosed.
 CAN_DIAG ?= 0
-ifeq ($(CAN_DIAG),1)
+ifeq ($(CAN_LOADER)$(CAN_DIAG),11)
 CFLAGS += -DCAN_DIAG
 EXAMPLE_SOURCE += src/can_diag.c
 endif

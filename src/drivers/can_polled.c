@@ -394,30 +394,25 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
 
     R_CAN0->MCTL_TX[TX_MAILBOX] = MCTL_TRMREQ;
 
+    can_polled_status_t status = CAN_POLLED_TIMEOUT;
     can_deadline_t deadline = can_deadline_start(CAN_TX_TIMEOUT_US);
     do {
         if (R_CAN0->MCTL_TX[TX_MAILBOX] & MCTL_SENTDATA) {
-            /* SENTDATA and TRMREQ cannot clear in one write — write 0 twice
-             * (reference/r_can.c:1043-1051). */
-            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-            return CAN_POLLED_OK;
+            status = CAN_POLLED_OK;
+            break;
         }
         if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
-            /* Request the abort so the frame is not sent stale after the
-             * automatic recovery; the next send's release completes it. The
-             * gate passed on entry, so this call only starts the episode
-             * timer. */
-            R_CAN0->MCTL_TX[TX_MAILBOX] = 0;
-            (void) can_bus_state();
-            return CAN_POLLED_BUS_OFF;
+            status = CAN_POLLED_BUS_OFF;   /* the next gate call times it */
+            break;
         }
     } while (!can_deadline_expired(&deadline));
 
-    /* Abort and wait it out. If the abort outlasts its bound, the next send's
-     * release finishes it before MB[0] is touched. */
+    /* Sent: clears SENTDATA and TRMREQ. Bus-off or timeout: aborts the
+     * request (so it is not sent stale after a bus-off recovery) and waits
+     * the abort out; if that outlasts its bound, the next send's release
+     * finishes it before MB[0] is touched. */
     (void) can_tx_mailbox_release();
-    return CAN_POLLED_TIMEOUT;
+    return status;
 }
 
 BOOT_LOW_FLASH void can_polled_deinit(void)

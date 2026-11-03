@@ -31,7 +31,9 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 #include "bsp_api.h"
+#ifdef LED_FADE_PWM_CHANNEL
 #include "r_gpt.h"
+#endif
 
 #include "flash.h"
 
@@ -670,6 +672,11 @@ static void run_can_update_mode(void)
 }
 #endif /* CAN_LOADER */
 
+/* Status LED. Boards whose Makefile defines LED_FADE_PWM_CHANNEL keep the
+ * stock GPT-driven fade; without it (UNO R4 Minima) the LED is a plain GPIO
+ * blinking at blink_interval_ms, which saves the GPT driver's ~360 B of the
+ * 16 KB region. */
+#ifdef LED_FADE_PWM_CHANNEL
 #define USEC_PER_SEC	(1000000U)
 #define PERIOD 			(USEC_PER_SEC / 50U)
 #define FADESTEP		2000
@@ -689,6 +696,7 @@ const timer_cfg_t pwm_cfg = {
 
 
 static gpt_instance_ctrl_t pwm_ctrl;
+#endif /* LED_FADE_PWM_CHANNEL */
 #include "r_ioport.h"
 
 static const ioport_pin_cfg_t extra_pin_cfg[] = {
@@ -696,7 +704,11 @@ static const ioport_pin_cfg_t extra_pin_cfg[] = {
   { .pin = BOSSA_TX_PIN, .pin_cfg = (IOPORT_CFG_PERIPHERAL_PIN  | IOPORT_CFG_PULLUP_ENABLE | BOSSA_PERIPHERAL_FLAGS) },
   { .pin = BOSSA_RX_PIN, .pin_cfg = (IOPORT_CFG_PERIPHERAL_PIN  | IOPORT_CFG_PULLUP_ENABLE | BOSSA_PERIPHERAL_FLAGS) },
 #endif
+#ifdef LED_FADE_PWM_CHANNEL
   { .pin = LED_FADE_GPIO, .pin_cfg = IOPORT_CFG_PERIPHERAL_PIN | IOPORT_PERIPHERAL_GPT1 }
+#else
+  { .pin = LED_FADE_GPIO, .pin_cfg = IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW }
+#endif
 };
 
 static const ioport_cfg_t pin_cfg = {
@@ -705,7 +717,9 @@ static const ioport_cfg_t pin_cfg = {
 };
 ioport_instance_ctrl_t port_ctrl;
 
+#ifdef LED_FADE_PWM_CHANNEL
 int pwm_channel = LED_FADE_PWM_OUT_A ? GPT_IO_PIN_GTIOCA : GPT_IO_PIN_GTIOCB;
+#endif
 
 #if defined(CAN_LOADER) && defined(CAN_DIAG)
 /* ---- DIAG4: one-boot self-bisecting staircase -----------------------------
@@ -974,13 +988,15 @@ bootloader:
   can_diag_stair_probe(1);  /* + IOPORT open */
 #endif
 
+#ifdef LED_FADE_PWM_CHANNEL
   R_GPT_Open(&pwm_ctrl, &pwm_cfg);
   R_GPT_PeriodSet(&pwm_ctrl, PERIOD);
   R_GPT_DutyCycleSet(&pwm_ctrl, 0, pwm_channel);
   R_GPT_Start(&pwm_ctrl);
+#endif
 
 #if defined(CAN_LOADER) && defined(CAN_DIAG)
-  can_diag_stair_probe(2);  /* + GPT open/period/duty/start */
+  can_diag_stair_probe(2);  /* + GPT open/period/duty/start (no-op without the fade) */
 #endif
 
 #if BSP_FEATURE_FLASH_HP_VERSION
@@ -1231,6 +1247,7 @@ void tud_dfu_detach_cb(void)
 // BLINKING TASK + Indicator pulse
 //--------------------------------------------------------------------+
 
+#ifdef LED_FADE_PWM_CHANNEL
 void pulse_led()
 {
 	static uint32_t pulse_width;
@@ -1265,6 +1282,21 @@ void led_blinking_task(void)
 
   pulse_led();
 }
+#else
+/* Toggle the LED every blink_interval_ms: 250 ms with no USB host (the usual
+ * parked state on a CAN-only node), 1 s mounted, 2.5 s suspended. */
+void led_blinking_task(void)
+{
+  static uint32_t start_ms;
+  static bsp_io_level_t led_level = BSP_IO_LEVEL_LOW;
+
+  if (board_millis() - start_ms < blink_interval_ms) return;
+  start_ms = board_millis();
+
+  led_level = (led_level == BSP_IO_LEVEL_LOW) ? BSP_IO_LEVEL_HIGH : BSP_IO_LEVEL_LOW;
+  (void) R_IOPORT_PinWrite(&port_ctrl, LED_FADE_GPIO, led_level);
+}
+#endif /* LED_FADE_PWM_CHANNEL */
 
 //--------------------------------------------------------------------+
 // Double tap magic

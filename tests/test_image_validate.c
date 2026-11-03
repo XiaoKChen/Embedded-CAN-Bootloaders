@@ -12,8 +12,9 @@
  *               the update-in-progress marker), marker-only (interrupted
  *               update), the no-record SP-word fallback, a corrupt record,
  *               and torn markers falling back to the SP check. The SP
- *               alignment and image-bounded entry point, image_check_bounds
- *               before a record exists, image_meta_encode, and every
+ *               alignment and image-bounded entry point (past the vector
+ *               words), image_check_bounds before a record exists,
+ *               image_meta_encode, and every
  *               update_start_plan outcome with boot_decide checked after
  *               each erase/program step the plan implies (power loss).
  * Not covered:  The jump to the application and the flash writes (on target
@@ -172,6 +173,22 @@ static void test_entry_past_image_end_fails(void)
     /* Inside the slot but past the bytes the record covers: unchecked flash. */
     patch_app_word(4u, (APP_BASE + TEST_IMAGE_SIZE) | 1u);
     TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+}
+
+static void test_entry_inside_vector_words_fails(void)
+{
+    /* Inside the image, but it would execute the SP/entry words as code. */
+    patch_app_word(4u, (APP_BASE + IMAGE_MIN_SIZE - 2u) | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+    patch_app_word(4u, APP_BASE | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+}
+
+static void test_entry_right_after_vector_words_is_allowed(void)
+{
+    patch_app_word(4u, (APP_BASE + IMAGE_MIN_SIZE) | 1u);
+    write_metadata(TEST_IMAGE_SIZE, crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
 }
 
 static void test_entry_at_last_halfword_of_image_is_allowed(void)
@@ -407,6 +424,8 @@ int main(void)
     RUN_TEST(test_entry_in_bootloader_fails);
     RUN_TEST(test_entry_in_metadata_block_fails);
     RUN_TEST(test_entry_past_image_end_fails);
+    RUN_TEST(test_entry_inside_vector_words_fails);
+    RUN_TEST(test_entry_right_after_vector_words_is_allowed);
     RUN_TEST(test_entry_at_last_halfword_of_image_is_allowed);
     RUN_TEST(test_sp_not_8_byte_aligned_fails);
     RUN_TEST(test_check_bounds_without_record);

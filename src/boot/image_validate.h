@@ -36,7 +36,8 @@
  *               payload CRC. The result codes follow that order and are a
  *               frozen contract. The initial SP is 8-byte aligned and inside
  *               (SRAM_BASE, SRAM_END]; the entry point lies inside the
- *               image's own bytes.
+ *               image's own bytes, past the two vector words
+ *               ([APP_BASE + IMAGE_MIN_SIZE, APP_BASE + image_size)).
  * Errors:       image_validate() returns IMAGE_VALID, or the
  *               image_validate_result_t of the first failed check.
  * Depends on:   image_header.h and memory_map.h; no flash or peripheral

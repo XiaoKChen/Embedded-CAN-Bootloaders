@@ -83,13 +83,14 @@ image_validate_result_t image_check_bounds(const uint8_t *app, uint32_t image_si
     }
 
     /* Reset vector (vector 1): Thumb bit set, target inside the image's own
-     * bytes — an entry past image_size would run unchecked flash. */
+     * bytes past the two vector words — an entry past image_size would run
+     * unchecked flash, one inside the vectors would execute data. */
     const uint32_t entry = load_le32(&app[4]);
     if ((entry & 1u) == 0u) {
         return IMAGE_ERR_ENTRY;
     }
     const uint32_t entry_addr = entry & ~1u;
-    if (entry_addr < APP_BASE || (entry_addr - APP_BASE) >= image_size) {
+    if (entry_addr < APP_BASE + IMAGE_MIN_SIZE || (entry_addr - APP_BASE) >= image_size) {
         return IMAGE_ERR_ENTRY;
     }
     return IMAGE_VALID;

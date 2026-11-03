@@ -36,6 +36,9 @@ typedef enum {
                              caller must keep waiting / retry                  */
     CAN_POLLED_ERROR,     /* bad argument (bitrate, ID, dlc) or mode-switch
                              failure                                           */
+    CAN_POLLED_RECOVERY_FAILED, /* receive/send: bus-off recovery could not
+                             bring the controller back; CAN0 is unusable
+                             until the caller re-runs can_polled_init()        */
 } can_polled_status_t;
 
 /* Bring up CAN0 at 250000 or 500000 bit/s (16 tq/bit, sample point 75 %).

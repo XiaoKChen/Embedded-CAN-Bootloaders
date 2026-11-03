@@ -237,7 +237,7 @@ Required order: HELLO → SIZE → ERASE → DATA windows → VERIFY → GO.
 | Cmd | byte0 | Payload | Notes |
 |-----|-------|---------|-------|
 | HELLO | `0x01` | byte1 = protocol version (`0x01`) | ACK: byte3 = bootloader version, bytes4..7 = app slot size (uint32 LE, expect `0x0003B800` = 243,712) |
-| ERASE | `0x02` | — | erases 120 blocks; ACK can take seconds (tool waits 15 s) |
+| ERASE | `0x02` | — | erases the app slot; ACK can take seconds (tool waits 15 s; the bootloader's idle timeout is 20 s) |
 | DATA | `0x03` | byte1 = seq (uint8, mod 256 over the whole transfer), bytes2..7 = 6 image bytes | no per-frame reply |
 | SIZE | `0x04` | bytes2..5 = image size (uint32 LE) | |
 | VERIFY | `0x05` | bytes2..5 = CRC32 of image (uint32 LE, IEEE/zlib) | |
@@ -246,6 +246,11 @@ Required order: HELLO → SIZE → ERASE → DATA windows → VERIFY → GO.
 Replies: ACK `{0x79, cmd_echo, 0x00, arg, ...}` / NAK `{0x79, cmd_echo, err, arg, ...}`
 with err `0x01` unexpected seq (arg = seq to rewind to), `0x02` flash failure,
 `0x03` CRC mismatch, `0x04` size out of bounds, `0x05` bad state.
+
+Every host frame is DLC 8 with `0xFF` in its unused bytes; the bootloader
+ignores anything else. A flash failure (`0x02`) ends the session on the board
+(the block cannot be rewritten without an erase), so the tool stops and asks
+for a re-run, which starts again from HELLO.
 
 **Windows:** one window = one 2048-byte flash block = 342 DATA frames
 (341×6 + 1×2 bytes; the final image block may be short). Individual DATA

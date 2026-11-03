@@ -8,4 +8,7 @@ GitHub Actions CI/CD: an automated Linux build of the bootloader and tag-driven 
 - **Key files:** `release.yml`
 - **Relationships:** runs `scripts/ci-build.sh`, which builds `vendor/arduino-renesas-bootloader` and enforces the size gate; pins the xPack `arm-none-eabi-gcc` version that `docs/build.md` documents.
 
-- **release.yml** — "Build & Release Bootloader" (`permissions: contents: read`; env `GCC_VERSION: 14.2.1-1.1`, `BOARD: uno_r4`). Triggers: push to `version/c-cpp/ra4m1`, `c-cpp-ra4m1-v*` tags, PRs to that branch, `workflow_dispatch`. `build` job: caches/installs xPack gcc, runs `scripts/ci-build.sh`, copies the outputs to `dist/bootloader-uno_r4-<version>.{hex,bin,elf}` (tag minus the `c-cpp-ra4m1-` prefix, else the short SHA) and uploads them. `release` job (tags only, `contents: write`): downloads the artifacts and creates the release with `softprops/action-gh-release@v2`, auto-generated notes, and the title `c-cpp/ra4m1 v<version>` (the repo-wide `<lang>/<target> vX.Y.Z` release naming).
+- **release.yml** — "Build & Release Bootloader" (`permissions: contents: read`; env `GCC_VERSION: 14.2.1-1.1`, `BOARD: uno_r4`).
+  - **Triggers:** push to `version/c-cpp/ra4m1`, `c-cpp-ra4m1-v*` tags, PRs to that branch, `workflow_dispatch`.
+  - **`build` job:** caches/installs xPack gcc, runs `scripts/ci-build.sh`, copies the outputs to `dist/bootloader-uno_r4-<version>.{hex,bin,elf}` (the tag minus the `c-cpp-ra4m1-` prefix, else the short SHA) and uploads them.
+  - **`release` job** (tags only, `contents: write`): creates the release with `softprops/action-gh-release@v2`, auto-generated notes, and the title `c-cpp/ra4m1 <version>`, the repo-wide `<lang>/<target> vX.Y.Z` naming.

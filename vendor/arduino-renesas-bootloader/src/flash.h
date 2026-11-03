@@ -22,6 +22,15 @@
    void i2c_write(uint8_t address, uint8_t reg, uint8_t value);
 #endif
 
+#ifdef CAN_LOADER
+#include <stdbool.h>
+/* Data-flash read gate (main.c flash_lp_open_df_read_ready): true only while
+ * DFU_CONFIG_ADDR is provably readable; cleared by a failed flash erase or
+ * program. Nothing reads DFU_CONFIG_ADDR while it is false (main.c INFO and
+ * CAN IDs, usb_descriptors.c name strings). */
+extern bool dfu_config_readable;
+#endif
+
 /* Key code for writing PRCR register. */
 #define BSP_PRV_PRCR_KEY	 (0xA500U)
 #define BSP_PRV_PRCR_PRC1_UNLOCK ((BSP_PRV_PRCR_KEY) | 0x2U)

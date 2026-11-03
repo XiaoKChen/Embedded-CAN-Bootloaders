@@ -326,7 +326,9 @@ or the same hex via `rfp-cli` in ROM boot mode (path 1).
     unconditionally re-asserts `DFLCTL.DFLEN` (+6 µs settle) before any
     config-block read; if data flash is still unreadable, no read is attempted
     and the board parks with the default IDs and an empty INFO name instead of
-    faulting. (Previously this path could hard-fault into a CPU lockup —
+    faulting. A failed flash erase or program (CAN or DFU update) closes the
+    gate again until the next reset, because it may leave the flash
+    controller in P/E mode; INFO and the USB strings then use the defaults. (Previously this path could hard-fault into a CPU lockup —
     a board silent on every CAN ID after `/enter_bootloader`.)
   - **Transceiver rail power-up (board dependency).** CAN update mode enables
     the USBFS module, USB clock, and the internal USB regulator

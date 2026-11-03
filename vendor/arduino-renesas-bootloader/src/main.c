@@ -226,7 +226,7 @@ static void set_can_update_request(uint32_t data)
  * always keeps serving CAN, never a dead board). */
 #define DATA_FLASH_TDSTOP_SETTLE_US  6u
 
-bool dfu_config_readable = false;  /* also read by usb_descriptors.c */
+bool dfu_config_readable = false;  /* declared in flash.h for usb_descriptors.c */
 
 static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
 {
@@ -267,13 +267,22 @@ static BOOT_LOW_FLASH bool flash_lp_open_df_read_ready(void)
  * bootloader (boot_decide). The bootloader's own 8 flash blocks
  * (0x0000-0x3FFF) are never touched. Shared with the USB DFU download. */
 
+/* Both helpers close the data-flash read gate on any failure: a failed P/E
+ * operation may leave the FACI in P/E mode, where reading DFU_CONFIG_ADDR is
+ * not safe, so INFO and the USB name strings fall back to their defaults
+ * until the next reset re-proves the gate. */
+
 /* One block per IRQ-off window, so USB stays serviceable between blocks. */
 static bool flash_erase_block(uint32_t addr)
 {
   __disable_irq();
   fsp_err_t err = R_FLASH_LP_Erase(g_flash.p_ctrl, addr, 1);
   __enable_irq();
-  return err == FSP_SUCCESS;
+  if (err != FSP_SUCCESS) {
+    dfu_config_readable = false;
+    return false;
+  }
+  return true;
 }
 
 static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
@@ -281,12 +290,13 @@ static bool can_flash_program(uint32_t addr, const uint8_t *data, uint32_t len)
   __disable_irq();
   int err = R_FLASH_LP_Write(g_flash.p_ctrl, (uint32_t) data, addr, len);
   __enable_irq();
-  if (err != FSP_SUCCESS) {
-    return false;
-  }
   /* Read-back verify: a failed verify is a failed write, never "probably
    * fine" (rules/bootloader.md). */
-  return memcmp((const void *) addr, data, len) == 0;
+  if (err != FSP_SUCCESS || memcmp((const void *) addr, data, len) != 0) {
+    dfu_config_readable = false;
+    return false;
+  }
+  return true;
 }
 
 /* Leave the update-in-progress marker programmed and the record area blank.

@@ -34,9 +34,9 @@
 #include "dfu_config.h"
 
 #ifdef CAN_LOADER
-/* main.c's data-flash read gate: true only once DFU_CONFIG_ADDR is provably
- * readable. A CAN_LOADER=0 build opens flash the stock way and reads as before. */
-extern bool dfu_config_readable;
+/* dfu_config_readable, main.c's data-flash read gate. A CAN_LOADER=0 build
+ * opens flash the stock way and reads as before. */
+#include "flash.h"
 #endif
 #endif
 

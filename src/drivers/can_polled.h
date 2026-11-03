@@ -7,6 +7,8 @@
  *
  * Owns:         CAN0 and its pins D4 = P103 = CTX0 (TX), D5 = P102 = CRX0
  *               (RX), from can_polled_init() until can_polled_deinit().
+ *               Enables the DWT cycle counter as its time base and leaves it
+ *               running (the driver never uses board_millis()).
  * Not here:     The CAN Update Protocol (can_update.h); the CAN service loop
  *               (main.c).
  * Invariants:   CAN clock source is PCLKB, which must run at 24 MHz (board
@@ -31,7 +33,7 @@ extern "C" {
 typedef enum {
     CAN_POLLED_OK = 0,
     CAN_POLLED_NO_DATA,   /* receive: RX FIFO empty                            */
-    CAN_POLLED_TIMEOUT,   /* send: SENTDATA never set within the loop bound    */
+    CAN_POLLED_TIMEOUT,   /* send: SENTDATA not set within 200 ms              */
     CAN_POLLED_BUS_OFF,   /* bus-off detected; driver re-initialized itself —
                              caller must keep waiting / retry                  */
     CAN_POLLED_ERROR,     /* bad argument (bitrate, ID, dlc) or mode-switch
@@ -53,8 +55,8 @@ can_polled_status_t can_polled_init(uint32_t bitrate_bps, uint32_t rx_filter_id)
 can_polled_status_t can_polled_receive(uint32_t *id, uint8_t *dlc, uint8_t data[8]);
 
 /* Transmit one frame from a single TX mailbox and poll SENTDATA to
- * completion with a bounded loop count (returns CAN_POLLED_TIMEOUT and
- * aborts the request if the bound is hit). */
+ * completion for at most 200 ms (returns CAN_POLLED_TIMEOUT and aborts the
+ * request if the bound is hit). */
 can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, const uint8_t data[8]);
 
 /* Module-stop CAN0 and restore P102/P103 PFS to reset state (GPIO input).

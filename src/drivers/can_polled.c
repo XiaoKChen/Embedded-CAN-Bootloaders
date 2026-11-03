@@ -87,11 +87,17 @@
 #define CAN_MKIVLR_FIFO_MASK    0x00FFFFFFUL
 #define CAN_NORMAL_MAILBOXES    24U
 
-/* Loop bounds: a mode switch takes a few CAN-clock cycles; a transmit can
- * suffer arbitration loss and error retries. At 48 MHz CPU / 250 kbit/s bus,
- * 2M polls (>= ~5 cycles each) bounds the wait to roughly 200 ms. */
-#define CAN_MODE_TIMEOUT_LOOPS  100000UL
-#define CAN_TX_TIMEOUT_LOOPS    2000000UL
+/* Wait bounds in real time, measured on the DWT cycle counter at ICLK
+ * (48 MHz: HOCO, twice PCLKB — see can_polled.h). A slower ICLK only
+ * lengthens them.
+ * - Mode switch: reset and halt are entered once the frame in progress ends
+ *   (one stuffed 8-byte frame plus an error frame is ~160 bits, 640 us at
+ *   250 kbit/s); 10 ms covers 15 of them.
+ * - Transmit: arbitration losses and error retries; 200 ms. */
+#define CAN_CPU_HZ              48000000UL
+#define CAN_CYCLES_PER_US       (CAN_CPU_HZ / 1000000UL)
+#define CAN_MODE_TIMEOUT_US     10000UL
+#define CAN_TX_TIMEOUT_US       200000UL
 
 /* -----------------------------------------------------------------------------
  * File-local state (plain .bss scalars — no static init order dependencies)
@@ -103,6 +109,35 @@ static uint32_t s_rx_filter_id;
  * Helpers
  * ----------------------------------------------------------------------------- */
 
+/* A bounded wait. `polls` is the fallback for a cycle counter that does not
+ * run (no debug block, or stopped): each poll costs at least one cycle, so
+ * the poll cap never ends a wait before `cycles` have elapsed, and without
+ * the counter it still ends after `cycles` polls. */
+typedef struct {
+    uint32_t start;
+    uint32_t cycles;
+    uint32_t polls;
+} can_deadline_t;
+
+/* Enabling the counter is idempotent, so every wait does it and no call
+ * order (deinit before init) can leave a wait on a stopped counter. The
+ * counter is left running for the application. */
+static can_deadline_t can_deadline_start(uint32_t timeout_us)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    can_deadline_t deadline = { DWT->CYCCNT, timeout_us * CAN_CYCLES_PER_US, 0U };
+    return deadline;
+}
+
+static bool can_deadline_expired(can_deadline_t *deadline)
+{
+    deadline->polls++;
+    return ((DWT->CYCCNT - deadline->start) >= deadline->cycles) ||
+           (deadline->polls >= deadline->cycles);
+}
+
 /* Clear SLPM, request CANM = mode, poll STR until the mode is reached.
  * HW manual: write CTLR, then confirm via STR RSTST/HLTST flags. */
 static can_polled_status_t can_mode_set(uint16_t mode)
@@ -112,11 +147,12 @@ static can_polled_status_t can_mode_set(uint16_t mode)
     ctlr |= (uint16_t) (mode << R_CAN0_CTLR_CANM_Pos);
     R_CAN0->CTLR = ctlr;
 
-    for (uint32_t i = 0; i < CAN_MODE_TIMEOUT_LOOPS; i++) {
+    can_deadline_t deadline = can_deadline_start(CAN_MODE_TIMEOUT_US);
+    do {
         if ((R_CAN0->STR & CAN_STR_MODE_MASK) == (uint16_t) (mode << R_CAN0_CTLR_CANM_Pos)) {
             return CAN_POLLED_OK;
         }
-    }
+    } while (!can_deadline_expired(&deadline));
     return CAN_POLLED_ERROR;
 }
 
@@ -267,7 +303,8 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
 
     R_CAN0->MCTL_TX[TX_MAILBOX] = MCTL_TRMREQ;
 
-    for (uint32_t i = 0; i < CAN_TX_TIMEOUT_LOOPS; i++) {
+    can_deadline_t deadline = can_deadline_start(CAN_TX_TIMEOUT_US);
+    do {
         if (R_CAN0->MCTL_TX[TX_MAILBOX] & MCTL_SENTDATA) {
             /* SENTDATA and TRMREQ cannot clear in one write — write 0 twice
              * (reference/r_can.c:1043-1051). */
@@ -278,7 +315,7 @@ BOOT_LOW_FLASH can_polled_status_t can_polled_send(uint32_t id, uint8_t dlc, con
         if (R_CAN0->STR & R_CAN0_STR_BOST_Msk) {
             return can_bus_off_recover();
         }
-    }
+    } while (!can_deadline_expired(&deadline));
 
     R_CAN0->MCTL_TX[TX_MAILBOX] = 0;           /* abort the pending request  */
     R_CAN0->MCTL_TX[TX_MAILBOX] = 0;

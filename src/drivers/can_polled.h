@@ -18,10 +18,11 @@
  *               point 75 %. By the ISO 11898-1 rule each node's clock may
  *               then deviate by min(SJW / (20 * 16), TSEG2 / (2 * (13 * 16 -
  *               TSEG2))) = min(1.25 %, 0.98 %) = 0.98 % from nominal (SJW 1
- *               allowed only 0.31 %). The HOCO is the only clock on this
- *               board; its datasheet accuracy (about +/-1 % over temperature,
- *               not in this repo) uses most of that budget, so the peer
- *               needs a crystal clock.
+ *               allowed only 0.31 %). The rule assumes both nodes off by that
+ *               much in opposite directions (1.96 % apart); against a
+ *               crystal-clocked peer nearly all of it is left for the HOCO,
+ *               the only clock on this board, whose datasheet accuracy
+ *               (about +/-1 % over temperature, not in this repo) fits.
  *               FSP's r_can refuses a PCLKB-clocked CAN unless the PLL is the
  *               system clock (reference/r_can.c:233-239, "Clock Setting" in
  *               the HW manual). The uno_r4 BSP runs on the HOCO with no PLL,

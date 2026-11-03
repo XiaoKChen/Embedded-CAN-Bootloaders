@@ -6,7 +6,12 @@
  * Implementation notes: register-level, zero interrupts. Register/bit facts
  * cross-checked against FSP sources vendored under
  * vendor/ra4m1-headers/reference/ and the RA4M1 HW manual (R01UM0007) CAN
- * chapter; non-obvious values cite file:line below.
+ * chapter; non-obvious values cite file:line below. The HW manual is not in
+ * this repo; these behaviours are inferred from the RX/RA CAN module
+ * family and FSP, and need the bench: TRMABT latching when an abort
+ * completes and clearing by a write of 0; reset and halt modes waiting for
+ * the frame in progress; reset mode being reachable during bus-off; and
+ * CTLR.BOM = 00 recovering by itself after 128 x 11 recessive bits.
  *
  * @see     can_polled.h
  */

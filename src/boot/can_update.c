@@ -4,9 +4,10 @@
  *          protocol spec and the fail-safe/power-loss table).
  *
  * Implementation notes: every flash mutation goes through the injected HAL;
- * the metadata block is written only after VERIFY matches, so an interrupted
- * update never leaves a valid record over a partial image (boot_decide in
- * image_validate.h then parks the device, or boots the intact old app).
+ * the vector unit and then the record are written only after VERIFY matches,
+ * so an interrupted update never leaves a valid record, nor an SP word, over
+ * a partial image (boot_decide in image_validate.h then parks the device, or
+ * boots the intact old app).
  * Unused-byte rules per command are one bitmask each (bit n = byte n must be
  * 0xFF), indexed by command byte.
  *
@@ -18,7 +19,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "crc32.h"
 #include "image_header.h"
 #include "image_validate.h"
 
@@ -182,12 +182,21 @@ static bool handle_data(can_update_state_t *st, const uint8_t data[8], uint8_t r
         padded_len += pad;
     }
 
+    /* Block 0 skips its vector unit: it waits in RAM until VERIFY commits
+     * (image_header.h), so the SP word stays erased over a partial image. */
+    uint32_t skip = 0u;
+    if (st->block_index == 0u) {
+        memcpy(st->vector_unit, st->block_buf, IMAGE_VECTOR_UNIT_SIZE);
+        skip = IMAGE_VECTOR_UNIT_SIZE;
+    }
+
     /* Power loss during this program: block torn, no record, marker set ->
      * device stays in the bootloader. A failed program may have written part
      * of the block, which cannot be programmed again without an erase: drop
      * the session so the host restarts from HELLO (and ERASE). */
-    if (!st->hal->flash_program(APP_BASE + st->block_index * FLASH_BLOCK_SIZE,
-                                st->block_buf, padded_len)) {
+    if (padded_len > skip &&
+        !st->hal->flash_program(APP_BASE + st->block_index * FLASH_BLOCK_SIZE + skip,
+                                &st->block_buf[skip], padded_len - skip)) {
         reset_session(st);
         return make_reply(reply, CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_FLASH, 0u);
     }
@@ -210,21 +219,33 @@ static bool handle_verify(can_update_state_t *st, const uint8_t data[8], uint8_t
     const uint32_t expected_crc = load_le32(&data[2]);
     const uint8_t *app = st->hal->flash_base + APP_BASE;
 
-    /* Fail closed: no record over an image that would not validate at boot.
-     * The session stays TRANSFERRED; the host restarts from HELLO. */
-    if (crc32_ieee(app, st->image_size) != expected_crc ||
-        image_check_bounds(app, st->image_size) != IMAGE_VALID) {
+    /* Fail closed: nothing is committed over an image that would not
+     * validate at boot. The CRC covers the vector unit from RAM and the rest
+     * from flash. The session stays TRANSFERRED; the host restarts from
+     * HELLO. */
+    if (image_check_staged(st->vector_unit, app, st->image_size, expected_crc) !=
+        IMAGE_VALID) {
         return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    }
+
+    /* Commit, step 1: the vector unit. Power loss during it: no record,
+     * marker set -> stay in bootloader. A failed write drops the session;
+     * the next ERASE finds the marker and a blank record area and erases the
+     * whole slot again (update_start_plan). */
+    if (!st->hal->flash_program(APP_BASE, st->vector_unit, IMAGE_VECTOR_UNIT_SIZE)) {
+        reset_session(st);
+        return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
     }
 
     _Alignas(FLASH_WRITE_UNIT) uint8_t meta[IMAGE_META_SIZE];
     image_meta_encode(meta, st->image_size, expected_crc);
 
-    /* The commit point. Power loss before/during this write: metadata absent
-     * or torn (header CRC fails) -> stay in bootloader. After it: the new,
-     * already-CRC-verified image boots. 16 bytes = 2 write units. A failed
-     * write may have left part of the record: drop the session (the next
-     * ERASE then erases the metadata block, see update_start_plan). */
+    /* Commit, step 2: the record. Power loss before/during this write:
+     * metadata absent or torn (header CRC fails) -> stay in bootloader.
+     * After it: the new, already-CRC-verified image boots. 16 bytes = 2
+     * write units. A failed write may have left part of the record: drop the
+     * session (the next ERASE then erases the APP_BASE and metadata blocks,
+     * see update_start_plan). */
     if (!st->hal->flash_program(METADATA_ADDR, meta, IMAGE_META_SIZE)) {
         reset_session(st);
         return make_reply(reply, CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);

@@ -18,6 +18,10 @@
  *                                            erased (e.g. SWD after a full
  *                                            chip erase): APP iff the SP word
  *                                            at APP_BASE is 0x20xx_xxxx
+ * The fallback never sees a half-written update: both update paths keep the
+ * image's vector unit (SP + reset vector, image_header.h) in RAM and program
+ * it only after image_check_staged() passes, right before the record, so the
+ * SP word reads erased until then — also if the marker were lost.
  * An SWD flash over a board that once took a DFU/CAN update must also erase
  * the metadata block (0x3F800): the stale record no longer matches the new
  * image and parks the board.
@@ -25,9 +29,11 @@
  * update_start_plan() decides what an update must erase before it touches
  * the app slot, so that no prefix of those erases can take the SP fallback
  * into a partial image (retried and interrupted updates included).
+ * image_check_staged() is the commit check of both update paths.
  *
- * Owns:         The image validation checks, the app-or-park decision, the
- *               metadata record encoding and the update-start plan.
+ * Owns:         The image validation checks (also of a staged image before
+ *               its commit), the app-or-park decision, the metadata record
+ *               encoding and the update-start plan.
  * Not here:     The record and marker layout (image_header.h); the jump to
  *               the application (boot5() in the fork's src/main.c); the
  *               flash writes themselves (the callers' HAL).
@@ -105,14 +111,34 @@ image_validate_result_t image_validate(const uint8_t *flash_base);
 
 /**
  * The size, initial-SP and entry-point checks of image_validate(), for an
- * image whose record is not written yet (the update paths run it before
- * they commit).
+ * image whose record is not written yet (image_check_staged() runs them on
+ * the vector unit before an update commits).
  *
- * @param app         The image's first byte (APP_BASE on target).
+ * @param app         The image's first byte (APP_BASE on target); only its
+ *                    first IMAGE_MIN_SIZE bytes are read.
  * @param image_size  Bytes of the image.
  * @return IMAGE_VALID, IMAGE_ERR_SIZE, IMAGE_ERR_SP or IMAGE_ERR_ENTRY.
  */
 image_validate_result_t image_check_bounds(const uint8_t *app, uint32_t image_size);
+
+/**
+ * The commit check of an update: image_check_bounds() on the vector unit
+ * still held in RAM, then the payload CRC computed as the vector unit
+ * followed by flash [app + IMAGE_VECTOR_UNIT_SIZE, app + image_size) — the
+ * bytes the image will hold once the vector unit is programmed at app.
+ *
+ * @param vector_unit  The image's first IMAGE_VECTOR_UNIT_SIZE bytes (RAM).
+ * @param app          The image's first byte in flash (APP_BASE on target);
+ *                     its vector unit is not read (still erased).
+ * @param image_size   Bytes of the image.
+ * @param image_crc32  Expected crc32_ieee of the whole image.
+ * @return IMAGE_VALID, IMAGE_ERR_SIZE, IMAGE_ERR_SP, IMAGE_ERR_ENTRY or
+ *         IMAGE_ERR_PAYLOAD_CRC (bounds first, so the CRC never reads past
+ *         a size below IMAGE_MIN_SIZE).
+ */
+image_validate_result_t image_check_staged(const uint8_t vector_unit[IMAGE_VECTOR_UNIT_SIZE],
+                                           const uint8_t *app, uint32_t image_size,
+                                           uint32_t image_crc32);
 
 /**
  * Encode the metadata record (magic, size, CRC, header CRC) in its flash
@@ -136,7 +162,9 @@ boot_decision_t boot_decide(const uint8_t *flash_base);
  * Marker present and record area blank (an earlier update was interrupted)
  * -> keep both: erasing would drop the marker and let the SP fallback boot
  * the partial image. Otherwise the metadata block is erased; when the slot
- * is not bootable now (boot_decide() == PARK) the APP_BASE block goes first.
+ * is not bootable now (boot_decide() == PARK) the APP_BASE block goes first,
+ * and the caller confirms its first word reads erased before going on.
+ * The three orders are listed in image_header.h.
  *
  * @param flash_base  Same buffer contract as image_validate().
  */

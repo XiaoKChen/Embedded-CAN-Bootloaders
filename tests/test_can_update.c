@@ -12,7 +12,9 @@
  *               final-short-block 0xFF padding, frame filtering (DLC, command
  *               range, 0xFF padding, ISO-TP-like app traffic: no reply),
  *               re-ACKs of exact SIZE/ERASE/VERIFY repeats, the VERIFY vector
- *               check, and the flash lock / ownership seen by USB DFU.
+ *               check, the deferred vector unit (erased until VERIFY, then
+ *               programmed exactly once, before the record), and the flash
+ *               lock / ownership seen by USB DFU.
  * Not covered:  The target flash HAL and the update-in-progress marker write
  *               (the fork's src/main.c; the fake erase is atomic), and INFO.
  *
@@ -33,6 +35,8 @@
 static uint8_t  s_flash[FLASH_SIZE];
 static bool     s_fail_erase;
 static bool     s_fail_next_program;
+static uint32_t s_fail_program_at;       /* fail the program at this address; 0: none */
+static uint32_t s_vector_unit_programs;  /* programs at APP_BASE */
 static bool     s_flash_locked;
 static uint32_t s_erase_count;
 static uint32_t s_last_program_addr;
@@ -44,8 +48,9 @@ static bool fake_erase_app_and_metadata(void)
         return false;
     }
     s_erase_count++;
-    /* Contract: metadata block first, then the app slot. The fake is atomic,
-     * so the ordering only matters on real hardware. */
+    /* Contract: the marker is in place before the app slot is erased (what
+     * that erases first is update_start_plan's decision, tested in
+     * test_image_validate.c). The fake is atomic and writes no marker. */
     memset(&s_flash[METADATA_ADDR], 0xFF, METADATA_BLOCK_SIZE);
     memset(&s_flash[APP_BASE], 0xFF, APP_SLOT_SIZE);
     return true;
@@ -53,10 +58,11 @@ static bool fake_erase_app_and_metadata(void)
 
 static bool fake_program(uint32_t addr, const uint8_t *data, uint32_t len)
 {
-    if (s_fail_next_program) {
+    if (s_fail_next_program || (s_fail_program_at != 0u && addr == s_fail_program_at)) {
         /* Like a real failed program: the first half landed, then the
          * read-back verify failed. Those bytes are no longer erased. */
         s_fail_next_program = false;
+        s_fail_program_at   = 0u;
         memcpy(&s_flash[addr], data, len / 2u);
         return false;
     }
@@ -71,6 +77,9 @@ static bool fake_program(uint32_t addr, const uint8_t *data, uint32_t len)
     }
 
     memcpy(&s_flash[addr], data, len);
+    if (addr == APP_BASE) {
+        s_vector_unit_programs++;
+    }
     s_last_program_addr = addr;
     s_last_program_len  = len;
     return true;
@@ -220,6 +229,8 @@ void setUp(void)
     memset(s_flash, 0x00, sizeof(s_flash));
     s_fail_erase         = false;
     s_fail_next_program  = false;
+    s_fail_program_at    = 0u;
+    s_vector_unit_programs = 0u;
     s_flash_locked       = false;
     s_erase_count        = 0u;
     s_last_program_addr  = 0u;
@@ -275,7 +286,10 @@ static void test_happy_path_full_update(void)
     for (uint32_t i = TEST_IMAGE_SIZE; i < 2u * FLASH_BLOCK_SIZE + TEST_FINAL_PADDED_LEN; i++) {
         TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[APP_BASE + i]);
     }
-    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], TEST_IMAGE_SIZE);
+    /* Everything but the vector unit, which waits for VERIFY. */
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(&s_image[IMAGE_VECTOR_UNIT_SIZE],
+                                 &s_flash[APP_BASE + IMAGE_VECTOR_UNIT_SIZE],
+                                 TEST_IMAGE_SIZE - IMAGE_VECTOR_UNIT_SIZE);
 
     /* VERIFY commits the metadata block. */
     const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
@@ -290,6 +304,7 @@ static void test_happy_path_full_update(void)
                crc32_ieee(expected_meta, IMAGE_META_CRC_COVERAGE));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(expected_meta, &s_flash[METADATA_ADDR],
                                  IMAGE_META_SIZE);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], TEST_IMAGE_SIZE);
 
     /* The flashed result passes the boot-time validator. */
     TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
@@ -624,12 +639,13 @@ static void test_verify_rejects_bad_vectors_even_with_matching_crc(void)
     for (uint32_t i = 0u; i < IMAGE_META_SIZE; i++) {
         TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[METADATA_ADDR + i]);
     }
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
 }
 
 static void test_verify_flash_failure_drops_to_idle(void)
 {
     transfer_whole_image();
-    s_fail_next_program = true;
+    s_fail_next_program = true;  /* the vector unit, VERIFY's first program */
     const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
     assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
@@ -641,6 +657,90 @@ static void test_verify_flash_failure_drops_to_idle(void)
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
     assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_ERR_STATE, 0u);
     TEST_ASSERT_NOT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+    for (uint32_t i = 0u; i < IMAGE_META_SIZE; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[METADATA_ADDR + i]);
+    }
+}
+
+static void test_verify_record_failure_drops_to_idle_and_restart_recovers(void)
+{
+    transfer_whole_image();
+    s_fail_program_at = METADATA_ADDR;
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_FLASH, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);  /* landed before the record */
+    TEST_ASSERT_NOT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+
+    /* A full restart re-erases the slot; the NOR check proves nothing is
+     * programmed over the old vector unit or the half record. */
+    transfer_whole_image();
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+/* -----------------------------------------------------------------------------
+ * Deferred vector unit (#40 second review, W4)
+ * ----------------------------------------------------------------------------- */
+static void test_vector_unit_stays_erased_until_verify_then_programmed_once(void)
+{
+    enter_transfer_phase();
+    stream_block(0u);
+    for (uint32_t i = 0u; i < IMAGE_VECTOR_UNIT_SIZE; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0xFFu, s_flash[APP_BASE + i]);  /* SP word erased */
+    }
+    stream_block(FLASH_BLOCK_SIZE);
+    stream_block(2u * FLASH_BLOCK_SIZE);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+
+    /* With no record and no marker, the SP-word fallback must not boot it. */
+    TEST_ASSERT_EQUAL(BOOT_DECISION_PARK, boot_decide(s_flash));
+
+    /* A wrong CRC commits nothing. */
+    const uint32_t image_crc = crc32_ieee(s_image, TEST_IMAGE_SIZE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc ^ 1u));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, &s_flash[APP_BASE], IMAGE_VECTOR_UNIT_SIZE);
+
+    /* A repeated VERIFY does not program it again. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true, image_crc));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_vector_unit_programs);
+    TEST_ASSERT_EQUAL(BOOT_DECISION_APP, boot_decide(s_flash));
+}
+
+/* An image of only the vector unit: block 0 has nothing left to program
+ * before VERIFY, and VERIFY refuses it (no entry point past the vectors). */
+static void test_vector_unit_only_image_programs_nothing_and_fails_verify(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO,
+                              CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, IMAGE_MIN_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+
+    uint8_t d[8];
+    memset(d, 0xFF, sizeof(d));
+    d[0] = CAN_UPDATE_CMD_DATA;
+    d[1] = 0u;
+    memcpy(&d[2], s_image, 6u);
+    TEST_ASSERT_FALSE(send_frame(d));
+    d[1] = 1u;
+    memcpy(&d[2], &s_image[6], 2u);
+    TEST_ASSERT_TRUE(send_frame(d));
+    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_OK, 1u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_last_program_len);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_VERIFY, 0xFFu, true,
+                              crc32_ieee(s_image, IMAGE_MIN_SIZE)));
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_ERR_CRC, 0u);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_vector_unit_programs);
 }
 
 /* -----------------------------------------------------------------------------
@@ -750,6 +850,9 @@ int main(void)
     RUN_TEST(test_repeated_verify_is_reacked_without_rewriting);
     RUN_TEST(test_verify_rejects_bad_vectors_even_with_matching_crc);
     RUN_TEST(test_verify_flash_failure_drops_to_idle);
+    RUN_TEST(test_verify_record_failure_drops_to_idle_and_restart_recovers);
+    RUN_TEST(test_vector_unit_stays_erased_until_verify_then_programmed_once);
+    RUN_TEST(test_vector_unit_only_image_programs_nothing_and_fails_verify);
     RUN_TEST(test_flash_locked_by_dfu_naks_erase_without_erasing);
     RUN_TEST(test_flash_locked_by_dfu_naks_data_and_verify);
     RUN_TEST(test_owns_flash_from_size_until_hello);

@@ -14,6 +14,7 @@
  *               and torn markers falling back to the SP check. The SP
  *               alignment and image-bounded entry point (past the vector
  *               words), image_check_bounds before a record exists,
+ *               image_check_staged (vector unit in RAM, rest in flash),
  *               image_meta_encode, and every
  *               update_start_plan outcome with boot_decide checked after
  *               each erase/program step the plan implies (power loss).
@@ -229,6 +230,54 @@ static void test_corrupt_payload_fails_payload_crc(void)
 }
 
 /* -----------------------------------------------------------------------------
+ * image_check_staged — the commit check, vector unit still in RAM
+ * ----------------------------------------------------------------------------- */
+static uint8_t s_vector_unit[IMAGE_VECTOR_UNIT_SIZE];
+
+/* Move the image's vector unit to RAM and leave it erased in flash, as both
+ * update paths do until they commit. Returns the whole image's CRC. */
+static uint32_t stage_vector_unit(void)
+{
+    uint8_t *app = &s_flash[APP_BASE];
+    const uint32_t crc = crc32_ieee(app, TEST_IMAGE_SIZE);
+    memcpy(s_vector_unit, app, IMAGE_VECTOR_UNIT_SIZE);
+    memset(app, 0xFF, IMAGE_VECTOR_UNIT_SIZE);
+    return crc;
+}
+
+static void test_staged_image_passes_with_vector_unit_erased_in_flash(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                      TEST_IMAGE_SIZE, crc));
+}
+
+static void test_staged_image_crc_mismatch_fails(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_ERR_PAYLOAD_CRC,
+                      image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                         TEST_IMAGE_SIZE, crc ^ 1u));
+    s_flash[APP_BASE + TEST_IMAGE_SIZE - 1u] ^= 0x01u;  /* last byte from flash */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_PAYLOAD_CRC,
+                      image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                         TEST_IMAGE_SIZE, crc));
+}
+
+static void test_staged_image_checks_the_ram_vectors(void)
+{
+    const uint32_t crc = stage_vector_unit();
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SIZE, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                         IMAGE_MIN_SIZE - 1u, crc));
+    store_le32(&s_vector_unit[4], APP_BASE | 1u);  /* entry inside the vectors */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                          TEST_IMAGE_SIZE, crc));
+    store_le32(&s_vector_unit[0], 0xFFFFFFFFu);    /* erased SP */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_check_staged(s_vector_unit, &s_flash[APP_BASE],
+                                                       TEST_IMAGE_SIZE, crc));
+}
+
+/* -----------------------------------------------------------------------------
  * image_meta_encode — the one record encoder
  * ----------------------------------------------------------------------------- */
 static void test_meta_encode_matches_layout_and_validates(void)
@@ -431,6 +480,9 @@ int main(void)
     RUN_TEST(test_check_bounds_without_record);
     RUN_TEST(test_entry_thumb_bit_clear_fails);
     RUN_TEST(test_corrupt_payload_fails_payload_crc);
+    RUN_TEST(test_staged_image_passes_with_vector_unit_erased_in_flash);
+    RUN_TEST(test_staged_image_crc_mismatch_fails);
+    RUN_TEST(test_staged_image_checks_the_ram_vectors);
     RUN_TEST(test_meta_encode_matches_layout_and_validates);
     RUN_TEST(test_decide_valid_image_boots);
     RUN_TEST(test_decide_valid_image_with_marker_boots);

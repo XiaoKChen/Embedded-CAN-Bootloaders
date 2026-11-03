@@ -40,7 +40,8 @@
  *   Windowing: one window = one 2048-byte flash block (342 DATA frames:
  *   341 x 6 + 1 x 2 bytes) or the final short block. DATA frames inside an
  *   incomplete window get NO reply; the block-completing frame is ACKed after
- *   flash_program succeeds. On an unexpected seq: NAK err 0x01 with arg = the
+ *   flash_program succeeds. Block 0's first 8 bytes (the vector unit) are
+ *   held in RAM and programmed by VERIFY, just before the record. On an unexpected seq: NAK err 0x01 with arg = the
  *   first seq of the current window; the window buffer is discarded and the
  *   host retransmits the window starting from that seq.
  *
@@ -74,7 +75,14 @@
  *                             boots the old, intact app
  *   rest of ERASE, between
  *   DATA blocks ............. marker present, no record -> stay in boot
- *                             (DFU + CAN)
+ *                             (DFU + CAN). Block 0 is programmed from its
+ *                             second write unit: the vector unit (SP + reset
+ *                             vector) stays erased, so even a lost marker
+ *                             cannot take the SP fallback into the image
+ *   during VERIFY vector-unit
+ *   write ................... only after the CRC (vector unit from RAM, the
+ *                             rest from flash) and the vector bounds pass;
+ *                             no record, marker present -> stay in boot
  *   during VERIFY metadata
  *   write ................... record torn/partial -> header CRC fails,
  *                             marker present -> stay in boot
@@ -114,6 +122,7 @@
 #include <stdint.h>
 
 #include "boot_config.h"
+#include "image_header.h"
 #include "memory_map.h"
 
 #ifdef __cplusplus
@@ -191,8 +200,10 @@ typedef enum {
 } can_update_action_t;
 
 typedef struct {
-    /* First member: aligned for the flash program source without padding. */
+    /* First members: aligned for the flash program source without padding. */
     _Alignas(FLASH_WRITE_UNIT) uint8_t block_buf[FLASH_BLOCK_SIZE];
+    /* The image's vector unit, held from block 0 until VERIFY commits it. */
+    _Alignas(FLASH_WRITE_UNIT) uint8_t vector_unit[IMAGE_VECTOR_UNIT_SIZE];
     const can_update_hal_t *hal;
     uint32_t cmd_id;               /* host -> boot ID this engine answers      */
     can_update_phase_t phase;

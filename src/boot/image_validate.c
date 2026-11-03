@@ -96,6 +96,22 @@ image_validate_result_t image_check_bounds(const uint8_t *app, uint32_t image_si
     return IMAGE_VALID;
 }
 
+image_validate_result_t image_check_staged(const uint8_t vector_unit[IMAGE_VECTOR_UNIT_SIZE],
+                                           const uint8_t *app, uint32_t image_size,
+                                           uint32_t image_crc32)
+{
+    const image_validate_result_t bounds = image_check_bounds(vector_unit, image_size);
+    if (bounds != IMAGE_VALID) {
+        return bounds;
+    }
+    const uint32_t crc = crc32_ieee_update(0u, vector_unit, IMAGE_VECTOR_UNIT_SIZE);
+    if (crc32_ieee_update(crc, &app[IMAGE_VECTOR_UNIT_SIZE],
+                          image_size - IMAGE_VECTOR_UNIT_SIZE) != image_crc32) {
+        return IMAGE_ERR_PAYLOAD_CRC;
+    }
+    return IMAGE_VALID;
+}
+
 image_validate_result_t image_validate(const uint8_t *flash_base)
 {
     const uint8_t *meta = flash_base + METADATA_ADDR;

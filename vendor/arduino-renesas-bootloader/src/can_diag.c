@@ -2,14 +2,19 @@
  * @file    can_diag.c
  * @brief   CAN_DIAG bench instrumentation (see can_diag.h for the contract).
  *
- * Implementation notes: compiled only into CAN_DIAG=1 builds
- * (Makefile.minima). Marker sends ignore their result: a lost diag frame is
- * acceptable, and the update engine stays fully functional alongside.
+ * Implementation notes: compiled only into CAN_LOADER=1 CAN_DIAG=1 builds
+ * of Makefile.minima. The other boards' Makefiles compile every .c file in
+ * src and have neither flag nor the repo's src/ on the include path, so the
+ * body is guarded by the same condition as can_diag.h. Marker sends ignore
+ * their result: a lost diag frame is acceptable, and the update engine stays
+ * fully functional alongside.
  *
  * @see     can_diag.h, main.c
  */
 
 #include "can_diag.h"
+
+#if defined(CAN_LOADER) && defined(CAN_DIAG)
 
 #include "bsp_api.h"
 #include "bsp/board_api.h"
@@ -341,3 +346,5 @@ void can_diag_stair_end(void)
    * service loop instead. */
   can_diag_stair_active = false;
 }
+
+#endif /* CAN_LOADER && CAN_DIAG */

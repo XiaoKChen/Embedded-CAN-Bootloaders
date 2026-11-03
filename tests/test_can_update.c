@@ -1,12 +1,19 @@
-/* =============================================================================
- * test_can_update.c — Host-side Unity tests for the CAN update state machine
- * =============================================================================
+/**
+ * @file    test_can_update.c
+ * @brief   Host-side Unity tests for the CAN update state machine.
+ *
  * Fake HAL over a static 256 KB flash array with NOR-like semantics (program
- * only into erased bytes, write-unit alignment enforced). Covers the happy
- * path end-to-end (transfer -> metadata -> image_validate == IMAGE_VALID),
- * every NAK path, window rewind after a seq gap, flash failure injection,
- * and final-short-block 0xFF padding.
- * ============================================================================= */
+ * only into erased bytes, write-unit alignment enforced).
+ *
+ * Covers:       The happy path end-to-end (transfer -> metadata ->
+ *               image_validate == IMAGE_VALID), every NAK path, window rewind
+ *               after a seq gap, flash failure injection, and
+ *               final-short-block 0xFF padding.
+ * Not covered:  The target flash HAL and the update-in-progress marker write
+ *               (the fork's src/main.c; the fake erase is atomic), and INFO.
+ *
+ * @see     can_update.h, rules/testing.md
+ */
 
 #include <string.h>
 

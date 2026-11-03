@@ -1,17 +1,14 @@
-/* =============================================================================
- * image_validate.h — Pure-logic validation of the application image
- * =============================================================================
- * No flash or peripheral access: operates on a byte buffer standing in for
- * code flash, so it compiles and unit-tests on the host (tests/). Per
- * rules/bootloader.md: never jump to an image that has not passed
- * image_validate().
+/**
+ * @file    image_validate.h
+ * @brief   Pure-logic validation of the application image and the boot
+ *          decision.
  *
- * Check order (fail closed, first failure wins):
- *   magic -> header CRC -> size bounds -> initial SP -> entry point ->
- *   payload CRC.
+ * Operates on a byte buffer standing in for code flash, so it compiles and
+ * unit-tests on the host (tests/). Per rules/bootloader.md: never jump to an
+ * image that has not passed image_validate().
  *
- * boot_decide() turns that result plus the update-in-progress marker
- * (image_header.h) into the bootloader's app-or-park decision:
+ * boot_decide() turns the validation result plus the update-in-progress
+ * marker (image_header.h) into the bootloader's app-or-park decision:
  *   record valid ........................... APP (marker irrelevant)
  *   record present, any later check fails .. PARK
  *   no record (magic / header CRC) + marker  PARK (interrupted update)
@@ -19,7 +16,21 @@
  *                                            images flashed without a record
  *                                            (e.g. SWD): APP iff the SP word
  *                                            at APP_BASE is 0x20xx_xxxx
- * ============================================================================= */
+ *
+ * Owns:         The image validation checks and the app-or-park decision.
+ * Not here:     The record and marker layout (image_header.h); the jump to
+ *               the application (boot5() in the fork's src/main.c).
+ * Invariants:   Check order (fail closed, first failure wins): magic ->
+ *               header CRC -> size bounds -> initial SP -> entry point ->
+ *               payload CRC. The result codes follow that order and are a
+ *               frozen contract.
+ * Errors:       image_validate() returns IMAGE_VALID, or the
+ *               image_validate_result_t of the first failed check.
+ * Depends on:   image_header.h and memory_map.h; no flash or peripheral
+ *               access.
+ *
+ * @see     image_validate.c, test_image_validate.c, rules/bootloader.md
+ */
 
 #ifndef IMAGE_VALIDATE_H
 #define IMAGE_VALIDATE_H

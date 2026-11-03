@@ -1,12 +1,23 @@
-/* =============================================================================
- * can_polled.h — Polling-only CAN0 driver for the Renesas RA4M1 (UNO R4 Minima)
- * =============================================================================
+/**
+ * @file    can_polled.h
+ * @brief   Polling-only CAN0 driver for the Renesas RA4M1 (UNO R4 Minima).
+ *
  * Bootloader-grade driver: no interrupts, no heap, no static init order
- * dependencies. Pins D4 = P103 = CTX0 (TX), D5 = P102 = CRX0 (RX).
- * 11-bit standard IDs only. CAN clock source is PCLKB, which must run at
- * 24 MHz (board default: HOCO 48 MHz, PCLKA 48 / PCLKB 24, ratio 2:1 as
- * required for CAN on this part).
- * ============================================================================= */
+ * dependencies. 11-bit standard IDs only.
+ *
+ * Owns:         CAN0 and its pins D4 = P103 = CTX0 (TX), D5 = P102 = CRX0
+ *               (RX), from can_polled_init() until can_polled_deinit().
+ * Not here:     The CAN Update Protocol (can_update.h); the CAN service loop
+ *               (main.c).
+ * Invariants:   CAN clock source is PCLKB, which must run at 24 MHz (board
+ *               default: HOCO 48 MHz, PCLKA 48 / PCLKB 24, ratio 2:1 as
+ *               required for CAN on this part).
+ * Errors:       Every call but can_polled_deinit() returns
+ *               can_polled_status_t.
+ * Depends on:   The vendored RA4M1 device headers (vendor/ra4m1-headers/).
+ *
+ * @see     can_polled.c
+ */
 
 #ifndef CAN_POLLED_H
 #define CAN_POLLED_H

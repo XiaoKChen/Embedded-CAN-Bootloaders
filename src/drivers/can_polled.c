@@ -1,10 +1,15 @@
-/* =============================================================================
- * can_polled.c — Polling-only CAN0 driver for the Renesas RA4M1 (UNO R4 Minima)
- * =============================================================================
- * Register-level, zero interrupts. Register/bit facts cross-checked against
- * FSP sources vendored under vendor/ra4m1-headers/reference/ and the RA4M1
- * HW manual (R01UM0007) CAN chapter; non-obvious values cite file:line below.
- * ============================================================================= */
+/**
+ * @file    can_polled.c
+ * @brief   Polling-only CAN0 driver for the Renesas RA4M1 (see can_polled.h
+ *          for the contract).
+ *
+ * Implementation notes: register-level, zero interrupts. Register/bit facts
+ * cross-checked against FSP sources vendored under
+ * vendor/ra4m1-headers/reference/ and the RA4M1 HW manual (R01UM0007) CAN
+ * chapter; non-obvious values cite file:line below.
+ *
+ * @see     can_polled.h
+ */
 
 #include "can_polled.h"
 

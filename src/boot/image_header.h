@@ -1,25 +1,38 @@
-/* =============================================================================
- * image_header.h — Application image metadata layout
- * =============================================================================
+/**
+ * @file    image_header.h
+ * @brief   Application image metadata layout and the update-in-progress
+ *          marker.
+ *
  * A 16-byte little-endian metadata record lives at METADATA_ADDR (the last
- * 2 KB flash block, see memory_map.h). It is written LAST during an update:
- * power loss at any earlier instant leaves the block erased, the image
- * unvalidated, and the device parked in the bootloader — never bricked.
+ * 2 KB flash block, see memory_map.h) and describes the application image
+ * that image_validate() checks. An 8-byte update-in-progress marker shares
+ * the block at METADATA_ADDR + IMAGE_PENDING_OFFSET.
  *
- * image_crc32 covers flash [APP_BASE, APP_BASE + image_size).
- * header_crc32 covers the first 12 bytes of this record as stored in flash.
+ * Owns:         The image_meta_t layout and the coverage of its two CRCs; the
+ *               marker's offset, size and magic.
+ * Not here:     The metadata magic (boot_config.h); validation and the boot
+ *               decision (image_validate.h); addresses (memory_map.h).
+ * Invariants:   The record is written LAST during an update: power loss at
+ *               any earlier instant leaves no valid record over a partial
+ *               image. Before the marker is written the old app is still
+ *               intact and boots; after it, the marker parks the device in
+ *               the bootloader — never bricked. image_crc32 covers flash [APP_BASE, APP_BASE +
+ *               image_size); header_crc32 covers the first 12 bytes of this
+ *               record as stored in flash.
+ *               The marker is programmed right after the metadata block is
+ *               erased and BEFORE the first app-slot erase (CAN ERASE and USB
+ *               DFU block 0). It sits in its own write unit, so the record at
+ *               offset 0 is later programmed into the same block without a
+ *               second erase. Marker present + no valid record = an
+ *               interrupted update: park in the bootloader, never take the
+ *               stock SP-word fallback (boot_decide in image_validate.h). A
+ *               torn marker write cannot match both words, and at that
+ *               instant the app slot is still intact.
+ * Depends on:   <stdint.h>, boot_config.h and memory_map.h: a pure
+ *               host-compilable header, no target includes.
  *
- * Update-in-progress marker: 8 bytes at METADATA_ADDR + IMAGE_PENDING_OFFSET,
- * programmed right after the metadata block is erased and BEFORE the first
- * app-slot erase (CAN ERASE and USB DFU block 0). It sits in its own write
- * unit, so the record at offset 0 is later programmed into the same block
- * without a second erase. Marker present + no valid record = an interrupted
- * update: park in the bootloader, never take the stock SP-word fallback
- * (boot_decide in image_validate.h). A torn marker write cannot match both
- * words, and at that instant the app slot is still intact.
- *
- * Pure host-compilable header: <stdint.h> only, no target includes.
- * ============================================================================= */
+ * @see     image_validate.h, memory_map.h, boot_config.h, can_update.h
+ */
 
 #ifndef IMAGE_HEADER_H
 #define IMAGE_HEADER_H

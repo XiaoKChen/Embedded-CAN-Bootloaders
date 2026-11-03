@@ -1,9 +1,16 @@
-/* =============================================================================
- * test_crc32.c — Host-side Unity tests for crc32_ieee
- * =============================================================================
+/**
+ * @file    test_crc32.c
+ * @brief   Host-side Unity tests for crc32_ieee.
+ *
  * Golden vectors for the IEEE 802.3 / zlib-compatible CRC32 (reflected,
  * poly 0xEDB88320, init 0xFFFFFFFF, final XOR 0xFFFFFFFF).
- * ============================================================================= */
+ *
+ * Covers:       The "123456789" check value, empty input, a single byte, an
+ *               all-0xFF write unit, and that crc32_ieee is one-shot (a
+ *               concatenation is not resumable from its parts).
+ *
+ * @see     crc32.h, rules/testing.md
+ */
 
 #include <string.h>
 

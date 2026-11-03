@@ -7,10 +7,14 @@ Streams a .bin application image to the bootloader over classic CAN 2.0B
     HELLO -> SIZE -> ERASE -> DATA windows -> VERIFY -> GO
 
 Run with no arguments to launch the interactive Textual TUI; pass any flag
-(or a firmware path) to run headless exactly as before. See README.md in this
-directory for wiring, TUI/CLI usage, and adapter-specific notes.
+(or a firmware path) to run headless exactly as before.
 
-Requires Python 3.9+, python-can >= 4.0, can-isotp >= 2.0, and textual >= 0.60.
+Invariants:   The protocol constants below are frozen and must match the
+              bootloader (src/boot/can_update.h, src/boot/boot_config.h).
+Depends on:   Python 3.9+, python-can >= 4.0, can-isotp >= 2.0, and
+              textual >= 0.60.
+See also:     README.md in this directory for wiring, TUI/CLI usage, and
+              adapter-specific notes.
 """
 
 # /// script

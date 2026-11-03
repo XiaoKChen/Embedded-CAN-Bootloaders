@@ -448,8 +448,7 @@ static void test_program_failure_drops_to_idle_and_restart_recovers(void)
     memset(d, 0xFF, sizeof(d));
     d[0] = CAN_UPDATE_CMD_DATA;
     d[1] = 0u;
-    TEST_ASSERT_TRUE(send_frame(d));
-    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_FALSE(send_frame(d));  /* DATA outside TRANSFER is ignored */
     TEST_ASSERT_FALSE(can_update_owns_flash(&s_state));
 
     /* ...and a restart from HELLO (with a fresh ERASE) completes the update.
@@ -472,8 +471,8 @@ static void test_hello_restarts_session_mid_transfer(void)
                               CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
     assert_reply(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_OK, CAN_UPDATE_PROTOCOL_VERSION);
 
-    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_DATA, 0u, false, 0u));
-    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+    /* DATA outside TRANSFER gets no reply (see accepts_frame). */
+    TEST_ASSERT_FALSE(send_cmd(CAN_UPDATE_CMD_DATA, 0u, false, 0u));
 
     TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
     assert_reply(CAN_UPDATE_CMD_SIZE, CAN_UPDATE_OK, 0u);
@@ -498,7 +497,6 @@ static void test_accepts_only_padded_protocol_frames(void)
         {0x01, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* HELLO           */
         {0x01, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* HELLO, bad ver. */
         {0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* ERASE           */
-        {0x03, 0x05, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55},  /* DATA: payload   */
         {0x04, 0xFF, 0x8B, 0x13, 0x00, 0x00, 0xFF, 0xFF},  /* SIZE            */
         {0x05, 0xFF, 0x12, 0x34, 0x56, 0x78, 0xFF, 0xFF},  /* VERIFY          */
         {0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},  /* GO              */
@@ -528,11 +526,15 @@ static void test_accepts_only_padded_protocol_frames(void)
     }
 
     /* A 3-byte ISO-TP single frame starts with the DATA command byte and DATA
-     * carries payload, so it cannot be told apart; outside TRANSFER the
-     * engine NAKs it as out of phase, as before. */
+     * carries payload, so it cannot be told apart by padding: outside TRANSFER
+     * it is ignored (no NAK, no idle-timer refresh), inside TRANSFER it is
+     * DATA (the master's polling is stopped while a host flashes). */
     static const uint8_t data_like[8] = {0x03, 0x22, 0xF1, 0x90, 0xCC, 0xCC, 0xCC, 0xCC};
-    TEST_ASSERT_TRUE(send_frame(data_like));
-    assert_reply(CAN_UPDATE_CMD_DATA, CAN_UPDATE_ERR_STATE, 0u);
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, data_like));
+    TEST_ASSERT_FALSE(send_frame(data_like));
+    enter_transfer_phase();
+    TEST_ASSERT_TRUE(can_update_accepts_frame(&s_state, s_cmd_id, 8u, data_like));
+    TEST_ASSERT_FALSE(can_update_accepts_frame(&s_state, s_cmd_id, 7u, data_like));
 }
 
 static void test_unpadded_command_does_not_advance_session(void)

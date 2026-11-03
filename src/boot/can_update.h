@@ -23,8 +23,10 @@
  *
  *   Accepted frames (can_update_accepts_frame): on the command ID, DLC 8,
  *   command byte 0x01..0x07, and every unused byte 0xFF (HELLO bytes 2..7;
- *   SIZE/VERIFY bytes 1, 6, 7; ERASE/GO/INFO bytes 1..7; DATA carries
- *   payload and is not checked). Anything else, including the 0x79 reply
+ *   SIZE/VERIFY bytes 1, 6, 7; ERASE/GO/INFO bytes 1..7). DATA carries
+ *   payload, so it is accepted only while a transfer is in progress: outside
+ *   one, a 0x03-led frame is a 3-byte ISO-TP single frame from the app
+ *   protocol, not DATA. Anything else, including the 0x79 reply
  *   marker and ISO-TP traffic sharing the command ID, gets NO reply. Every
  *   known host (tools/can-flash, the Airform flasher, the ESP32 brain's
  *   can_flash_host) pads this way.

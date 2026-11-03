@@ -255,6 +255,13 @@ bool can_update_accepts_frame(const can_update_state_t *st, uint32_t id,
         cmd < CAN_UPDATE_CMD_HELLO || cmd > CAN_UPDATE_CMD_INFO) {
         return false;
     }
+    /* DATA carries payload, so it has no padding to check, and its command
+     * byte (0x03) is also how a 3-byte ISO-TP single frame starts. Outside a
+     * transfer it can only be such app traffic: ignore it, so it neither
+     * draws a NAK nor keeps CAN update mode alive. */
+    if (cmd == CAN_UPDATE_CMD_DATA && st->phase != CAN_UPDATE_PHASE_TRANSFER) {
+        return false;
+    }
     const uint8_t mask = k_fill_mask[cmd - CAN_UPDATE_CMD_HELLO];
     for (uint8_t i = 1u; i < 8u; i++) {
         if (((mask >> i) & 1u) != 0u && data[i] != CAN_UPDATE_FILL_BYTE) {

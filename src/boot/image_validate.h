@@ -1,7 +1,7 @@
 /**
  * @file    image_validate.h
- * @brief   Pure-logic validation of the application image and the boot
- *          decision.
+ * @brief   Pure-logic validation of the application image, the boot
+ *          decision, and the record encoder.
  *
  * Operates on a byte buffer standing in for code flash, so it compiles and
  * unit-tests on the host (tests/). Per rules/bootloader.md: never jump to an
@@ -14,16 +14,25 @@
  *   no record (magic / header CRC) + marker  PARK (interrupted update)
  *   no record, no marker ................... stock SP-word fallback, for
  *                                            images flashed without a record
- *                                            (e.g. SWD): APP iff the SP word
+ *                                            AND with the metadata block
+ *                                            erased (e.g. SWD after a full
+ *                                            chip erase): APP iff the SP word
  *                                            at APP_BASE is 0x20xx_xxxx
+ * An SWD flash over a board that once took a DFU/CAN update must also erase
+ * the metadata block (0x3F800): the stale record no longer matches the new
+ * image and parks the board.
  *
- * Owns:         The image validation checks and the app-or-park decision.
+ * Owns:         The image validation checks, the app-or-park decision, the
+ *               metadata record encoding.
  * Not here:     The record and marker layout (image_header.h); the jump to
- *               the application (boot5() in the fork's src/main.c).
+ *               the application (boot5() in the fork's src/main.c); the
+ *               flash writes themselves (the callers' HAL).
  * Invariants:   Check order (fail closed, first failure wins): magic ->
  *               header CRC -> size bounds -> initial SP -> entry point ->
  *               payload CRC. The result codes follow that order and are a
- *               frozen contract.
+ *               frozen contract. The initial SP is 8-byte aligned and inside
+ *               (SRAM_BASE, SRAM_END]; the entry point lies inside the
+ *               image's own bytes.
  * Errors:       image_validate() returns IMAGE_VALID, or the
  *               image_validate_result_t of the first failed check.
  * Depends on:   image_header.h and memory_map.h; no flash or peripheral
@@ -52,8 +61,8 @@ typedef enum {
     IMAGE_ERR_MAGIC,        /* metadata magic missing (e.g. erased block)      */
     IMAGE_ERR_HEADER_CRC,   /* metadata self-CRC mismatch                      */
     IMAGE_ERR_SIZE,         /* image_size outside [8, APP_SLOT_SIZE]           */
-    IMAGE_ERR_SP,           /* initial SP word outside SRAM                    */
-    IMAGE_ERR_ENTRY,        /* entry outside the app slot or Thumb bit clear   */
+    IMAGE_ERR_SP,           /* initial SP outside SRAM or not 8-byte aligned   */
+    IMAGE_ERR_ENTRY,        /* entry outside the image or Thumb bit clear      */
     IMAGE_ERR_PAYLOAD_CRC,  /* image CRC32 mismatch                            */
 } image_validate_result_t;
 
@@ -76,6 +85,24 @@ typedef enum {
  * @return IMAGE_VALID when every check passes; the first failure otherwise.
  */
 image_validate_result_t image_validate(const uint8_t *flash_base);
+
+/**
+ * The size, initial-SP and entry-point checks of image_validate(), for an
+ * image whose record is not written yet (the update paths run it before
+ * they commit).
+ *
+ * @param app         The image's first byte (APP_BASE on target).
+ * @param image_size  Bytes of the image.
+ * @return IMAGE_VALID, IMAGE_ERR_SIZE, IMAGE_ERR_SP or IMAGE_ERR_ENTRY.
+ */
+image_validate_result_t image_check_bounds(const uint8_t *app, uint32_t image_size);
+
+/**
+ * Encode the metadata record (magic, size, CRC, header CRC) in its flash
+ * byte order. The one encoder both update paths program.
+ */
+void image_meta_encode(uint8_t out[IMAGE_META_SIZE], uint32_t image_size,
+                       uint32_t image_crc32);
 
 /**
  * Decide whether to boot the application or park in the bootloader (rules in

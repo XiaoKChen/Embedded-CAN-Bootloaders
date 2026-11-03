@@ -9,9 +9,10 @@
  * the block at METADATA_ADDR + IMAGE_PENDING_OFFSET.
  *
  * Owns:         The image_meta_t layout and the coverage of its two CRCs; the
- *               marker's offset, size and magic.
- * Not here:     The metadata magic (boot_config.h); validation and the boot
- *               decision (image_validate.h); addresses (memory_map.h).
+ *               minimum image size; the marker's offset, size and magic.
+ * Not here:     The metadata magic (boot_config.h); encoding a record,
+ *               validation and the boot decision
+ *               (image_validate.h); addresses (memory_map.h).
  * Invariants:   The record is written LAST during an update: power loss at
  *               any earlier instant leaves no valid record over a partial
  *               image. Before the marker is written the old app is still
@@ -58,6 +59,7 @@ typedef struct {
 
 #define IMAGE_META_SIZE         16u
 #define IMAGE_META_CRC_COVERAGE 12u  /* bytes covered by header_crc32 */
+#define IMAGE_MIN_SIZE          8u   /* the initial SP and reset vector words */
 
 _Static_assert(sizeof(image_meta_t) == IMAGE_META_SIZE,
                "image_meta_t must be exactly 16 bytes (4 x uint32_t, no padding)");

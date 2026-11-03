@@ -1,6 +1,7 @@
 /**
  * @file    test_image_validate.c
- * @brief   Host-side Unity tests for image_validate and boot_decide.
+ * @brief   Host-side Unity tests for image_validate, boot_decide, the record
+ *          encoder.
  *
  * Adapted from .claude/template/bootloader/test_image_validate.c to the
  * metadata-block layout: a 256 KB byte buffer stands in for code flash, the
@@ -10,8 +11,11 @@
  *               every boot_decide() branch: valid record (with and without
  *               the update-in-progress marker), marker-only (interrupted
  *               update), the no-record SP-word fallback, a corrupt record,
- *               and torn markers falling back to the SP check.
- * Not covered:  The jump to the application (on target only).
+ *               and torn markers falling back to the SP check. The SP
+ *               alignment and image-bounded entry point, image_check_bounds
+ *               before a record exists, and image_meta_encode.
+ * Not covered:  The jump to the application and the flash writes (on target
+ *               only).
  *
  * @see     image_validate.h, image_header.h, rules/testing.md
  */
@@ -26,7 +30,7 @@
 /* -----------------------------------------------------------------------------
  * Fixture: a minimal valid image built in a fake 256 KB flash
  * ----------------------------------------------------------------------------- */
-#define TEST_IMAGE_SIZE 64u
+#define TEST_IMAGE_SIZE 0x200u                  /* holds the entry at +0x100 */
 #define TEST_INITIAL_SP SRAM_END                /* full-descending stack top   */
 #define TEST_ENTRY      ((APP_BASE + 0x100u) | 1u)  /* Thumb bit set           */
 
@@ -62,6 +66,11 @@ static void build_valid_image(void)
     store_le32(&app[4], TEST_ENTRY);       /* vector 1: reset entry */
 
     write_metadata(TEST_IMAGE_SIZE, crc32_ieee(app, TEST_IMAGE_SIZE));
+}
+
+static void erase_metadata_record(void)
+{
+    memset(&s_flash[METADATA_ADDR], 0xFF, IMAGE_META_SIZE);
 }
 
 /* Patch the app's SP/entry words; the payload CRC check runs AFTER the SP and
@@ -156,6 +165,38 @@ static void test_entry_in_metadata_block_fails(void)
     TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
 }
 
+static void test_entry_past_image_end_fails(void)
+{
+    /* Inside the slot but past the bytes the record covers: unchecked flash. */
+    patch_app_word(4u, (APP_BASE + TEST_IMAGE_SIZE) | 1u);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_validate(s_flash));
+}
+
+static void test_entry_at_last_halfword_of_image_is_allowed(void)
+{
+    patch_app_word(4u, (APP_BASE + TEST_IMAGE_SIZE - 2u) | 1u);
+    write_metadata(TEST_IMAGE_SIZE, crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+static void test_sp_not_8_byte_aligned_fails(void)
+{
+    patch_app_word(0u, SRAM_END - 4u);  /* inside SRAM, only word-aligned */
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_validate(s_flash));
+}
+
+static void test_check_bounds_without_record(void)
+{
+    /* The update paths check the vectors before the record exists. */
+    erase_metadata_record();
+    const uint8_t *app = &s_flash[APP_BASE];
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_check_bounds(app, TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SIZE, image_check_bounds(app, IMAGE_MIN_SIZE - 1u));
+    TEST_ASSERT_EQUAL(IMAGE_ERR_ENTRY, image_check_bounds(app, 0x100u));
+    patch_app_word(0u, 0xFFFFFFFFu);
+    TEST_ASSERT_EQUAL(IMAGE_ERR_SP, image_check_bounds(app, TEST_IMAGE_SIZE));
+}
+
 static void test_entry_thumb_bit_clear_fails(void)
 {
     patch_app_word(4u, APP_BASE + 0x100u);  /* in range but ARM-state address */
@@ -169,6 +210,24 @@ static void test_corrupt_payload_fails_payload_crc(void)
 }
 
 /* -----------------------------------------------------------------------------
+ * image_meta_encode — the one record encoder
+ * ----------------------------------------------------------------------------- */
+static void test_meta_encode_matches_layout_and_validates(void)
+{
+    uint8_t expected[IMAGE_META_SIZE];
+    memcpy(expected, &s_flash[METADATA_ADDR], IMAGE_META_SIZE);  /* write_metadata */
+
+    uint8_t encoded[IMAGE_META_SIZE];
+    image_meta_encode(encoded, TEST_IMAGE_SIZE,
+                      crc32_ieee(&s_flash[APP_BASE], TEST_IMAGE_SIZE));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expected, encoded, IMAGE_META_SIZE);
+
+    erase_metadata_record();
+    memcpy(&s_flash[METADATA_ADDR], encoded, IMAGE_META_SIZE);
+    TEST_ASSERT_EQUAL(IMAGE_VALID, image_validate(s_flash));
+}
+
+/* -----------------------------------------------------------------------------
  * boot_decide — record + update-in-progress marker -> APP / PARK
  * ----------------------------------------------------------------------------- */
 static void write_pending_marker(uint32_t first, uint32_t second)
@@ -176,11 +235,6 @@ static void write_pending_marker(uint32_t first, uint32_t second)
     uint8_t *pending = &s_flash[METADATA_ADDR + IMAGE_PENDING_OFFSET];
     store_le32(&pending[0], first);
     store_le32(&pending[4], second);
-}
-
-static void erase_metadata_record(void)
-{
-    memset(&s_flash[METADATA_ADDR], 0xFF, IMAGE_META_SIZE);
 }
 
 static void test_decide_valid_image_boots(void)
@@ -263,8 +317,13 @@ int main(void)
     RUN_TEST(test_sp_above_sram_end_fails);
     RUN_TEST(test_entry_in_bootloader_fails);
     RUN_TEST(test_entry_in_metadata_block_fails);
+    RUN_TEST(test_entry_past_image_end_fails);
+    RUN_TEST(test_entry_at_last_halfword_of_image_is_allowed);
+    RUN_TEST(test_sp_not_8_byte_aligned_fails);
+    RUN_TEST(test_check_bounds_without_record);
     RUN_TEST(test_entry_thumb_bit_clear_fails);
     RUN_TEST(test_corrupt_payload_fails_payload_crc);
+    RUN_TEST(test_meta_encode_matches_layout_and_validates);
     RUN_TEST(test_decide_valid_image_boots);
     RUN_TEST(test_decide_valid_image_with_marker_boots);
     RUN_TEST(test_decide_marker_without_record_parks);

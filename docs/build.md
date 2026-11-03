@@ -118,21 +118,23 @@ which bounds the FLASH region `fsp.ld` places the image in, and asserts that
 this region is exactly `0x0000–0x3FFF`. The other UNO R4 Makefiles (WiFi,
 Opta) link `ra4m1.ld` directly, unbounded: Opta's BOSSA + DFU bootloader
 needs 32 KB. The 16 KB figure lives in three places (that value,
-`BOOT_SIZE`, and the Makefile's `BOOT_REGION_LIMIT`); change them together. Current output with gcc 14.2.1
-(#40 hardening, before the #40 CAN driver changes are merged):
+`BOOT_SIZE`, and the Makefile's `BOOT_REGION_LIMIT`); change them together.
+Current output with gcc 14.2.1 (#40, after the second review):
 
 ```
-SIZE GATE OK: 14772 / 16384 bytes
+SIZE GATE OK: 15236 / 16384 bytes
 ```
 
-That leaves **1 612 B** of headroom. Since #34 the build reclaims space it
+That leaves **1 148 B** of headroom. Since #34 the build reclaims space it
 used to waste or carry for nothing:
 
 - **Low-flash gap:** functions marked `BOOT_LOW_FLASH`
-  (`src/boot/memory_map.h`: `can_polled_init`, `can_polled_send`,
-  `can_polled_deinit`, `flash_lp_open_df_read_ready`, 776 B) sit between the
-  vector table and the option bytes (`0x00C0–0x03C7`), where the FSP linker
-  script used to pad with `0xFF`. The linker script fails the link if that
+  (`src/boot/memory_map.h`: `can_polled_init`, `can_polled_deinit`,
+  `flash_lp_open_df_read_ready`, 656 B) sit between the vector table and the
+  option bytes (`0x00C0–0x034F`), where the FSP linker script used to pad
+  with `0xFF`. `can_polled_send` is marked too, but LTO inlines it into its
+  only production caller, so it lands in ordinary `.text`; in the `CAN_DIAG`
+  build it stays out of line and the gap fills to `0x03FB`. The linker script fails the link if that
   code ever reaches `0x400`; `0x043C–0x04FF` stays reserved padding.
 - **No flash API table:** `g_flash` no longer points at the `r_flash_lp` API
   table, so the unused public entry points are not linked. Three unused RAM
@@ -144,10 +146,12 @@ used to waste or carry for nothing:
 
 The diagnostic build (`CAN_DIAG=1`, stage-marker CAN frames + a
 self-bisecting boot staircase for CAN bring-up debugging, in
-`vendor/arduino-renesas-bootloader/src/can_diag.{c,h}`) fits at 15 412 B
+`vendor/arduino-renesas-bootloader/src/can_diag.{c,h}`) fits at 15 860 B
 (it was 16 456 B and failed the gate before #34). It is never shipped and
-CI does not build it; with `CAN_DIAG=0` (default) `can_diag.c` is not
-compiled and its hooks in `main.c` are no-ops. For reference: the same source built with the old
+CI does not build it; unless both `CAN_LOADER=1` and `CAN_DIAG=1`,
+`can_diag.c` is not compiled (and its body is guarded, since the other
+boards' Makefiles compile every source in `src/`) and its hooks in
+`main.c` are no-ops. For reference: the same source built with the old
 gcc 7.2.1 was ~656 B larger (measured before #31), which is why gcc 14
 is preferred. Arduino's shipped stock hex (gcc unknown) is a 12 424 B binary;
 the CAN update path is the difference.

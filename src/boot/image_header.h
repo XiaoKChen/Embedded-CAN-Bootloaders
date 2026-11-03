@@ -13,9 +13,10 @@
  * Not here:     The metadata magic (boot_config.h); validation and the boot
  *               decision (image_validate.h); addresses (memory_map.h).
  * Invariants:   The record is written LAST during an update: power loss at
- *               any earlier instant leaves the block erased, the image
- *               unvalidated, and the device parked in the bootloader — never
- *               bricked. image_crc32 covers flash [APP_BASE, APP_BASE +
+ *               any earlier instant leaves no valid record over a partial
+ *               image. Before the marker is written the old app is still
+ *               intact and boots; after it, the marker parks the device in
+ *               the bootloader — never bricked. image_crc32 covers flash [APP_BASE, APP_BASE +
  *               image_size); header_crc32 covers the first 12 bytes of this
  *               record as stored in flash.
  *               The marker is programmed right after the metadata block is

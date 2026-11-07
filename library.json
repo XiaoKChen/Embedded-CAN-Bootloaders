@@ -5,7 +5,7 @@
   "keywords": ["can", "ota", "bootloader", "esp32", "twai"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/XiaoKChen/Embedded-CAN-Bootloaders.git",
+    "url": "http://172.16.8.103:8003/Embedded-PlatformIO/Embedded-CAN-Bootloaders.git",
     "branch": "version/c-cpp/esp32"
   },
   "frameworks": ["arduino", "espidf"],

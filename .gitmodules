@@ -1,4 +1,0 @@
-[submodule ".claude"]
-	path = .claude
-	url = https://github.com/XiaoKChen/.claude.git
-	branch = config/embedded-bootloader

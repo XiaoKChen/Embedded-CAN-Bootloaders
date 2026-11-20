@@ -1,32 +1,41 @@
-//! Parked-mode LED fade: GPT channel 3 (GPT163) saw-wave PWM on
-//! P111/GTIOC3A, triangle duty stepped every 100 ms (SPEC §2.5, U1.5).
+//! Parked-mode LED fade: GPT163 saw-wave PWM on P111/GTIOC3A, triangle duty every 100 ms.
 //!
-//! Spawned ONLY in parked mode: the C bootloader's CAN-only path
-//! (`run_can_update_mode`, SPEC §2.3) never touched the LED — only the
-//! parked loop ran `led_blinking_task` (SPEC §2.5). `main.rs` mirrors that
-//! split.
+//! Spawned ONLY in parked mode (SPEC §2.5, U1.5): the C bootloader's CAN-only path
+//! (`run_can_update_mode`, SPEC §2.3) never touched the LED — only the parked loop ran
+//! `led_blinking_task`. `main.rs` mirrors that split.
+//!
+//! Owns:        GPT163 and the PFS/PMISC singletons from spawn onward, the P111 pin function
+//!              once PWM takes over from `board::init`'s LED-on GPIO, and the MSTPCRD MSTPD6
+//!              module-stop bit.
+//! Not here:    when the task is spawned (`main.rs`); CAN0's own transient PFS access for
+//!              P102/P103 (`drivers/can0.rs`).
+//! Invariants:  duty stays clamped to `[FADE_STEP_COUNTS, FADE_PERIOD_COUNTS]`, so FSP's
+//!              0 %/100 % pin-forcing special cases are never needed. Pin routing happens last,
+//!              so P111 never shows an unconfigured timer output.
+//! Concurrency: single task on the thread-mode executor; it never yields mid-PFS-sequence, so
+//!              the PWPR protocol never interleaves with CAN0's PFS access. MSTPCRD's only
+//!              other user (`time_driver::init`) ran pre-executor and no ISR touches it.
+//! Depends on:  `embassy_time` (`Ticker`), `ra4m1_embassy::pfs`.
+//! See also:    `main.rs`; `board.rs`; SPEC §2.5.
 //!
 //! # C parity evidence
 //!
-//! The vendored C fork's sources are not checked out in this tree, so the
-//! hardware configuration was recovered from the shipped, bench-proven C
-//! binary (`vendor/arduino-renesas-bootloader/_build/uno_r4/*.bin` +
-//! `.elf.map`):
+//! The vendored C fork's sources are not checked out in this tree, so the hardware configuration
+//! was recovered from the shipped, bench-proven C binary
+//! (`vendor/arduino-renesas-bootloader/_build/uno_r4/*.bin` + `.elf.map`):
 //!
-//! - `.rodata.pwm_cfg` (FSP `timer_cfg_t`): mode = PWM (saw), period
-//!   `0x9896` counts, `source_div` = `TIMER_SOURCE_DIV_4` (PCLKD 48 MHz / 4
-//!   = 12 MHz → ≈ 307 Hz PWM), initial duty `0x4C4B` (50 %), channel 3.
-//! - `.rodata.g_timer_extend` (`gpt_extended_cfg_t`): GTIOCA output
-//!   enabled, GTIOCB disabled, stop level low (`LED_FADE_PWM_OUT_A=1`,
-//!   Makefile.minima).
+//! - `.rodata.pwm_cfg` (FSP `timer_cfg_t`): mode = PWM (saw), period `0x9896` counts,
+//!   `source_div` = `TIMER_SOURCE_DIV_4` (PCLKD 48 MHz / 4 = 12 MHz → ≈ 307 Hz PWM), initial duty
+//!   `0x4C4B` (50 %), channel 3.
+//! - `.rodata.g_timer_extend` (`gpt_extended_cfg_t`): GTIOCA output enabled, GTIOCB disabled,
+//!   stop level low (`LED_FADE_PWM_OUT_A=1`, Makefile.minima).
 //! - `.rodata.extra_pin_cfg`: `{0x0301_0000, P111}` = PMR set + PSEL 0x03
 //!   (`IOPORT_PERIPHERAL_GPT1`, FSP `r_ioport_api.h`) — P111 → GTIOC3A.
 //! - Fade stepping: `FADESTEP 2000` per 100 ms (SPEC §2.5).
 //!
-//! Register semantics: R01UM0007 (RA4M1 HW manual), GPT chapter, same
-//! bring-up shape as `ra4m1_embassy::time_driver` (GTWP → GTCR → GTUDDTYC →
-//! compare setup → CST), plus FSP `r_gpt.c` for the saw-PWM GTIOR encoding
-//! and the buffered-compare duty semantics.
+//! Register semantics: R01UM0007 (RA4M1 HW manual), GPT chapter, same bring-up shape as
+//! `ra4m1_embassy::time_driver` (GTWP → GTCR → GTUDDTYC → compare setup → CST), plus FSP
+//! `r_gpt.c` for the saw-PWM GTIOR encoding and the buffered-compare duty semantics.
 
 use embassy_time::{Duration, Ticker};
 use ra4m1_embassy::pfs;

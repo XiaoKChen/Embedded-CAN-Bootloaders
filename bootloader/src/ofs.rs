@@ -1,11 +1,16 @@
-//! OFS0/OFS1/Security-MPU option-byte words emitted into the `.ofs` linker
-//! section at flash `0x400..0x440` (SPEC §1.5, R4).
+//! OFS0/OFS1/Security-MPU option-byte words emitted into the `.ofs` linker section.
 //!
-//! **Brick risk — review like unsafe code.** These 64 bytes live inside the
-//! bootloader image and are latched by hardware at reset: a wrong OFS0
-//! auto-starts the IWDT against a bootloader that never feeds it. The
-//! values below must stay byte-identical to the stock Arduino bootloader
-//! dump (`main:docs/build.md`, "Pre-flash check"):
+//! The 64 bytes at flash `0x400..0x440` are latched by hardware at reset (SPEC §1.5, R4).
+//!
+//! Owns:        the contents of the `.ofs` section: OFS0, OFS1 and the Security-MPU words.
+//! Not here:    the section's address and size, which `memory.x` pins and ASSERTs; the ID code
+//!              (OSIS), deliberately not emitted (see below).
+//! Invariants:  BRICK RISK — review like unsafe code. The words stay byte-identical to the stock
+//!              Arduino bootloader dump (dump below): a wrong OFS0 auto-starts the IWDT against
+//!              a bootloader that never feeds it.
+//! See also:    `memory.x`; SPEC §1.5; `main:docs/build.md` ("Pre-flash check").
+//!
+//! Stock dump, byte-checked in CI:
 //!
 //! ```text
 //! 000400 ff ff ff ff df ce ff ff fc ff ff 00 ff ff ff 00
@@ -14,18 +19,16 @@
 //! 000430 fc ff 0d 40 ff ff 0d 40 ff ff ff ff ff ff ff ff
 //! ```
 //!
-//! Placement: `bootloader/memory.x` pins the `.ofs` output section to
-//! `ORIGIN(FLASH) + 0x400` and moves `_stext` to `0x440`; linker ASSERTs
-//! there enforce both the address and the 64-byte size.
+//! Placement: `bootloader/memory.x` pins the `.ofs` output section to `ORIGIN(FLASH) + 0x400`
+//! and moves `_stext` to `0x440`; linker ASSERTs there enforce both the address and the 64-byte
+//! size.
 //!
-//! ID code (OSIS, `0x0101_0018`, 0x20 bytes): must stay all-`0xFF` or
-//! SWD/ROM-boot recovery locks out (SPEC §1.5). It is deliberately NOT
-//! emitted here: probe-rs' R7FA4M1AB target maps that region as
-//! non-flashable (`ConfigROM`, `!Generic`), so a loadable section there
-//! would break `cargo run`. All-`0xFF` is the factory/erased state, and
-//! nothing in this project erases or programs the OSIS region — the
-//! requirement holds by leaving it untouched (stock hex ships the same
-//! all-`0xFF` bytes).
+//! ID code (OSIS, `0x0101_0018`, 0x20 bytes): must stay all-`0xFF` or SWD/ROM-boot recovery
+//! locks out (SPEC §1.5). It is deliberately NOT emitted here: probe-rs' R7FA4M1AB target maps
+//! that region as non-flashable (`ConfigROM`, `!Generic`), so a loadable section there would
+//! break `cargo run`. All-`0xFF` is the factory/erased state, and nothing in this project erases
+//! or programs the OSIS region — the requirement holds by leaving it untouched (stock hex ships
+//! the same all-`0xFF` bytes).
 
 /// OFS0 (`0x400`) — all ones: IWDT and WDT auto-start disabled
 /// (R01UM0007, Option-Setting Memory chapter; SPEC §1.5).

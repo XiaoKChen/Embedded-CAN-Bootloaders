@@ -1,22 +1,36 @@
-//! USB DFU 1.1 function (device class) for parked/DFU mode (U2.2,
-//! docs/plan.md §6 M2; SPEC §6.1–6.3, R36–R38 with the plan §1.2/§8 layout
-//! values superseding R36's block counts).
+//! USB DFU 1.1 function (device class) for parked/DFU mode.
 //!
-//! The bootloader **is** DFU mode — there is no run-time (appIDLE) half. The
-//! module is fully generic over `D: embassy_usb::driver::Driver<'d>`; the
-//! concrete USBFS driver is U2.1's and never appears here.
+//! U2.2, docs/plan.md §6 M2; SPEC §6.1–6.3, R36–R38, with the plan §1.2/§8 layout values
+//! superseding R36's block counts. The bootloader **is** DFU mode — there is no run-time
+//! (appIDLE) half. The module is fully generic over `D: embassy_usb::driver::Driver<'d>`; the
+//! concrete USBFS driver is U2.1's and never appears in the generic pieces.
+//!
+//! Owns:        the DFU descriptors and identity (VID/PID, memory-layout strings), the pure
+//!              DFU state machine ([`machine`]), the flash-backed [`DfuStorage`] implementation
+//!              and the DETACH → drain → reset flow (SPEC §6.1).
+//! Not here:    the USBFS register layer (`drivers/usbfs.rs`); flash sequencing
+//!              (`drivers/flash_lp.rs`); the CAN session (`tasks/can_update.rs`); spawning
+//!              (`main.rs`).
+//! Invariants:  downloads clamp at the 111-block app slot (the machine's SPEC §6.3 oversize
+//!              guard); the metadata block is written only by the machine's manifest (R38). The
+//!              DFU config block is never re-read here (R37 — `main` loads it once).
+//! Concurrency: flash is the shared `FlashMutex`; the synchronous [`Handler`] hooks run flash
+//!              work inline in the control request. No device-side timeouts by design: the
+//!              device is a server parked on host commands, and the host owns every
+//!              retry/timeout budget. The only exits are the DETACH reset and an external reset.
+//! Errors:      [`machine`] reports [`StorageError`] through DFU status codes.
+//! Depends on:  `embassy_usb`, `boot_logic`, `flash_read`, `drivers::flash_lp`.
+//! See also:    `drivers/usbfs.rs`; `tasks/can_update.rs`; docs/plan.md §4, §6; SPEC §6.
 //!
 //! # Pieces
 //!
-//! - [`machine`]: the pure DFU state machine over the [`DfuStorage`] seam —
-//!   zero USB/HAL/executor deps, so U2.3 implements storage and the SPEC §6.3
-//!   guards stay host-testable logic.
-//! - [`DfuHandler`]: the embassy-usb [`Handler`] gluing control requests to
-//!   the machine (one DFU interface, alt 0 `@CodeFlash` / alt 1 `@DataFlash`).
-//! - [`register`]: writes the descriptors into a [`Builder`] and installs the
-//!   handler.
-//! - [`run_device`]: drives [`UsbDevice::run`] and performs the DETACH →
-//!   drain → reset flow (SPEC §6.1).
+//! - [`machine`]: the pure DFU state machine over the [`DfuStorage`] seam — zero USB/HAL/executor
+//!   deps, so U2.3 implements storage and the SPEC §6.3 guards stay host-testable logic.
+//! - [`DfuHandler`]: the embassy-usb [`Handler`] gluing control requests to the machine (one DFU
+//!   interface, alt 0 `@CodeFlash` / alt 1 `@DataFlash`).
+//! - [`register`]: writes the descriptors into a [`Builder`] and installs the handler.
+//! - [`run_device`]: drives [`UsbDevice::run`] and performs the DETACH → drain → reset flow (SPEC
+//!   §6.1).
 //!
 //! # U2.3 integration seam
 //!
@@ -57,11 +71,6 @@
 //!   bounded, IRQ-masked FACI sessions can_update uses; R39 granularity);
 //! - the manifest CRC pass reads back the whole image once (≤ ~0.27 s for a
 //!   full slot at 48 MHz, once per completed download).
-//!
-//! No device-side timeouts by design: like the CAN session, the device is a
-//! server parked on host commands; the host (dfu-util/Arduino IDE) owns every
-//! retry/timeout budget. The only exits are the DETACH reset and an external
-//! reset.
 
 use core::future::{poll_fn, Future};
 use core::pin::{pin, Pin};

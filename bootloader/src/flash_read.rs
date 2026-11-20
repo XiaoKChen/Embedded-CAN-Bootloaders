@@ -1,11 +1,17 @@
-//! `boot_logic::image_meta::ImageRead` over the memory-mapped code flash —
-//! volatile raw-pointer reads only (U1.1, docs/plan.md §3).
+//! `ImageRead` over the memory-mapped code flash, via volatile raw-pointer reads only.
 //!
-//! Code flash is mapped at address 0 (SPEC §1.1), and a Rust **reference**
-//! to address 0 is undefined behavior no matter how it is produced
-//! (SPEC §9.1.7). Every access here therefore computes the byte address as
-//! an integer, casts it to a raw pointer, and `read_volatile`s it — no
-//! references into flash, no pointer arithmetic on a possibly-null base.
+//! Implements `boot_logic::image_meta::ImageRead` for the 256 KB code flash (U1.1,
+//! docs/plan.md §3).
+//!
+//! Not here:    flash programming or erase (`drivers/flash_lp.rs`).
+//! Invariants:  no Rust reference into flash is ever formed: code flash is mapped at address 0
+//!              (SPEC §1.1), and a reference to address 0 is undefined behavior no matter how it
+//!              is produced (SPEC §9.1.7). Every access computes the byte address as an integer,
+//!              casts it to a raw pointer, and `read_volatile`s it.
+//! Concurrency: stateless zero-size type; reads are side-effect free.
+//! Errors:      [`ReadError::OutOfBounds`] when a range leaves the code flash.
+//! Depends on:  `boot_logic` (`image_meta`, `memory_map`).
+//! See also:    `main.rs` (boot decision).
 
 use boot_logic::image_meta::{ImageRead, ReadError};
 use boot_logic::memory_map::CODE_FLASH_SIZE;

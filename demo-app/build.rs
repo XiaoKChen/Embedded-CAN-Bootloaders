@@ -1,10 +1,19 @@
-//! Linker-script plumbing for `memory.x` (same mechanism as
-//! `bootloader/build.rs`) — not in the original U0.1 claimed-file list but
-//! mechanically required for `memory.x` to reach the linker via `link.x`'s
-//! `INCLUDE memory.x`; added alongside it.
+//! Build script: linker-script plumbing and the build-timestamp banner for the demo app.
 //!
-//! U1.6 also emits `DEMO_APP_BUILT`, the UTC build timestamp baked into the
-//! defmt version banner (src/main.rs).
+//! Same mechanism as `bootloader/build.rs`: copies `memory.x` into `OUT_DIR` so `link.x`'s
+//! `INCLUDE memory.x` finds it. Also emits `-Tdefmt.x` for this always-defmt binary (the
+//! workspace `.cargo/config.toml` no longer passes it, because the lean bootloader has no
+//! `defmt.x` to link) and `DEMO_APP_BUILT`, the UTC build timestamp baked into the defmt
+//! version banner (`src/main.rs`).
+//!
+//! Owns:      the link arguments and `DEMO_APP_BUILT` for this crate.
+//! Not here:  the flash/RAM partition itself (`memory.x`).
+//! Errors:    panics at build time if `OUT_DIR` is unset or the system clock predates 1970.
+//! See also:  `src/main.rs`; `memory.x`; `bootloader/build.rs`.
+//!
+//! The timestamp is cached with this script's output: it refreshes on a clean build (CI/release
+//! artifacts always get a fresh one) or when `build.rs`/`memory.x` change — not on every
+//! incremental rebuild.
 
 use std::env;
 use std::fs::File;

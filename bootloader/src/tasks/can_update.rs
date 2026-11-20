@@ -1,31 +1,34 @@
-//! CAN update protocol session task: drives `boot_logic::protocol`'s effects
-//! against the flash-LP and CAN0 drivers (U1.4, docs/plan.md §4/§6).
+//! CAN update protocol session task: drives `boot_logic::protocol` effects against flash and CAN0.
 //!
-//! Entry staging (order is load-bearing, SPEC §2.3):
-//! 1. the transceiver rail (R33) and the per-device config (R34/R40) are
-//!    brought up ONCE by `main::run_update_mode` — pre-executor, shared with
-//!    `usb_dfu` (U2.3) — and handed in: this task gets a powered rail and a
-//!    loaded [`DfuConfig`], and never re-reads the data-flash block;
-//! 2. CAN0 init at 250 kbit/s, RX-filtered to the effective cmd ID. On
-//!    failure: CAN-only mode resets back into the boot decision, parked
-//!    mode degrades to (USB + LED)-only (R35 — no failure path dead-loops);
-//! 3. serve forever. The bootloader is a **server**: it parks awaiting host
-//!    commands by design — session awaits carry NO timeout; the host owns
-//!    every retry/timeout budget (docs/plan.md §4, SPEC §4.8). The only
-//!    exits are the GO reset (R13) and an external reset.
+//! The bootloader is a **server** (U1.4, docs/plan.md §4/§6): it parks awaiting host commands
+//! by design, executing the protocol engine's effects against the flash-LP and CAN0 drivers.
+//! Session awaits carry NO timeout; the host owns every retry/timeout budget (SPEC §4.8). The
+//! only exits are the GO reset (R13) and an external reset.
 //!
-//! Flash is the shared [`crate::FlashMutex`] (U2.3): every erase/program
-//! acquires with `try_lock`, does one synchronous block op, and releases —
-//! the guard is never held across an await, so `usb_dfu` and `led` stay live
-//! between blocks (R39) and `try_lock` always succeeds on this one executor.
+//! Owns:        the CAN session loop: CAN0 bring-up (250 kbit/s, RX-filtered to the effective
+//!              cmd ID), RX polling cadence, ERASE/VERIFY chunking, and the terminal resets.
+//! Not here:    rail power-up and config load (`main::run_update_mode`, once, pre-executor); the
+//!              protocol state machine (`boot_logic::protocol`); the CAN register driver
+//!              (`drivers/can0.rs`); the flash sequencer (`drivers/flash_lp.rs`).
+//! Invariants:  entry order is load-bearing (SPEC §2.3): the task receives a powered rail and a
+//!              loaded [`DfuConfig`] and never re-reads the data-flash block. ERASE covers the
+//!              metadata block FIRST (fail-closed ordering, SPEC §4.5). No failure path
+//!              dead-loops (R35).
+//! Concurrency: flash is the shared [`crate::FlashMutex`] (U2.3): every erase/program acquires
+//!              with `try_lock`, does one synchronous block op, and releases — the guard is
+//!              never held across an await, so `usb_dfu` and `led` stay live between blocks
+//!              (R39) and `try_lock` always succeeds on this one executor. RX is ticker-paced
+//!              polling (see [`CAN_RX_POLL`]); flash P/E and the bounded CAN TX poll are the
+//!              plan's two documented blocking exceptions.
+//! Errors:      CAN init failure: CAN-only mode resets back into the boot decision, parked mode
+//!              degrades to (USB + LED)-only (R35).
+//! Depends on:  `boot_logic`, `drivers::can0`, `FlashMutex`, `flash_read`.
+//! See also:    `main.rs`; `tasks/usb_dfu.rs`; docs/plan.md §4; SPEC §2.3.
 //!
-//! Concurrency shape (docs/plan.md §4): RX is ticker-paced polling that
-//! drains the whole 4-deep hardware FIFO each tick — loss-proof at
-//! 250 kbit/s (see [`CAN_RX_POLL`]). Flash P/E and the bounded CAN TX poll
-//! are the plan's two documented blocking exceptions. ERASE chunks one
-//! block per task-loop iteration so the LED task stays live between blocks
-//! (R21/R39); frames arriving mid-ERASE wait in the FIFO exactly as they
-//! did in the C bootloader (the host stop-and-waits on the ERASE ACK).
+//! RX drains the whole 4-deep hardware FIFO each tick — loss-proof at 250 kbit/s. ERASE chunks
+//! one block per task-loop iteration so the LED task stays live between blocks (R21/R39); frames
+//! arriving mid-ERASE wait in the FIFO exactly as they did in the C bootloader (the host
+//! stop-and-waits on the ERASE ACK).
 
 use boot_logic::crc32::Crc32;
 use boot_logic::dfu_config::{self, DfuConfig};

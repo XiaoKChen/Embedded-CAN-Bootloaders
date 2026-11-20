@@ -1,21 +1,32 @@
 /* ==========================================================================
- * memory.x — bootloader region (docs/plan.md §1.2, spike S1)
+ * memory.x -- bootloader flash/RAM partition (docs/plan.md §1.2, spike S1)
  *
- * Single source of truth for the bootloader's flash/RAM partition (values
- * from R01UM0007 / docs/plan.md §1 — reviewed like unsafe code):
+ * Single source of truth for the bootloader's flash/RAM partition (values from R01UM0007 /
+ * docs/plan.md §1 -- reviewed like unsafe code).
+ *
+ * Owns:        the bootloader's FLASH/RAM regions, the `.ofs` option-setting section placement,
+ *              the `_stext` bump past it, and the `.flash_lp_anchor` GC root.
+ * Not here:    the option words' values (bootloader/src/ofs.rs); the app slot's own partition
+ *              (demo-app/memory.x).
+ * Invariants:  `.ofs` sits at flash 0x400 and is exactly 64 bytes (ASSERTed below; brick risk,
+ *              SPEC §1.5). The bootloader region is 32 KB and the app slot starts right after
+ *              it (APP_BASE, docs/plan.md §1). The bootloader never hands RAM to the app; the
+ *              app re-owns all 32 KB after the jump.
+ * See also:    bootloader/src/ofs.rs; bootloader/src/drivers/flash_lp.rs; bootloader/build.rs.
+ *
+ * Flash layout:
  *
  *   0x0000_0000 .vector_table  cortex-m-rt: SP + reset + 14 exceptions
  *                              (0x40) + 240 default IRQ vectors (0x3C0)
  *                              = exactly 0x400 bytes
  *   0x0000_0400 .ofs           OFS0/OFS1/Security-MPU words (src/ofs.rs,
- *                              SPEC §1.5 — brick risk, byte-checked in CI)
+ *                              SPEC §1.5 -- brick risk, byte-checked in CI)
  *   0x0000_0440 .text          _stext moved past the option words
  *   ...
  *   0x0000_8000                end of the 32 KB bootloader region; the app
  *                              slot starts here (APP_BASE, docs/plan.md §1)
  *
- * RAM: 32 KB SRAM at 0x2000_0000 (whole chip; the bootloader never hands
- * RAM to the app — the app re-owns all of it after the jump).
+ * RAM: 32 KB SRAM at 0x2000_0000 (whole chip).
  * ========================================================================== */
 
 MEMORY

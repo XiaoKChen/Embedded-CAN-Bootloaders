@@ -1,18 +1,26 @@
-//! Register-level CAN0 driver for the RA4M1 — FIFO-mailbox mode, polling
-//! only (SPEC §5.2, R27–R32).
+//! Register-level CAN0 driver for the RA4M1: FIFO-mailbox mode, polling only (SPEC §5.2).
 //!
-//! Faithful port of the bench-proven C driver (`main:src/drivers/
-//! can_polled.c`); every register step is commented against SPEC §5.2's
-//! recipe so the port stays auditable line-by-line. Register/bit facts:
-//! R01UM0007 (RA4M1 HW manual), CAN chapter (§30).
+//! Faithful port of the bench-proven C driver (`main:src/drivers/can_polled.c`, R27–R32); every
+//! register step is commented against SPEC §5.2's recipe so the port stays auditable
+//! line-by-line. Register/bit facts: R01UM0007 (RA4M1 HW manual), CAN chapter (§30).
 //!
-//! Concurrency contract (docs/plan.md §4): RX is non-blocking
-//! ([`Can0::try_receive`], one frame per call) and ticker-paced by the
-//! caller, which drains the 4-deep hardware FIFO each tick. TX
-//! ([`Can0::send`]) is a bounded synchronous poll (≤ ~200 ms worst case) —
-//! one of the plan's two documented blocking exceptions. No `embassy-time`
-//! in this driver: every bound is a cycle-counted loop, so spike S4 can
-//! call it pre-executor.
+//! Owns:        the CAN0 peripheral while a [`Can0`] is live, its MSTPCRB module-stop bit
+//!              (bit 2), and the P102/P103 pin function.
+//! Not here:    the protocol and session logic (`tasks/can_update.rs`); transceiver-rail power
+//!              (`usb_rail.rs`); clock tree setup (`ra4m1_embassy::clocks`).
+//! Invariants:  keep at most one live driver: the returned value owns CAN0 until `deinit`
+//!              consumes it. PCLKB is 24 MHz and PCLKA:PCLKB = 2:1 (the CAN constraint on this
+//!              part); compile-time asserts tie both prescalers to their advertised bitrates.
+//! Concurrency: RX is non-blocking ([`Can0::try_receive`], one frame per call) and
+//!              ticker-paced by the caller, which drains the 4-deep hardware FIFO each tick. TX
+//!              ([`Can0::send`]) is a bounded synchronous poll (≤ ~200 ms worst case) — one of
+//!              the plan's two documented blocking exceptions (docs/plan.md §4). No
+//!              `embassy-time`: every bound is a cycle-counted loop, so spike S4 can call it
+//!              pre-executor. No ISR touches CAN0 or MSTPCRB.
+//! Errors:      [`CanError`]; bus-off self-recovers through a full re-init (R31).
+//! Depends on:  `ra4m1_embassy` (`clocks`, `pfs`), `embedded_can`.
+//! See also:    `tasks/can_update.rs`; `usb_rail.rs`; SPEC §5.2.
+
 use embedded_can::{Id, StandardId};
 use ra4m1_embassy::{clocks, pfs};
 

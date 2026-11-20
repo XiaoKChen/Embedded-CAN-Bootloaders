@@ -1,8 +1,17 @@
+// Renode model of the RA4M1 RSPI (SPI0/SPI1) master, with internal MOSI-to-MISO loopback.
 //
-// Ra4m1Spi.cs — a minimal RA4M1 RSPI (SPI0/SPI1) master model with internal
-// loopback, for validating the ra4m1-hal SPI driver
-// (crates/ra4m1-hal/src/spi.rs) under Renode v1.16.1.  MIT-licensed; a test-time
-// Renode peripheral, never linked into firmware.
+// Renode v1.16.1 has no RA dedicated-SPI model, only absorbing Tags, so this models the
+// register handshake the ra4m1-hal SPI driver's per-frame full-duplex loop drives. A
+// test-time Renode peripheral (MIT-licensed), compiled at runtime via `include`.
+//
+// Owns:        SPCR/SPSR/SPDR handshake state, the SPRI/SPTI GPIO outputs, and the
+//              `TransferCount` / `ReadCount` / `FirstByte` / `LastByte` / `LastRxByte`
+//              test hooks.
+// Not here:    bit rate, SSL/CS, error flags, and timing (see FIDELITY below); the ICU
+//              event wiring (serial.resc/serial.robot).
+// Invariants:  never linked into firmware; the looped-back frame equals the written frame
+//              by construction.
+// See also:    crates/ra4m1-hal/src/spi.rs; serial.robot; renode/TODO.md.
 //
 // WHY THIS EXISTS
 // ---------------

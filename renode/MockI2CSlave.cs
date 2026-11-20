@@ -1,8 +1,15 @@
+// Renode I2C register-file slave for driving the RIIC master driver in emulation.
 //
-// MockI2CSlave.cs — a minimal I2C register-file slave for validating the
-// ra4m1-hal RIIC master driver (crates/ra4m1-hal/src/i2c.rs) against Renode
-// v1.16.1's stock `I2C.RenesasRA_IIC` model.  MIT-licensed; a test-time Renode
-// peripheral, never linked into firmware.
+// Gives Renode v1.16.1's stock `I2C.RenesasRA_IIC` master model a device to address, so the
+// ra4m1-hal RIIC driver's transactions complete. A test-time Renode peripheral (MIT-licensed),
+// compiled at runtime via `include`.
+//
+// Owns:        a 256-byte register file, its auto-incrementing pointer, and the
+//              `TransactionCount` / `SetRegister` / `GetRegister` monitor hooks.
+// Not here:    the RIIC master engine and its IRQ wiring (stock model and repl).
+// Invariants:  never linked into firmware; `FinishTransmission` resets only the pointer
+//              latch, never the pointer (see POINTER RETENTION below).
+// See also:    crates/ra4m1-hal/src/i2c.rs; serial.robot; serial.resc.
 //
 // WHY THIS EXISTS
 // ---------------

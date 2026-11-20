@@ -1,8 +1,16 @@
-// ra4m1-uno-r4.repl — UNO R4 Minima (Renesas R7FA4M1AB) for HAL validation.
+// Renode platform for the UNO R4 Minima (Renesas R7FA4M1AB), the base of every suite.
 //
-// Extends Renode v1.16.1's stock `platforms/cpus/renesas-r7fa4m1a.repl`, which
-// already models everything the HAL smoke examples need EXCEPT a working GPT
-// time base: CortexM4F + NVIC, the ICU (0x40006000, GPT0 CCMPA -> event 0x57),
+// Extends Renode v1.16.1's stock RA4M1 platform with the one piece this firmware needs that it
+// lacks, a working GPT time base, plus an observable D13 LED.
+//
+// Not here:    per-suite peripherals (ADC/DAC, SPI, mock I2C slave, FACI-LP, CAN0, VBTBKR),
+//              bound by platform fragments in the .resc/.robot files.
+// Invariants:  Ra4m1Gpt320.cs is `include`d before this description is loaded.
+// See also:    Ra4m1Gpt320.cs; smoke.resc; docs/plan-m2.5-renode.md §2.
+//
+// The stock `platforms/cpus/renesas-r7fa4m1a.repl` it uses already models
+// everything the HAL smoke examples need EXCEPT a working GPT time base:
+// CortexM4F + NVIC, the ICU (0x40006000, GPT0 CCMPA -> event 0x57),
 // the PORT0..9 GPIO blocks with their PFS windows, SCI, IIC, code/data flash
 // and SRAM, and a PythonPeripheral at 0x4001E03C that returns OSCSF=0xFF so the
 // clock-ready spin (clock.rs) falls through, plus MSTP as an absorbing Tag.

@@ -1,7 +1,13 @@
+// Renode model of the RA4M1 DAC12 channel 0 used by the ra4m1-hal DAC driver.
 //
-// Ra4m1Dac.cs — minimal DAC12 channel-0 model for the ra4m1-hal `dac.rs`
-// driver.  MIT-licensed; a test-time Renode peripheral, never linked into
-// firmware.
+// Replaces the stock platform's absorbing Tag at 0x4005_E000 so the driver's DADR0/DACR
+// writes read back and a test can assert they landed. A test-time Renode peripheral
+// (MIT-licensed), compiled at runtime via `include`.
+//
+// Owns:        read/write state for DADR0, DACR (DAOE0), DADPR, DAADSCR and DAVREFCR.
+// Not here:    any analog output or settling time (see WHAT IS FAKED below).
+// Invariants:  never linked into firmware; DADR0 keeps only its low 12 bits.
+// See also:    crates/ra4m1-hal/src/dac.rs; analog.robot; renode/TODO.md.
 //
 // WHY THIS EXISTS
 // ---------------

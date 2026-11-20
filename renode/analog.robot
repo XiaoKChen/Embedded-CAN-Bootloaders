@@ -1,6 +1,15 @@
 *** Comments ***
-# M2.5 analog-peripheral suite for ra4m1-hal under Renode v1.16.1: ADC14 (S12AD)
-# + DAC12, the two "Tag today" items in renode/TODO.md.
+# M2.5 analog suite: the ra4m1-hal ADC14 (S12AD) and DAC12 drivers' register logic in Renode.
+#
+# Attaches the custom ADC14/DAC12 models to the UNO R4 Minima platform under Renode v1.16.1
+# and checks the blocking ADC scan handshake and the real `analog` ELF's async ADC -> DAC
+# mirror, the two "Tag today" items in renode/TODO.md.
+#
+# Covers:       ADST self-clear and ADDR latching (blocking path, no ELF); the S12ADI0 IRQ
+#               path into read_async(), DACR.DAOE0 enable, and the DADR0 mirror write.
+# Not covered:  analog accuracy, conversion timing, resolution, reference, DAC settling, and
+#               the silicon ICU event number 0x29 (BENCH-VERIFY).
+# See also:     Ra4m1Adc.cs; Ra4m1Dac.cs; analog.resc; docs/plan-m2.5-renode.md §2.
 #
 # Renode's stock renesas-r7fa4m1a.repl maps ADC140 (<0x4005c000,0x4005c1e3>) and
 # DAC12 (<0x4005e000,0x4005e00b>) as absorbing sysbus Tags only, so the M3

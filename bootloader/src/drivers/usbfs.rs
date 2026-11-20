@@ -1,12 +1,29 @@
-//! `embassy-usb-driver` implementation for the RA4M1's USBFS full-speed
-//! **device** controller (U2.1, docs/plan.md §6 M2). Zero Rust prior art
-//! exists for this peripheral (ECO §1/§7); the register layer is a faithful
-//! port of TinyUSB's bench-proven RUSB2 device-controller driver
-//! (`main:vendor/tinyusb/src/portable/renesas/rusb2/dcd_rusb2.c`), which ran
-//! on this exact chip in the C bootloader. Every register/bit name is
-//! cross-checked against the `ra4m1` 0.2 PAC's `usbfs` block; facts the
-//! TinyUSB source leaves implicit are cited to R01UM0007 (RA4M1 HW manual),
-//! USBFS chapter (§28).
+//! `embassy-usb-driver` implementation for the RA4M1's USBFS full-speed device controller.
+//!
+//! Zero Rust prior art exists for this peripheral (U2.1, docs/plan.md §6 M2; ECO §1/§7); the
+//! register layer is a faithful port of TinyUSB's bench-proven RUSB2 device-controller driver
+//! (`main:vendor/tinyusb/src/portable/renesas/rusb2/dcd_rusb2.c`), which ran on this exact chip
+//! in the C bootloader. Every register/bit name is cross-checked against the `ra4m1` 0.2 PAC's
+//! `usbfs` block; facts the TinyUSB source leaves implicit are cited to R01UM0007 (RA4M1 HW
+//! manual), USBFS chapter (§28).
+//!
+//! Owns:        the USBFS device controller once a `Driver` is built, the `IEL1` ICU/NVIC slot
+//!              and its `#[no_mangle]` handler, and the ISR-to-task state (`INTR`, the waker
+//!              cells).
+//! Not here:    module-stop release, SCKE ordering and the USB LDO (`usb_rail.rs`); the DFU
+//!              class and task (`tasks/usb_dfu.rs`); non-control OUT/bulk/iso endpoints and all
+//!              pipes beyond one interrupt IN (not built; scope below).
+//! Invariants:  `usb_rail::power_up_transceiver_rail` runs before this driver; it never touches
+//!              MSTPCRB or VDCEN. INTSTS0/BRDYSTS/BEMPSTS are write-0-to-clear (see below).
+//! Concurrency: the ISR stays minimal (rules/embassy.md): it records handled bits in `INTR` (a
+//!              lock-free `AtomicU16`) and wakes the relevant `WakerCell`; FIFO data moves in the
+//!              async methods. Waker storage uses `cortex_m::interrupt::{free, Mutex}`
+//!              (single-core PRIMASK). USB runs at NVIC priority 0xC0, above the time driver's
+//!              0xF0.
+//! Errors:      unsupported endpoints fail loudly with [`EndpointAllocError`]; transfers report
+//!              [`EndpointError`].
+//! Depends on:  `embassy_usb_driver`, the `ra4m1` PAC, `drivers::usb_rail` (must have run).
+//! See also:    `tasks/usb_dfu.rs`; `usb_rail.rs`; docs/plan.md §4, §5.3, §6.
 //!
 //! # Scope (DFU, not a general HAL)
 //!
@@ -42,7 +59,7 @@
 //! writer cannot express W0C, so these are the only raw `.bits()` status
 //! writes, each documented at the call site.
 //!
-//! # Power-up ordering (compatible with [`usb_rail`], never duplicated)
+//! # Power-up ordering (compatible with `usb_rail`, never duplicated)
 //!
 //! [`usb_rail::power_up_transceiver_rail`](crate::drivers::usb_rail) must run
 //! **before** this driver: it releases USBFS module-stop (MSTPCRB.MSTPB11),
@@ -75,7 +92,7 @@
 //! # Waker model
 //!
 //! The ISR stays minimal (rules/embassy.md): read INTSTS0, W0C-clear the
-//! handled bits, record them in [`INTR`] (a lock-free `AtomicU16`), wake the
+//! handled bits, record them in `INTR` (a lock-free `AtomicU16`), wake the
 //! relevant [`WakerCell`], and return — no FIFO copies. Data moves in the
 //! async [`ControlPipe`]/[`EndpointIn`] methods per embassy-usb's
 //! polling model. `embassy-sync`/`critical-section` are not direct

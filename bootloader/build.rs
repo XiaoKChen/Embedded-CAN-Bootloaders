@@ -1,6 +1,13 @@
-//! Linker-script plumbing: copies `memory.x` into `OUT_DIR` and adds it to
-//! the linker search path so `link.x` (from `cortex-m-rt`, pulled in via
-//! `.cargo/config.toml`'s `-Tlink.x`) can `INCLUDE` it.
+//! Build script: linker-script plumbing for the bootloader image.
+//!
+//! Copies `memory.x` into `OUT_DIR` and adds it to the linker search path so `link.x` (from
+//! `cortex-m-rt`, pulled in via `.cargo/config.toml`'s `-Tlink.x`) can `INCLUDE` it, and emits
+//! `-Tdefmt.x` only when the `defmt` feature is on.
+//!
+//! Owns:      the link arguments that cannot live in `.cargo/config.toml` (the feature-gated
+//!            `-Tdefmt.x`).
+//! Not here:  the flash/RAM partition itself (`memory.x`).
+//! See also:  `memory.x`; `Cargo.toml` (`defmt` feature).
 
 use std::env;
 use std::fs::File;

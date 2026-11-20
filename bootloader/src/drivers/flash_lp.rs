@@ -1,55 +1,69 @@
-//! Code-flash program/erase + data-flash read gate for the RA4M1 flash-LP
-//! (FACI-LP) sequencer — blocking driver, `embedded-storage` `NorFlash`-shaped
-//! (U1.1, docs/plan.md §6).
+//! Code-flash program/erase and data-flash read gate for the RA4M1 flash-LP (FACI-LP) sequencer.
+//!
+//! Blocking driver, `embedded-storage` `NorFlash`-shaped (U1.1, docs/plan.md §6). The CPU cannot
+//! fetch from code flash while the sequencer is in code-flash P/E mode, so each block erase /
+//! program session is one synchronous, IRQ-masked, RAM-resident critical section.
+//!
+//! Owns:        every FACI-LP and FCACHE register access, behind named accessors in the
+//!              private [`faci`]/[`fcache`] modules; the single [`FlashLp`] handle
+//!              (`FLASH_TAKEN`); and the RAM-resident `ram_*` leaf functions with their
+//!              `RAM_FN_ANCHOR` table.
+//! Not here:    image validation and metadata layout (`boot_logic`); flash access policy across
+//!              tasks (`FlashMutex` in `main.rs`); memory-mapped reads of code flash
+//!              (`flash_read.rs`).
+//! Invariants:  no other module may touch FACI registers. The `ram_*` leaves avoid flash
+//!              fetches by construction (see Blocking-exception contract below). FCLK is 24 MHz
+//!              and the part is in high-speed operating mode (see Preconditions below). At
+//!              most one [`FlashLp`] exists (`take`).
+//! Concurrency: P/E sections run with IRQs masked (`cortex_m::interrupt::free`); the driver is
+//!              blocking — a documented exception to the no-blocking rule (docs/plan.md §4).
+//! Errors:      [`FlashError`], which maps onto `NorFlashErrorKind`.
+//! Depends on:  `boot_logic::memory_map`, `embedded_storage`, `ra4m1_embassy::clocks`.
+//! See also:    `main.rs` (shared flash mutex); `tasks/can_update.rs`; `tasks/usb_dfu.rs`;
+//!              `memory.x` (`.flash_lp_anchor`).
 //!
 //! # Why raw MMIO (deviation from rules/embedded.md, sanctioned)
 //!
-//! The `R_FACI_LP` register block is missing from both RA4M1 PACs (U0.2
-//! finding), so this module is the plan §9 Q2 fallback: a **contained**
-//! raw-MMIO driver. Every register access goes through a named accessor in
-//! [`faci`]/[`fcache`] with the register offset taken from the Renesas CMSIS
-//! header for this exact part (`vendor/ra4m1-headers/R7FA4M1AB.h`,
-//! `R_FACI_LP_Type` @ `0x407E_C000`) and the sequence semantics from the
-//! RA4M1 HW manual R01UM0007 flash-memory chapter, cross-checked against the
-//! vendored, bench-proven FSP driver
-//! (`vendor/tinyusb/.../src/r_flash_lp/r_flash_lp.c`, `r_flash_lp_*`
-//! functions cited per leaf below). No other module may touch FACI registers.
+//! The `R_FACI_LP` register block is missing from both RA4M1 PACs (U0.2 finding), so this module
+//! is the plan §9 Q2 fallback: a **contained** raw-MMIO driver. Every register access goes
+//! through a named accessor in [`faci`]/[`fcache`] with the register offset taken from the
+//! Renesas CMSIS header for this exact part (`vendor/ra4m1-headers/R7FA4M1AB.h`,
+//! `R_FACI_LP_Type` @ `0x407E_C000`) and the sequence semantics from the RA4M1 HW manual
+//! R01UM0007 flash-memory chapter, cross-checked against the vendored, bench-proven FSP driver
+//! (`vendor/tinyusb/.../src/r_flash_lp/r_flash_lp.c`, `r_flash_lp_*` functions cited per leaf
+//! below).
 //!
 //! # Blocking-exception contract (docs/plan.md §4)
 //!
-//! The CPU cannot fetch from code flash while the sequencer is in code-flash
-//! P/E mode, so each block erase / program session is one synchronous,
-//! IRQ-masked, **RAM-resident** critical section. The `ram_*` leaf functions
-//! carry `#[link_section = ".data"]` + `#[inline(never)]` (cortex-m-rt copies
-//! `.data` to SRAM at boot) and avoid flash fetches by construction:
+//! The `ram_*` leaf functions carry `#[link_section = ".data"]` + `#[inline(never)]`
+//! (cortex-m-rt copies `.data` to SRAM at boot) and avoid flash fetches by construction:
 //!
-//! - no `defmt`, no panic paths (raw pointers only — no slice indexing, no
-//!   `unwrap`), no trait dispatch, no `core` calls that could stay in flash;
-//! - no runtime division/modulo (no `__aeabi_*` libcalls) — all timing and
-//!   timeout constants are computed at `const` time;
-//! - register accessors are `#[inline(always)]`, so they dissolve into the
-//!   RAM leaves; leaf-to-leaf calls are RAM-to-RAM;
+//! - no `defmt`, no panic paths (raw pointers only — no slice indexing, no `unwrap`), no trait
+//!   dispatch, no `core` calls that could stay in flash;
+//! - no runtime division/modulo (no `__aeabi_*` libcalls) — all timing and timeout constants are
+//!   computed at `const` time;
+//! - register accessors are `#[inline(always)]`, so they dissolve into the RAM leaves;
+//!   leaf-to-leaf calls are RAM-to-RAM;
 //! - delays are a local `asm!` SUBS/BNE loop, not `cortex_m::asm::delay`.
 //!
-//! A `#[used]` anchor table ([`RAM_FN_ANCHOR`]) is retained defensively to
-//! keep every leaf alive even under aggressive inlining/`--gc-sections`, so
-//! RAM residency stays provable with `llvm-nm` (leaf symbols must resolve to
-//! `0x2000_xxxx`) independent of how the tasks happen to call the driver.
+//! A `#[used]` anchor table (`RAM_FN_ANCHOR`) is retained defensively to keep every leaf alive
+//! even under aggressive inlining/`--gc-sections`, so RAM residency stays provable with
+//! `llvm-nm` (leaf symbols must resolve to `0x2000_xxxx`) independent of how the tasks happen to
+//! call the driver.
 //!
 //! # Preconditions (owned by `ra4m1_embassy::clocks::init_hoco_48mhz`)
 //!
 //! - FCLK = 24 MHz ([`FCLK_HZ`]) — notified to the sequencer via `FISR.PCKA`.
-//! - High-speed operating mode (`OPCCR.OPCM = 0`; mandatory for ICLK 48 MHz),
-//!   so the FPMCR sequences below never need the LVPE variants
-//!   (FSP `r_flash_lp_cf_enter_pe_mode`, the `OPCM == 0` branch).
+//! - High-speed operating mode (`OPCCR.OPCM = 0`; mandatory for ICLK 48 MHz), so the FPMCR
+//!   sequences below never need the LVPE variants (FSP `r_flash_lp_cf_enter_pe_mode`, the
+//!   `OPCM == 0` branch).
 //!
 //! # What data-flash **P/E** would need (not in v1)
 //!
-//! The FACI plumbing here already supports it: `ram_df_pe_enter` +
-//! [`faci::write_fasr`]`(0)` + per-byte programs via `FWBL0` with the P/E
-//! address offset `0xFE00_0000 - 0x4010_0000` (FSP
-//! `FLASH_LP_DATAFLASH_ADDR_OFFSET`, `r_flash_lp_df_write_operation`). Only
-//! the safe wrappers and the DF timeout constants are missing.
+//! The FACI plumbing here already supports it: `ram_df_pe_enter` + `faci::write_fasr``(0)` +
+//! per-byte programs via `FWBL0` with the P/E address offset `0xFE00_0000 - 0x4010_0000` (FSP
+//! `FLASH_LP_DATAFLASH_ADDR_OFFSET`, `r_flash_lp_df_write_operation`). Only the safe wrappers and
+//! the DF timeout constants are missing.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

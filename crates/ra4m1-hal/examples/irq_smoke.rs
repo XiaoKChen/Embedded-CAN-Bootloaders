@@ -1,5 +1,13 @@
-//! `irq_smoke` — the spike **S-A** proof (plan §4.7/§5): the HAL's interrupt
-//! binding composes with the base crate's `__INTERRUPTS`/`device.x` mechanism
+//! Interrupt-binding proof (spike S-A).
+//!
+//! Shows that the HAL's interrupt binding composes with the base crate's `__INTERRUPTS`/`device.x`
+//! mechanism and wakes a task, without editing `ra4m1-embassy`.
+//!
+//! Concurrency:  one thread-mode Embassy executor; the bound IEL2 handler signals a task through an
+//!               `embassy-sync` `Signal`.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/interrupt.rs`.
+//!
 //! and wakes a task, without editing `ra4m1-embassy`.
 //!
 //! It binds slot **IEL2** to a handler via [`ra4m1_hal::bind_interrupts`],

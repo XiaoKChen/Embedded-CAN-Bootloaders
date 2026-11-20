@@ -1,7 +1,13 @@
-//! `uart` — SCI UART echo (M3.3, plan §6 U3.3.1 smoke), the runnable form of
-//! the spike **S-C** pass criterion: a byte echoes host<->device under the
-//! executor with no busy-wait, the base GPT320 `embassy-time` driver (IEL0)
-//! still ticking.
+//! SCI UART echo smoke example (M3.3).
+//!
+//! Brings up `SCI2` (the UNO R4 Minima `Serial1` on D0/D1) in async UART mode at 115200 8N1, binds
+//! RXI/TXI/TEI to IEL2/IEL3/IEL4, and echoes every received byte under the executor with no busy-
+//! wait.
+//!
+//! Concurrency:  one thread-mode Embassy executor; SCI interrupts wake the echo task, and a
+//!               heartbeat task shares the executor.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/sci.rs`.
 //!
 //! It brings up `SCI2` (the UNO R4 Minima `Serial1` on D0/D1) in async UART
 //! mode at 115200 8N1, binds its RXI/TXI/TEI lines through

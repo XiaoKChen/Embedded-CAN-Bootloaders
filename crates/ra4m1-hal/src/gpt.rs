@@ -1,4 +1,18 @@
-//! Timers / PWM on the GPT block (M3.2, plan §4.2/§4.4).
+//! Timers and PWM on the GPT block, channels 1..=7.
+//!
+//! Blocking saw-wave (edge-aligned) PWM, one [`Pwm`] per channel, with the `embedded-hal` 1.0
+//! `SetDutyCycle` seam for duty (M3.2, plan sections 4.2 and 4.4).
+//!
+//! Owns:         [`Pwm`], [`GptChannel`], and the computed-base register access for channels 1..=7
+//!               (`0x4007_8000 + 0x100 * channel`).
+//! Not here:     GPT channel 0 (`GPT320`), the `embassy-time` base owned by
+//!               `ra4m1_embassy::time_driver`; capture and interrupts.
+//! Invariants:   `GPT320` does not implement [`GptChannel`], so it can never be handed to
+//!               [`Pwm::new`]; duty writes are glitch-free via the single-buffer compare register.
+//! Concurrency:  none; blocking register writes, no interrupts.
+//! Errors:       [`Error`]: `FrequencyUnreachable`; duty updates cannot fail.
+//! Depends on:   `ra4m1_embassy::clocks` (PCLKD), the `ra4m1` PAC.
+//! See also:     `bootloader/src/tasks/led.rs` (same recipe); `examples/pwm.rs`.
 //!
 //! # What this module implements
 //!

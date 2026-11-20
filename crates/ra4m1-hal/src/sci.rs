@@ -1,11 +1,22 @@
-//! SCI serial — UART (asynchronous serial) mode (M3.3, plan §4.2/§4.5).
+//! SCI serial: UART (asynchronous serial) mode.
 //!
-//! Blocking [`embedded_io`] `Read`/`Write` plus async
-//! [`embedded_io_async`] `Read`/`Write`, RX/TX driven by the SCI's own
-//! TXI/RXI/TEI interrupts and a waker, bound through the M3.0
-//! [`crate::bind_interrupts`] macro. The baud divisor (BRR + SEMR + SMR.CKS,
-//! sourced off `PCLKB` — [`crate::clock::Clock::PclkB`]) is a pure `const fn`,
-//! compile-time-checked against golden vectors below.
+//! Blocking `embedded_io` and async `embedded_io_async` `Read` and `Write`, driven by the SCI's own
+//! TXI/RXI/TEI interrupts and wakers (M3.3, plan sections 4.2 and 4.5). The baud divisor (BRR +
+//! SEMR + SMR.CKS off PCLKB) is a pure `const fn`, checked against golden vectors at compile time.
+//!
+//! Owns:         [`Uart`], [`SciState`], the RXI/TXI/TEI handlers, and the per-instance `'static`
+//!               waker state.
+//! Not here:     FIFO use and DTC transfers (deferred); pin muxing (`ra4m1_embassy::pfs`).
+//! Invariants:   `SCI2` and `SCI9` have no FIFO registers, so every instance is driven per byte
+//!               through one shared register view.
+//! Concurrency:  one `AtomicWaker` per direction per instance. Each handler masks its own `SCR`
+//!               enable bit, wakes that direction's waker and returns; the awaiting future re-arms
+//!               the bit and re-checks status to close the enable/arrival race.
+//! Errors:       [`Error`]: `Overrun`, `Framing`, `Parity`, reported in-band on the receive path;
+//!               transmit cannot fail.
+//! Depends on:   [`crate::interrupt`], [`crate::clock`], `embassy-sync` `AtomicWaker`, the `ra4m1`
+//!               PAC.
+//! See also:     [`crate::spi`] and [`crate::i2c`] (same pattern); `examples/uart.rs`.
 //!
 //! # Spike S-C decision — per-byte, interrupt-driven (NOT the DTC)
 //!

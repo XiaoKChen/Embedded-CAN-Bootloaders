@@ -1,5 +1,20 @@
-//! ADC14 (14-bit SAR ADC, S12AD) — blocking + async single/scan reads
-//! (M3.4, plan §4.2/§4.3).
+//! ADC14 (S12AD): blocking and async single or scan reads.
+//!
+//! A bespoke inherent API; `embedded-hal` 1.0 has no stable ADC trait (M3.4, plan sections 4.2 and
+//! 4.3). Reads return raw 14-bit right-justified counts, 0..=16383.
+//!
+//! Owns:         [`Adc`], the scan-complete handler [`AdcScanInterruptHandler`], the `SCAN_DONE`
+//!               latch and `SCAN_WAKER`, and the `MSTPCRD.MSTPD16` bit.
+//! Not here:     scaling to millivolts (caller); analog pin routing
+//!               (`ra4m1_embassy::pfs::set_analog`); channels above AN014.
+//! Invariants:   channels are 0..=[`MAX_CHANNEL`]; `Adc` exists once, built from the `ADC140`
+//!               singleton.
+//! Concurrency:  the S12ADI0 handler stores `SCAN_DONE` (release) and wakes `SCAN_WAKER`, an
+//!               `AtomicWaker`; [`Adc::read_async`] awaits both. The blocking path polls
+//!               `ADCSR.ADST` with a bounded loop.
+//! Errors:       [`AdcError`]: `ChannelOutOfRange`, and `Timeout` on the blocking path only.
+//! Depends on:   [`crate::interrupt`], `embassy-sync` `AtomicWaker`, the `ra4m1` PAC.
+//! See also:     [`crate::dac`]; `examples/analog.rs`.
 //!
 //! # What this module implements
 //!

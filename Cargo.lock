@@ -81,7 +81,7 @@ dependencies = [
  "embedded-storage",
  "panic-probe",
  "ra4m1",
- "ra4m1-embassy",
+ "ra4m1-embassy 1.0.0",
  "static_cell",
 ]
 
@@ -230,6 +230,25 @@ checksum = "05144944c117db54127a8ac17a3c9a28d55e7047bfddb950bcd20b4a94c79b10"
 dependencies = [
  "critical-section",
  "defmt",
+]
+
+[[package]]
+name = "demo-app"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-time",
+ "embassy-usb",
+ "heapless 0.9.3",
+ "panic-probe",
+ "ra4m1",
+ "ra4m1-embassy 0.1.0",
+ "static_cell",
 ]
 
 [[package]]
@@ -409,6 +428,16 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c4c685bbef7fe13c3c6dd4da26841ed3980ef33e841cddfa15ce8a8fb3f1884"
 dependencies = [
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
+name = "embedded-hal-bus"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
+dependencies = [
+ "critical-section",
  "embedded-hal 1.0.0",
 ]
 
@@ -681,6 +710,20 @@ dependencies = [
 
 [[package]]
 name = "ra4m1-embassy"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section",
+ "defmt",
+ "embassy-time-driver",
+ "embassy-time-queue-utils",
+ "embassy-usb-driver",
+ "ra4m1",
+]
+
+[[package]]
+name = "ra4m1-embassy"
 version = "1.0.0"
 source = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
 checksum = "9f7c4329638c801852a1bdb7274e608651bfac9e5500f9a7e4fe6138544a36e7"
@@ -694,6 +737,28 @@ dependencies = [
  "embassy-usb",
  "embassy-usb-driver",
  "ra4m1",
+]
+
+[[package]]
+name = "ra4m1-hal"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-hal-bus",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "panic-probe",
+ "ra4m1",
+ "ra4m1-embassy 0.1.0",
+ "static_cell",
 ]
 
 [[package]]

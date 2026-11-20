@@ -74,8 +74,14 @@ jobs:
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - name: Build bootloader + demo-app + ra4m1-embassy
-        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
+      # The lean bootloader is built on its own: in a workspace-wide build, cargo
+      # unifies features, so demo-app's defmt-enabled embassy deps would pull
+      # defmt calls into the bootloader without a global logger, and it would fail
+      # to link (undefined _defmt_*).
+      - name: Build the lean bootloader (alone, so its graph stays defmt-free)
+        run: cargo build --release --target thumbv7em-none-eabihf -p bootloader
+      - name: Build demo-app + ra4m1-embassy
+        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic --exclude bootloader
 
       - name: Locate llvm-objcopy / llvm-size (rust-toolchain.toml's llvm-tools component)
         id: llvm-tools
@@ -149,8 +155,8 @@ jobs:
       # not from firmware-build's dist/*.elf artifacts — and they load the
       # ra4m1-hal *examples*, which firmware-build neither builds nor uploads.
       # So rebuild here (rust-cache keeps it cheap). See renode/smoke.robot.
-      - name: Build firmware ELFs (bootloader + demo-app)
-        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
+      - name: Build firmware ELFs (demo-app; the bootloader is built below)
+        run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic --exclude bootloader
       - name: Build ra4m1-hal example ELFs (loaded by the robot suites)
         run: cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
       # The default (lean) bootloader has no defmt and so no `_SEGGER_RTT` symbol;

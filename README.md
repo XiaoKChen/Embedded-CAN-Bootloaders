@@ -160,8 +160,11 @@ Toolchain is pinned via [`rust-toolchain.toml`](rust-toolchain.toml) (stable, wi
 `thumbv7em-none-eabihf` target and `llvm-tools`); `rustup show` picks it up automatically.
 
 ```sh
-# Build the firmware
-cargo build --release
+# Build the bootloader (lean) on its own, then everything else. A single
+# workspace-wide build fails to link the lean bootloader: cargo unifies features,
+# so demo-app's defmt-enabled embassy deps would pull in defmt without a logger.
+cargo build --release -p bootloader
+cargo build --release --workspace --exclude boot-logic --exclude bootloader
 
 # Host tests for the pure-logic crate (target triple can't run the test harness — see
 # .cargo/config.toml for why the explicit --target is required)

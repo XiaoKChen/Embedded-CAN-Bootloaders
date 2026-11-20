@@ -78,7 +78,7 @@ against a pinned Renode. To reproduce a CI-equivalent run on a dev box:
 2. **Build the ELFs the suites `LoadELF`** (from the repo root):
    ```sh
    cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
-   cargo build --release --target thumbv7em-none-eabihf -p bootloader
+   cargo build --release --target thumbv7em-none-eabihf -p bootloader --features defmt  # suites read RTT
    ```
 3. **Run from a checkout path with NO spaces or parentheses.** Renode's monitor cannot tokenize
    `@paths` containing them, and the suites resolve their `.cs`/`.repl`/ELF assets through

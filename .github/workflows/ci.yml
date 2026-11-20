@@ -153,6 +153,12 @@ jobs:
         run: cargo build --release --target thumbv7em-none-eabihf --workspace --exclude boot-logic
       - name: Build ra4m1-hal example ELFs (loaded by the robot suites)
         run: cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
+      # The default (lean) bootloader has no defmt and so no `_SEGGER_RTT` symbol;
+      # bootloader.robot boots to the first RTT log line, so the suites need the
+      # debug flavor. This overwrites the lean ELF from the step above; the size
+      # gate builds its own lean image in the firmware-build job.
+      - name: Build the defmt bootloader ELF (loaded by bootloader.robot)
+        run: cargo build --release --target thumbv7em-none-eabihf -p bootloader --features defmt
 
       # Discover and run ALL renode/*.robot suites (smoke today; analog/serial/
       # bootloader added in parallel). The host shell expands the glob to files

@@ -212,7 +212,7 @@ its Python. The custom C# models compile at runtime — no Renode rebuild.
 ```sh
 # 1. Build the ELFs the suites boot
 cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
-cargo build --release --target thumbv7em-none-eabihf -p bootloader
+cargo build --release --target thumbv7em-none-eabihf -p bootloader --features defmt  # suites read RTT
 
 # 2. Automated pass/fail (all four Robot suites)
 <renode-install>/renode-test renode/smoke.robot renode/analog.robot renode/serial.robot renode/bootloader.robot

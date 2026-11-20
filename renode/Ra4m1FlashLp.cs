@@ -1,7 +1,15 @@
+// Renode model of the RA4M1 FACI-LP flash program/erase sequencer used by the bootloader.
 //
-// Ra4m1FlashLp.cs — minimal FACI-LP (R_FACI_LP) code/data-flash program/erase
-// sequencer model for the RA4M1 bootloader's flash driver.  MIT-licensed; a
-// test-time Renode peripheral, never linked into firmware.
+// Replaces the stock platform's Tag at 0x407E_C000 so the bootloader's FACI-LP driver can
+// enter P/E mode, erase and program, with results landing in the sysbus-mapped code flash. A
+// test-time Renode peripheral (MIT-licensed), compiled at runtime via `include`.
+//
+// Owns:        FENTRYR mode state, the FSTATR1.FRDY handshake, and the FCR erase/program
+//              commands applied to the backing code flash.
+// Not here:    P/E timing, the fetch-stall hazard, error injection, and data-flash P/E (see
+//              WHAT IS FAKED below).
+// Invariants:  never linked into firmware; every FCR command completes instantly.
+// See also:    bootloader/src/drivers/flash_lp.rs; bootloader.robot; bootloader.resc.
 //
 // WHY THIS EXISTS
 // ---------------

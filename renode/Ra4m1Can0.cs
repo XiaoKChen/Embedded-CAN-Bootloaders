@@ -1,7 +1,17 @@
+// Renode model of the RA4M1 CAN0 FIFO-mailbox controller used by the bootloader's CAN driver.
 //
-// Ra4m1Can0.cs — minimal FIFO-mailbox CAN0 controller model for the RA4M1
-// bootloader's CAN update driver.  MIT-licensed; a test-time Renode peripheral,
-// never linked into firmware.
+// Replaces the stock platform's CAN0 Tag at 0x4005_0000 and bridges it to Renode's CAN
+// framework (ICAN + CANHub), so the CAN update protocol runs end-to-end in emulation. A
+// test-time Renode peripheral (MIT-licensed), compiled at runtime via `include`.
+//
+// Owns:        CTLR/STR mode mirroring, the 4-deep RX FIFO behind the MB28 window, TX
+//              mailbox 0, and the `InjectStandardFrame` / `SentCount` / `LastSentId` test
+//              hooks.
+// Not here:    bit timing, acceptance filtering, and bus-off (see WHAT IS FAKED below);
+//              the CANHub itself (created by bootloader.resc/bootloader.robot).
+// Invariants:  never linked into firmware; frame-level only, and only classical standard
+//              data frames enter the RX FIFO.
+// See also:    bootloader/src/drivers/can0.rs; bootloader.robot; bootloader.resc.
 //
 // WHY THIS EXISTS
 // ---------------

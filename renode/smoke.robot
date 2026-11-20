@@ -1,21 +1,25 @@
 *** Comments ***
-# M2.5 minimal smoke suite for ra4m1-hal under Renode v1.16.1.
+# M2.5 minimal smoke suite: the ra4m1-hal async executor runs off embassy-time in Renode.
 #
-# Each case boots a REAL release example ELF (the artifact `cargo build
-# --release --example` produces) on the UNO R4 Minima platform with the custom
-# GPT320 compare-match model (renode/Ra4m1Gpt320.cs), then asserts the async
-# executor is genuinely running off embassy-time. Both assertions FAIL on
-# Renode's stock RenesasRA_GPT (proven: it has no GTCCRA compare-match, so the
-# alarm never fires and the executor stalls after the first Timer) and PASS with
-# the custom model.
+# Each case boots a REAL release example ELF on the UNO R4 Minima platform with the custom
+# GPT320 compare-match model under Renode v1.16.1, then asserts the executor is genuinely
+# ticking. Both cases FAIL on the stock RenesasRA_GPT and PASS with the custom model.
+#
+# Covers:       the blinky_gpio D13/P111 LED blinking at 1 Hz virtual, and the irq_smoke
+#               IEL2 wake plus defmt-rtt heartbeat advancing.
+# Not covered:  wall-clock timing, HOCO tolerance, flash P/E timing, the P/E fetch-stall
+#               hazard, USB, CAN bit-timing; a green run never substitutes for the bench
+#               exit criteria.
+# See also:     Ra4m1Gpt320.cs; smoke.resc; renode/README.md; docs/plan-m2.5-renode.md §2.
+#
+# Each ELF is the artifact `cargo build --release --example` produces. The stock model fails
+# because it has no GTCCRA compare-match, so the alarm never fires and the executor stalls
+# after the first Timer (proven).
 #
 # WHAT THIS MIRRORS FROM THE BENCH (docs/bench, docs/plan-m2.5-renode.md §2):
 #   - Bench S2 "1 Hz blink" -> "Blinky Blinks The LED".
 #   - Bench S2 "uptime heartbeat" / spike S-A "time still ticking" -> "Irq Smoke
 #     Heartbeat Advances".
-# WHAT IT DOES NOT COVER: wall-clock timing, HOCO tolerance, flash P/E timing,
-# the P/E fetch-stall hazard, USB, CAN bit-timing. Those stay the HIL bench's
-# job; a green run here never substitutes for the bench exit criteria.
 #
 # Run from the REPO ROOT (Renode cannot tokenize spaces/parens in @paths, so all
 # paths are repo-relative and Renode's CWD must be the repo root):

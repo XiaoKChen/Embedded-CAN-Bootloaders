@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Build the release firmware and export flashable artifacts (.elf/.bin/.hex)
-# for both the bootloader and the demo app into out/.
+# Build the release firmware and export flashable .elf/.bin/.hex artifacts into out/.
+#
+# Builds the bootloader and the demo app for thumbv7em-none-eabihf, copies each ELF to out/,
+# converts it to .bin and .hex, and prints the sizes against the 32768 B bootloader gate.
+# Runs anywhere with the pinned Rust toolchain (Git Bash / WSL / Linux / CI).
+#
+# Errors:      `set -euo pipefail` — the first failing step aborts the script.
+# Depends on:  llvm-objcopy / llvm-size from the toolchain's llvm-tools component (already
+#              required by rust-toolchain.toml) — same tool CI uses.
+# See also:    scripts/build-out.ps1 (the PowerShell 7+ port).
 #
 # Usage:  bash scripts/build-out.sh
-# Runs anywhere with the pinned Rust toolchain (Git Bash / WSL / Linux / CI).
-# .hex/.bin are produced with llvm-objcopy from the toolchain's llvm-tools
-# component (already required by rust-toolchain.toml) — same tool CI uses.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

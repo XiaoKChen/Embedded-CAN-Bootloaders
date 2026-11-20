@@ -1,7 +1,15 @@
+// Renode model of the RA4M1 ADC14 (S12AD) channel scan used by the ra4m1-hal ADC driver.
 //
-// Ra4m1Adc.cs — minimal ADC14 (S12AD) channel-scan model for the ra4m1-hal
-// `adc.rs` driver.  MIT-licensed; a test-time Renode peripheral, never linked
-// into firmware.
+// Replaces the stock platform's absorbing Tag at 0x4005_C000 so the driver's blocking and
+// async reads both complete against real register state and a scan-complete event. A
+// test-time Renode peripheral (MIT-licensed), compiled at runtime via `include`.
+//
+// Owns:        ADCSR/ADANSA/ADCER/ADADC state, ADDR[0..14] results, the injected
+//              `sampleValue`, and the S12ADI0 pulse on connection 0.
+// Not here:    the ICU event link (`0 -> icu@0x29`, bound by analog.resc/analog.robot).
+// Invariants:  never linked into firmware; ADST self-clears because every scan completes
+//              instantly.
+// See also:    crates/ra4m1-hal/src/adc.rs; analog.robot; renode/TODO.md.
 //
 // WHY THIS EXISTS
 // ---------------

@@ -1,6 +1,12 @@
-:name: RA4M1 HAL minimal smoke (GPT time base + GPIO)
-:description: Boots a real ra4m1-hal example ELF on the UNO R4 Minima platform
-:             with the custom GPT320 compare-match model, so embassy-time ticks.
+: RA4M1 HAL minimal smoke machine (GPT time base + GPIO) for manual and interactive runs.
+:
+: Boots a real ra4m1-hal example ELF on the UNO R4 Minima platform with the custom GPT320
+: compare-match model, so embassy-time ticks.
+:
+: Not here:    starting the run (the caller issues `start` or `emulation RunFor`); the
+:              automated pass/fail (renode/smoke.robot).
+: Invariants:  the GPT320 model is `include`d before the platform description loads.
+: See also:    ra4m1-uno-r4.repl; Ra4m1Gpt320.cs; renode/README.md.
 :
 : Run headless from the REPO ROOT (paths are repo-relative; Renode's monitor
 : cannot tokenize the spaces/parens some checkout paths contain, so keep the

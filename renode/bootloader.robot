@@ -1,5 +1,15 @@
 *** Comments ***
-# M2.5 bootloader-integration suite for the RA4M1 under Renode v1.16.1.
+# M2.5 bootloader-integration suite: the real bootloader ELF's boot, flash and CAN paths.
+#
+# Boots the release bootloader on the UNO R4 Minima platform under Renode v1.16.1 with the
+# FACI-LP, CAN0 and VBTBKR additions, and exercises the M0-M2 integration paths that the
+# boot-logic host tests structurally cannot reach.
+#
+# Covers:       the first defmt-rtt log line, VBTBKR magic surviving a CPU reset and being
+#               consumed, a CAN HELLO reply, and FACI erase -> program -> read-back.
+# Not covered:  flash P/E timing and the fetch-stall hazard, CAN bit-timing, HOCO tolerance,
+#               USB PHY/DFU, analog, and the host-side can_flash.py loop (details below).
+# See also:     Ra4m1FlashLp.cs; Ra4m1Can0.cs; bootloader.resc; docs/plan-m2.5-renode.md §2.
 #
 # Boots the REAL bootloader release ELF (the artifact `cargo build --release -p
 # bootloader` produces at target/thumbv7em-none-eabihf/release/bootloader) on the

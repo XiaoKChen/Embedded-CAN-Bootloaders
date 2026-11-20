@@ -1,5 +1,20 @@
-//! GPIO — typed pins over the RA4M1 PORT block, muxed through the base
-//! crate's PWPR-locked PFS helpers (M3.1, plan §4.2/§8).
+//! GPIO: typed pins over the RA4M1 PORT block.
+//!
+//! Pin mode is set once at construction through the base crate's PWPR-locked PFS helpers; runtime
+//! set, clear and read touch only the PORT block (M3.1, plan sections 4.2 and 8). Blocking
+//! `embedded-hal` 1.0 digital traits only.
+//!
+//! Owns:         [`Output`] and [`Input`], the computed PORTn register-block access, and the
+//!               `unsafe` that goes with it.
+//! Not here:     the PWPR write-protect protocol and PmnPFS writes (`ra4m1_embassy::pfs`); async
+//!               edge/level wait.
+//! Invariants:   `port` is 0..=9 and `pin` is 0..=15 (debug-asserted); each physical pin is
+//!               constructed once.
+//! Concurrency:  set and clear use the set-only `POSR` and reset-only `PORR` registers, so pins
+//!               sharing a port never race through a read-modify-write; no interrupts.
+//! Errors:       none; the trait `Error` type is `Infallible`.
+//! Depends on:   `ra4m1_embassy::pfs`, the `ra4m1` PAC.
+//! See also:     [`crate::error`]; `examples/blinky_gpio.rs`.
 //!
 //! # Design
 //!

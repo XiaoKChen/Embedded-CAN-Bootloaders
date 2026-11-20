@@ -1,7 +1,13 @@
-//! `i2c` — RIIC I2C bus scan (M3.3 U3.3.3 smoke), the runnable form of the
-//! spike **S-C** pattern for I2C: an async transfer awaits real RIIC events
-//! (TXI/RXI/TEI/EEI) under the executor with no busy-wait, while the base
-//! GPT320 `embassy-time` driver (IEL0) keeps ticking.
+//! RIIC I2C bus-scan example (M3.3 smoke).
+//!
+//! Brings up `IIC0` at 100 kHz, binds RXI/TXI/TEI/EEI to IEL5..IEL8, and scans addresses
+//! `0x08..=0x77` with zero-length writes. An async transfer awaits real RIIC events under the
+//! executor, with the base time driver (IEL0) still ticking.
+//!
+//! Concurrency:  one thread-mode Embassy executor; RIIC interrupts wake the scanning task, and a
+//!               heartbeat task shares the executor.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/i2c.rs`.
 //!
 //! It brings up `IIC0` at 100 kHz (standard mode), binds its RXI/TXI/TEI/EEI
 //! lines through [`ra4m1_hal::bind_interrupts`] to slots IEL5..IEL8, and runs an

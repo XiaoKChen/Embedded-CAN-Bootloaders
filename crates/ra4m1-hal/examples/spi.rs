@@ -1,7 +1,13 @@
-//! `spi` — SPI0 master loopback smoke (M3.3, plan §6), the runnable proof that
-//! the SPI driver mirrors the spike **S-C** async pattern: a byte buffer is
-//! exchanged under the executor with no busy-wait, the base GPT320
-//! `embassy-time` driver (IEL0) still ticking.
+//! SPI0 master loopback smoke example (M3.3).
+//!
+//! Brings up `SPI0` as an 8 MHz mode-0 master, binds its SPRI/SPTI lines to IEL5/IEL6, and
+//! `transfer_in_place`s a rolling pattern once a second under the executor with no busy-wait. Tie
+//! MOSI to MISO to see the bytes come back.
+//!
+//! Concurrency:  one thread-mode Embassy executor; SPI interrupts wake the transferring task, and a
+//!               heartbeat task shares the executor.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/spi.rs`.
 //!
 //! It brings up `SPI0` as an 8 MHz mode-0 master, binds its `SPRI`/`SPTI` lines
 //! through [`ra4m1_hal::bind_interrupts`] to slots IEL5/IEL6 (clear of the

@@ -1,9 +1,13 @@
-//! `pwm` — the M3.2 GPT PWM smoke example (plan §3/§7).
+//! GPT PWM smoke example: triangle-fade the UNO R4 Minima LED.
 //!
-//! Triangle-fades the UNO R4 Minima built-in LED "L" (D13 = P111 = GTIOC3A) at
-//! 1 kHz through the HAL's [`ra4m1_hal::gpt::Pwm`] on channel 3 (`GPT163`),
-//! driving duty via the `embedded-hal` 1.0 [`SetDutyCycle`] seam. `embassy-time`
-//! runs off the base GPT320 driver (a *different* GPT channel — proving the
+//! Fades the built-in LED L (D13 = P111 = GTIOC3A) at 1 kHz through [`ra4m1_hal::gpt::Pwm`] on
+//! channel 3, setting duty via the `embedded-hal` `SetDutyCycle` seam. `embassy-time` runs off
+//! GPT320, a different channel, so the channel-0 reservation holds.
+//!
+//! Concurrency:  one thread-mode Embassy executor; no interrupts beyond the time driver's.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/gpt.rs`; `bootloader/src/tasks/led.rs` (same pin, same recipe).
+//!
 //! channel-0 reservation holds: the app PWM and the time base coexist).
 //!
 //! Run on silicon: `cargo run --example pwm --release` (probe-rs runner from

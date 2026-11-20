@@ -1,11 +1,23 @@
-//! I2C bus master over the dedicated RIIC (IIC) block (M3.3, plan §4.2/§4.3).
+//! I2C bus master over the dedicated RIIC (IIC) block.
 //!
-//! Blocking [`embedded_hal::i2c::I2c`] plus async
-//! [`embedded_hal_async::i2c::I2c`] (`SevenBitAddress`), driven by the RIIC's
-//! own TXI/RXI/TEI/EEI interrupts and a waker, bound through the M3.0
-//! [`crate::bind_interrupts`] macro. The bit-rate registers (ICBRL/ICBRH +
-//! ICMR1.CKS, sourced off `PCLKB` — [`crate::clock::Clock::PclkB`]) are a pure
-//! `const fn`, compile-time-checked against golden vectors below.
+//! Blocking `embedded_hal::i2c::I2c` plus async `embedded_hal_async::i2c::I2c` (`SevenBitAddress`),
+//! driven by the RIIC's TXI/RXI/TEI/EEI interrupts and a waker (M3.3, plan sections 4.2 and 4.3).
+//! The bit-rate registers (ICBRL/ICBRH + ICMR1.CKS off PCLKB) come from a pure `const fn`, checked
+//! against golden vectors at compile time.
+//!
+//! Owns:         [`I2c`], [`I2cState`], the four interrupt handlers, `compute_bitrate`, and the
+//!               private `block_on` bridge.
+//! Not here:     slave mode; pin muxing (`ra4m1_embassy::pfs`), though [`I2c::new`] sets open-drain
+//!               through it.
+//! Invariants:   the blocking trait runs the same async transfer engine, so there is one audited
+//!               register sequence.
+//! Concurrency:  one `AtomicWaker` per RIIC instance, since transactions are sequential. Each
+//!               handler masks its own `ICIER` enable bits, wakes the waker and returns. The
+//!               blocking API busy-polls with a no-op waker: never call it from an Embassy task.
+//! Errors:       [`Error`], read in-band from `ICSR2` (NACK, arbitration loss, bus timeout).
+//! Depends on:   [`crate::interrupt`], [`crate::clock`], `embassy-sync` `AtomicWaker`, the `ra4m1`
+//!               PAC.
+//! See also:     [`crate::sci`] (the pattern's origin); `examples/i2c.rs`.
 //!
 //! # Spike S-C pattern (shared with [`crate::sci`])
 //!

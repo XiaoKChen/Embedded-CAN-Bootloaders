@@ -1,9 +1,13 @@
-//! `blinky_gpio` — the M3.1 GPIO smoke example (plan §3/§7).
+//! GPIO smoke example: toggle the UNO R4 Minima LED at 1 Hz.
 //!
-//! Toggles the UNO R4 Minima built-in LED "L" (D13 = P111) at 1 Hz through the
-//! HAL's [`ra4m1_hal::gpio::Output`] pin, driven by a normal thread-mode
-//! Embassy executor with `embassy-time` running off the base GPT320 driver.
-//! Proves the M3.0 scaffold end to end: base clocks + time driver +
+//! Toggles the built-in LED L (D13 = P111) through [`ra4m1_hal::gpio::Output`] under a thread-mode
+//! Embassy executor, with `embassy-time` running off the base GPT320 driver. Proves the M3.0
+//! scaffold end to end.
+//!
+//! Concurrency:  one thread-mode Embassy executor; no interrupts beyond the time driver's.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/gpio.rs`.
+//!
 //! `embedded-hal` `OutputPin`/`StatefulOutputPin` over the PORT block.
 //!
 //! Run on silicon: `cargo run --example blinky_gpio --release` (probe-rs

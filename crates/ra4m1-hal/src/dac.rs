@@ -1,4 +1,18 @@
-//! DAC12 (12-bit DAC) — blocking channel-0 output (M3.4, plan §4.2/§4.3/§4.5).
+//! DAC12: blocking channel-0 output on DA0 (P014).
+//!
+//! A bespoke inherent API over the RA4M1's single DAC12 channel (M3.4, plan sections 4.2, 4.3 and
+//! 4.5). `embedded-hal` has no DAC trait, and a `DADR0` write has no completion event to await, so
+//! it stays blocking.
+//!
+//! Owns:         [`Dac`], the DAC12 register recipe, and the `MSTPCRD.MSTPD20` module-stop bit.
+//! Not here:     analog pin routing (`ra4m1_embassy::pfs::set_analog`); the ADC's `MSTPD16` and the
+//!               time driver's `MSTPD5`.
+//! Invariants:   `Dac` exists once, built from the `DAC12` singleton; values are masked to 12 bits.
+//! Concurrency:  none; the `MSTPCRD` read-modify-write runs once at init, before the executor
+//!               starts.
+//! Errors:       none; DAC operations cannot fail, so there is no error enum.
+//! Depends on:   `ra4m1_embassy::pfs`, the `ra4m1` PAC.
+//! See also:     [`crate::adc`]; `examples/analog.rs`.
 //!
 //! # What this module implements
 //!

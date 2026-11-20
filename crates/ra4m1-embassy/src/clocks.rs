@@ -1,15 +1,20 @@
-//! HOCO 48 MHz clock bring-up: ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24
-//! (SPEC §5.2).
+//! HOCO 48 MHz clock bring-up: ICLK 48 / PCLKA 48 / PCLKB 24 / FCLK 24 (SPEC §5.2).
 //!
-//! Mirrors the FSP `bsp_clock_init` path the C bootloader shipped with,
-//! using the UNO R4 values from `vendor/tinyusb/.../uno_r4/bsp_clock_cfg.h`
-//! (on `main`): no crystal, HOCO 48 MHz as the system clock, dividers
-//! ICLK /1, PCLKA /1, PCLKB /2, PCLKC /1, PCLKD /1, FCLK /2. PCLKA:PCLKB
-//! stays 2:1, which CAN0 requires on this part (SPEC §5.2).
+//! Mirrors the FSP `bsp_clock_init` path the C bootloader shipped with, using the UNO R4
+//! values from `vendor/tinyusb/.../uno_r4/bsp_clock_cfg.h` (on `main`): no crystal, HOCO 48 MHz
+//! as the system clock, dividers ICLK /1, PCLKA /1, PCLKB /2, PCLKC /1, PCLKD /1, FCLK /2.
+//! PCLKA:PCLKB stays 2:1, which CAN0 requires on this part (SPEC §5.2).
 //!
-//! Registers: R01UM0007 (RA4M1 HW manual), Clock Generation Circuit chapter
-//! (SCKDIVCR, SCKSCR, HOCOCR, OSCSF), MEMWAIT (Memory Wait Cycle Control),
-//! and the Register Write Protection chapter (PRCR).
+//! Owns:         the clock configuration and the PRCR write-protect protocol (key and unlock
+//!               bits), shared with `vbtbkr`.
+//! Not here:     peripheral module-stop control (each driver) and pin functions (`pfs.rs`).
+//! Invariants:   the `*_HZ` constants describe the state after [`init_hoco_48mhz`].
+//! Concurrency:  single-threaded boot sequence; callers hold the `SYSTEM` peripheral reference.
+//! Depends on:   the `ra4m1` PAC.
+//! See also:     `time_driver.rs` (consumes `PCLKD_HZ`), `vbtbkr.rs`. Registers: R01UM0007
+//!               (RA4M1 HW manual), Clock Generation Circuit chapter (SCKDIVCR, SCKSCR,
+//!               HOCOCR, OSCSF), MEMWAIT (Memory Wait Cycle Control), Register Write
+//!               Protection chapter (PRCR).
 
 use ra4m1::SYSTEM;
 

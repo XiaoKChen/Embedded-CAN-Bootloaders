@@ -1,10 +1,21 @@
-//! Custom `embassy-time` driver on **GPT320** (spike S2's answer to
-//! docs/plan.md §9 Q3: the PAC confirms a 32-bit GPT channel, so no AGT
-//! wrap juggling and no SysTick-at-1-kHz fallback).
+//! Custom `embassy-time` driver on GPT320, with the project's interrupt priority table.
 //!
-//! Registers: R01UM0007 (RA4M1 HW manual), General PWM Timer chapter
-//! (GTWP, GTCR, GTUDDTYC, GTPR, GTCNT, GTCCRA, GTST), ICU chapter (IELSR,
-//! event-number table), Low Power Modes chapter (MSTPCRD).
+//! Spike S2's answer to docs/plan.md §9 Q3: the PAC confirms a 32-bit GPT channel, so no AGT
+//! wrap juggling and no SysTick-at-1-kHz fallback.
+//!
+//! Owns:         GPT320, the IEL0 alarm vector, the hand-written `__INTERRUPTS` table, and the
+//!               project's central interrupt priority scheme (below).
+//! Not here:     the IEL1 USBFS vector (`usb.rs` and the binaries); clock setup (`clocks.rs`).
+//! Invariants:   GTCCRA is always armed, so the clock is read at least four times per counter
+//!               wrap (see the wrap story below); [`init`] runs exactly once, before any
+//!               `embassy-time` API.
+//! Concurrency:  driver state sits behind a `critical_section::Mutex`; the alarm ISR preempts
+//!               thread mode.
+//! Depends on:   `clocks` (`PCLKD_HZ`), the `ra4m1` PAC.
+//! See also:     `device.x`, `build.rs`, docs/plan.md §4. Registers: R01UM0007 (RA4M1 HW
+//!               manual), General PWM Timer chapter (GTWP, GTCR, GTUDDTYC, GTPR, GTCNT,
+//!               GTCCRA, GTST), ICU chapter (IELSR, event-number table), Low Power Modes
+//!               chapter (MSTPCRD).
 //!
 //! # Counter & tick rate
 //!

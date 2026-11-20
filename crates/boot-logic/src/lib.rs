@@ -1,14 +1,16 @@
-//! Pure bootloader logic: memory-map constants, CRC-32, image-metadata
-//! validation, the CAN update protocol engine, and DFU config-block parsing.
+//! Pure bootloader logic: memory map, CRC-32, image-metadata validation, the CAN update
+//! protocol engine and DFU config-block parsing.
 //!
-//! Zero PAC/HAL/executor dependencies (docs/plan.md §3, rules/rust.md) — this
-//! crate is `no_std` in firmware builds and plain `std`-available under
-//! `cargo test` so every module here host-tests without hardware. Callers
-//! reach hardware only through the `ImageRead` trait (see `image_meta`), never
-//! through slices conjured at a fixed address (SPEC §9.1.7).
+//! Zero PAC/HAL/executor dependencies (docs/plan.md §3, rules/rust.md): `no_std` in firmware
+//! builds and `std`-available under `cargo test`, so every module host-tests without hardware.
+//! The module tree is declared complete here (docs/plan.md §6 shared-file rule); later units
+//! fill in module bodies but never touch this file.
 //!
-//! Module tree is declared complete here (docs/plan.md §6 shared-file rule):
-//! later units fill in each module's body but never touch this file.
+//! Owns:        the crate's module tree.
+//! Not here:    hardware access — callers reach flash only through the `ImageRead` trait (see
+//!              `image_meta`), never through slices conjured at a fixed address (SPEC §9.1.7).
+//! Depends on:  nothing outside `core`.
+//! See also:    `bootloader/` (the firmware that consumes this crate).
 
 #![cfg_attr(not(test), no_std)]
 

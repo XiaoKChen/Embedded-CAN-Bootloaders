@@ -1,16 +1,18 @@
-//! Image metadata codec + validation (SPEC §3.1/§3.3, R10/R11/R15).
+//! Image metadata codec and validation (SPEC §3.1/§3.3, R10/R11/R15).
 //!
-//! The 16-byte little-endian metadata record lives at
-//! [`memory_map::METADATA_ADDR`] and is written **last** during an update —
-//! the commit point. Validation runs the SPEC §3.3 check order (fail closed,
-//! first failure wins) over the [`ImageRead`] seam so this crate never
-//! touches hardware; the bootloader implements the trait in `flash_read.rs`
-//! with volatile raw-pointer copies (references to address 0 are UB —
-//! SPEC §9.1.7). Size bounds use the plan §1.2 slot (227,328 B), superseding
-//! SPEC §1.1 / R20 values.
+//! The 16-byte little-endian metadata record lives at [`crate::memory_map::METADATA_ADDR`] and is
+//! written **last** during an update — the commit point. Validation runs the SPEC §3.3 check
+//! order over the [`ImageRead`] seam so this crate never touches hardware.
 //!
-//! Error enums derive plain `Debug` only; `defmt::Format` is attached at the
-//! firmware boundary later (deliberate deviation recorded in the plan).
+//! Owns:        the metadata record layout and the SPEC §3.3 validation order.
+//! Not here:    flash access — the bootloader implements [`ImageRead`] in `flash_read.rs` with
+//!              volatile raw-pointer copies (references to address 0 are UB, SPEC §9.1.7).
+//! Invariants:  fail closed, first failure wins; size bounds use the plan §1.2 slot (227,328 B),
+//!              superseding SPEC §1.1 / R20 values.
+//! Errors:      [`ImageError`] and [`ReadError`] derive plain `Debug` only; `defmt::Format` is
+//!              attached at the firmware boundary later (deliberate deviation in the plan).
+//! Depends on:  `crc32`, `memory_map`.
+//! See also:    `protocol.rs` (VERIFY commit decision).
 
 use crate::crc32::{crc32, Crc32};
 use crate::memory_map::{APP_BASE, APP_SLOT_SIZE, METADATA_ADDR, SRAM_BASE, SRAM_END};

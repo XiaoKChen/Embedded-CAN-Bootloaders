@@ -1,13 +1,16 @@
-//! PRC1-unlocked VBTBKR (backup register) read/clear/write (SPEC §1.4).
+//! PRC1-unlocked VBTBKR (backup register) read and write (SPEC §1.4).
 //!
-//! `VBTBKR` is a byte array in the VBATT backup domain (R01UM0007, Battery
-//! Backup Function chapter): its contents survive every reset — including
-//! `NVIC_SystemReset()` and pin reset — and clear only on a VBATT-domain
-//! power-on reset. The bootloader and app use it for boot-mode handoff
-//! words. Writes require the PRCR.PRC1 unlock (key 0xA5); reads do not.
+//! `VBTBKR` is a byte array in the VBATT backup domain (R01UM0007, Battery Backup Function
+//! chapter): its contents survive every reset — including `NVIC_SystemReset()` and pin reset —
+//! and clear only on a VBATT-domain power-on reset. The bootloader and app use it for
+//! boot-mode handoff words. Writes require the PRCR.PRC1 unlock (key 0xA5); reads do not.
 //!
-//! Word layout (SPEC §1.4) — offsets are *byte* offsets into VBTBKR, each
-//! word is 4 bytes little-endian:
+//! Owns:        the handoff word layout (SPEC §1.4): offsets are *byte* offsets into VBTBKR and
+//!              each word is 4 bytes little-endian.
+//! Not here:    the PRCR key and unlock bits (`clocks.rs`); the meaning of the magic values.
+//! Invariants:  each write re-locks PRCR before returning; only bytes 0..12 are ever touched.
+//! Depends on:  `clocks` (PRCR constants), the `ra4m1` PAC.
+//! See also:    `clocks.rs`.
 
 use crate::clocks::{PRCR_KEY, PRCR_PRC1_LPM_VBT};
 use ra4m1::SYSTEM;

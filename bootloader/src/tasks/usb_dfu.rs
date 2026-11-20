@@ -344,7 +344,7 @@ impl<S: DfuStorage> Handler for DfuHandler<'_, S> {
                 // per full chunk, inline, like the C's tud_dfu_download_cb.
                 let accepted = self.machine.dnload(&mut self.storage, data);
                 if !accepted {
-                    defmt::warn!(
+                    warn!(
                         "usb_dfu: DNLOAD rejected ({=usize} B at {=u32} B in): {}",
                         data.len(),
                         self.machine.received_len(),
@@ -358,7 +358,7 @@ impl<S: DfuStorage> Handler for DfuHandler<'_, S> {
             REQ_DETACH => {
                 // SPEC §6.1 detach→reset: latch it; run_device drains
                 // DETACH_DRAIN (status stage completes) and resets.
-                defmt::info!("usb_dfu: DETACH — reset scheduled");
+                info!("usb_dfu: DETACH — reset scheduled");
                 self.detach.request();
                 OutResponse::Accepted
             }
@@ -492,7 +492,7 @@ pub async fn run_device<'d, D: Driver<'d>>(usb: &mut UsbDevice<'d, D>, detach: &
         })
         .await;
     }
-    defmt::info!("usb_dfu: DETACH drained — system reset");
+    info!("usb_dfu: DETACH drained — system reset");
     cortex_m::peripheral::SCB::sys_reset();
 }
 
@@ -531,11 +531,11 @@ impl DfuStorage for FlashDfuStorage {
         // APP_BASE. R39: exactly one 2 KB block erase per call.
         let addr = APP_BASE + block * FLASH_BLOCK_SIZE;
         let Ok(mut flash) = self.flash.try_lock() else {
-            defmt::error!("usb_dfu: flash busy on erase (unreachable on one executor)");
+            error!("usb_dfu: flash busy on erase (unreachable on one executor)");
             return Err(StorageError);
         };
         flash.erase_block(addr).map_err(|err| {
-            defmt::error!("usb_dfu: erase {=u32:#x} failed ({})", addr, err);
+            error!("usb_dfu: erase {=u32:#x} failed ({})", addr, err);
             StorageError
         })
     }
@@ -546,11 +546,11 @@ impl DfuStorage for FlashDfuStorage {
         // flash driver's source-in-RAM + write-unit requirements.
         let addr = APP_BASE + block * FLASH_BLOCK_SIZE;
         let Ok(mut flash) = self.flash.try_lock() else {
-            defmt::error!("usb_dfu: flash busy on program (unreachable on one executor)");
+            error!("usb_dfu: flash busy on program (unreachable on one executor)");
             return Err(StorageError);
         };
         flash.program_verified(addr, data).map_err(|err| {
-            defmt::error!("usb_dfu: program block {=u32} failed ({})", block, err);
+            error!("usb_dfu: program block {=u32} failed ({})", block, err);
             StorageError
         })
     }
@@ -568,7 +568,7 @@ impl DfuStorage for FlashDfuStorage {
             // read is refused → the upload short-frames out (fail-safe).
             DfuAlt::DataFlash => {
                 let Ok(flash) = self.flash.try_lock() else {
-                    defmt::error!("usb_dfu: flash busy on data-flash read (unreachable)");
+                    error!("usb_dfu: flash busy on data-flash read (unreachable)");
                     return Err(StorageError);
                 };
                 flash
@@ -586,17 +586,17 @@ impl DfuStorage for FlashDfuStorage {
         // synchronous, both released before returning.
         let record = MetadataRecord::for_image(image_size, image_crc32).to_bytes();
         let Ok(mut flash) = self.flash.try_lock() else {
-            defmt::error!("usb_dfu: flash busy on metadata write (unreachable)");
+            error!("usb_dfu: flash busy on metadata write (unreachable)");
             return Err(StorageError);
         };
         flash.erase_block(METADATA_ADDR).map_err(|err| {
-            defmt::error!("usb_dfu: metadata erase failed ({})", err);
+            error!("usb_dfu: metadata erase failed ({})", err);
             StorageError
         })?;
         flash
             .program_verified(METADATA_ADDR, &record)
             .map_err(|err| {
-                defmt::error!("usb_dfu: metadata write failed ({})", err);
+                error!("usb_dfu: metadata write failed ({})", err);
                 StorageError
             })
     }
@@ -641,10 +641,9 @@ pub async fn run(
     );
     register(&mut builder, handler);
     let mut usb = builder.build();
-    defmt::info!(
+    info!(
         "usb_dfu: enumerating (VID {=u16:#x} PID {=u16:#x})",
-        USB_VID,
-        USB_PID
+        USB_VID, USB_PID
     );
     run_device(&mut usb, &DETACH).await
 }
@@ -716,11 +715,13 @@ pub mod machine {
     /// A storage operation failed. Deliberately detail-free: the machine
     /// maps failures to DFU status codes by *which* operation failed;
     /// implementations log the specifics themselves.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct StorageError;
 
     /// Which memory the host is addressing = the interface alt setting.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum DfuAlt {
         /// Alt 0 `@CodeFlash`: offset 0 = `APP_BASE`. Downloads clamp at
         /// the 111-block app slot; uploads span the full 112-block window.
@@ -768,7 +769,8 @@ pub mod machine {
     /// don't exist — the bootloader IS DFU mode. `dfuDNBUSY` (4) and
     /// `dfuMANIFEST` (7) are never entered (sync-completion shortcut, module
     /// docs).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     #[repr(u8)]
     pub enum DfuState {
         /// Idle, ready for DNLOAD/UPLOAD.
@@ -786,7 +788,8 @@ pub mod machine {
     }
 
     /// DFU 1.1 status codes (§A.1) — the subset this machine reports.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     #[repr(u8)]
     pub enum DfuStatus {
         /// No error.

@@ -22,6 +22,9 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=build.rs");
+    // The workspace `.cargo/config.toml` no longer passes `-Tdefmt.x` (the lean
+    // bootloader has no `defmt.x` to link), so this always-defmt binary adds it.
+    println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
     // Banner timestamp. Cached with this script's output: it refreshes on a
     // clean build (CI/release artifacts always get a fresh one) or when

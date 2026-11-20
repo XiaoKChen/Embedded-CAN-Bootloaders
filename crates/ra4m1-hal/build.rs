@@ -18,4 +18,7 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=build.rs");
+    // The workspace `.cargo/config.toml` no longer passes `-Tdefmt.x` (the lean
+    // bootloader has no `defmt.x` to link); the examples always log over defmt.
+    println!("cargo:rustc-link-arg-examples=-Tdefmt.x");
 }

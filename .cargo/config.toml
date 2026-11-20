@@ -21,12 +21,17 @@
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # `probe-rs chip list` for valid names; R7FA4M1AB per docs/plan.md (ECO §6).
-runner = "probe-rs run --chip R7FA4M1AB"
+runner = "probe-rs run --chip-description-path targets/ra4m1.yaml --chip R7FA4M1AB"  # official Renesas FLM (RA_DFP) -- built-in target corrupts OFS on reflash
 rustflags = [
   "-C", "link-arg=--nmagic",  # no page alignment — saves flash
   "-C", "link-arg=-Tlink.x",  # cortex-m-rt linker script (pulls in memory.x)
-  "-C", "link-arg=-Tdefmt.x", # defmt symbol table
+  # `-Tdefmt.x` is NOT here: `defmt.x` only exists when the `defmt` crate is in
+  # the graph, so the lean (default) build would fail to link. bootloader's
+  # build.rs adds it, gated on the `defmt` feature (see that file).
 ]
+
+[registries.gitea]
+index = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
 
 [build]
 target = "thumbv7em-none-eabihf"

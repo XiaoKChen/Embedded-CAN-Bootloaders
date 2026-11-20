@@ -202,7 +202,8 @@ const LAST_INT_PIPE: u8 = 7;
 
 /// USBFS driver failure modes surfaced above the `embassy-usb-driver` traits
 /// (whose own methods return `EndpointAllocError`/`EndpointError`/`Unsupported`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum UsbfsError {
     /// A capability deliberately not implemented for Milestone 2 (a non-IN
     /// or non-interrupt endpoint, or pipes outside PIPE6/7). Never silent:
@@ -560,7 +561,7 @@ impl<'d> DriverTrait<'d> for Driver<'d> {
         _interval_ms: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
         // DFU is control-only; no OUT endpoint (beyond EP0) is built for M2.
-        defmt::warn!(
+        warn!(
             "usbfs: alloc_endpoint_out is {} — no OUT pipes built",
             UsbfsError::UnimplementedForM2
         );
@@ -575,7 +576,7 @@ impl<'d> DriverTrait<'d> for Driver<'d> {
         interval_ms: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
         if ep_type != EndpointType::Interrupt {
-            defmt::warn!(
+            warn!(
                 "usbfs: alloc_endpoint_in type {} is {} — only interrupt IN is built",
                 ep_type,
                 UsbfsError::UnimplementedForM2
@@ -583,7 +584,7 @@ impl<'d> DriverTrait<'d> for Driver<'d> {
             return Err(EndpointAllocError);
         }
         let pipe = self.alloc_int_in_pipe().ok_or_else(|| {
-            defmt::warn!("usbfs: {}", UsbfsError::OutOfPipes);
+            warn!("usbfs: {}", UsbfsError::OutOfPipes);
             EndpointAllocError
         })?;
         // Pipe number == endpoint number keeps the descriptor and the
@@ -690,7 +691,7 @@ impl Bus<'_> {
 
         // Connect: assert the D+ pull-up so the host sees us (dcd_connect).
         usb.syscfg.modify(|_, w| w.dprpu()._1());
-        defmt::debug!("usbfs: device enabled, D+ pull-up on, USB INT on IEL1");
+        debug!("usbfs: device enabled, D+ pull-up on, USB INT on IEL1");
     }
 
     /// Light bus-reset housekeeping (port of `process_bus_reset`'s DCP part):
@@ -717,7 +718,7 @@ impl BusTrait for Bus<'_> {
         // SAFETY: mask all USBFS interrupt sources before returning.
         usb.intenb0.write(|w| unsafe { w.bits(0) });
         cortex_m::peripheral::NVIC::mask(USB_IRQ);
-        defmt::debug!("usbfs: device disabled");
+        debug!("usbfs: device disabled");
     }
 
     async fn poll(&mut self) -> Event {
@@ -1182,7 +1183,7 @@ impl Endpoint for EndpointOut<'_> {
 impl EndpointOutTrait for EndpointOut<'_> {
     async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, EndpointError> {
         // Unreachable (see the struct docs); never silent if it somehow runs.
-        defmt::error!(
+        error!(
             "usbfs: EndpointOut::read is {}",
             UsbfsError::UnimplementedForM2
         );

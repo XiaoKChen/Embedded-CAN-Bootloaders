@@ -160,19 +160,45 @@ Toolchain is pinned via [`rust-toolchain.toml`](rust-toolchain.toml) (stable, wi
 `thumbv7em-none-eabihf` target and `llvm-tools`); `rustup show` picks it up automatically.
 
 ```sh
-# Build the firmware
-cargo build --release
+# Build the bootloader (lean) on its own, then everything else. A single
+# workspace-wide build fails to link the lean bootloader: cargo unifies features,
+# so demo-app's defmt-enabled embassy deps would pull in defmt without a logger.
+cargo build --release -p bootloader
+cargo build --release --workspace --exclude boot-logic --exclude bootloader
 
 # Host tests for the pure-logic crate (target triple can't run the test harness — see
 # .cargo/config.toml for why the explicit --target is required)
 cargo test -p boot-logic --target "$(rustc -vV | sed -n 's/host: //p')"
 
 # Build, flash, and stream defmt-RTT logs in one command (probe-rs runner, chip R7FA4M1AB)
-cargo run --release -p bootloader
+cargo run --release -p bootloader --features defmt
 ```
 
 Any CMSIS-DAP/SWD probe works with the `probe-rs` runner above. The M1 hardware smoke test used
 an ESP-Prog-2 running custom `esp-usb-bridge` firmware (CMSIS-DAP over SWD) as a low-cost probe.
+The runner flashes through the custom target [`targets/ra4m1.yaml`](targets/ra4m1.yaml), which
+carries the official Renesas flash algorithm; probe-rs's built-in RA4M1 target corrupts the OFS
+option bytes.
+
+### Build flavors: lean (default) vs debug (`defmt`)
+
+`defmt` is an optional bootloader feature, **off by default**. Both flavors have the same
+functionality (CAN flashing, USB-DFU, CRC/metadata validation, the full boot decision). Only the
+diagnostic logging differs:
+
+| Flavor | Command | `bootloader.bin` | Logging | Panic |
+|--------|---------|------------------|---------|-------|
+| **Lean** (shipped) | `cargo build --release -p bootloader` | **21,344 B** | none: defmt is absent from the graph | reset (`SCB::sys_reset`) |
+| **Debug** | `cargo build --release -p bootloader --features defmt` | ≈ 31,604 B | `defmt` over RTT | `panic-probe` (log, then reset) |
+
+The lean build leaves about 11 KiB of headroom under the 32 KiB (`0x8000`) size gate. The
+`-Tdefmt.x` link argument is emitted from each binary's `build.rs`, not `.cargo/config.toml`,
+because `defmt.x` only exists when the `defmt` crate is in the graph. The bootloader emits it
+only under its `defmt` feature, and `demo-app` (always defmt) emits it unconditionally.
+
+The lean bootloader has been flashed on silicon (UNO R4 Minima via an ESP-Prog SWD probe and
+pyOCD). It boots a valid application, serves a USB-DFU download, and re-enters DFU on a
+double-tap reset.
 
 ## Emulation (Renode) — run the suites
 
@@ -189,7 +215,7 @@ its Python. The custom C# models compile at runtime — no Renode rebuild.
 ```sh
 # 1. Build the ELFs the suites boot
 cargo build --release --target thumbv7em-none-eabihf -p ra4m1-hal --examples
-cargo build --release --target thumbv7em-none-eabihf -p bootloader
+cargo build --release --target thumbv7em-none-eabihf -p bootloader --features defmt  # suites read RTT
 
 # 2. Automated pass/fail (all four Robot suites)
 <renode-install>/renode-test renode/smoke.robot renode/analog.robot renode/serial.robot renode/bootloader.robot

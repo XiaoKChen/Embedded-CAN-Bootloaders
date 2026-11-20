@@ -1,23 +1,35 @@
-//! CAN-transceiver-rail power-up via the on-chip USB regulator (SPEC §5.3,
-//! R33) — a power fix, not USB.
+//! CAN-transceiver-rail power-up via the on-chip USB regulator (SPEC §5.3, R33).
 //!
-//! WHY: custom boards feed the external CAN transceiver / level-shifter
-//! path from the RA4M1's USB regulator rail (VCC_USB). Until that
-//! regulator is on, CRX0 never shows recessive: the controller reaches
-//! operate mode and TRMREQ sets, but TEC stays frozen at 0 — the board is
-//! deaf and mute on every ID (SPEC §9.1.1, bench-confirmed via the C
-//! bootloader's one-boot staircase diagnostic on a real bus). The USB-DFU
-//! path always powered the rail as a side effect of `tud_init()`, which is
-//! why only the CAN-only magic-entry path was silent. Call this BEFORE any
-//! CAN register access on CAN-update-mode entry. Harmless on boards
-//! without the dependency: the LDO merely energizes an unused VCC_USB pad.
+//! A power fix, not USB: custom boards feed the external CAN transceiver / level-shifter path
+//! from the RA4M1's USB regulator rail (VCC_USB), so the regulator must be on before any CAN
+//! register access. Faithful port of `can_xcvr_usb_rail_power_on`
+//! (`main:vendor/arduino-renesas-bootloader/src/main.c`).
 //!
-//! Faithful port of `can_xcvr_usb_rail_power_on`
-//! (`main:vendor/arduino-renesas-bootloader/src/main.c`) — only the
-//! power-relevant writes of the proven DFU bring-up, in its order, with no
-//! USB stack. Registers: R01UM0007 (RA4M1 HW manual), USBFS chapter
-//! (SYSCFG, USBMC), Low Power Modes chapter (MSTPCRB), and the Clock
-//! Generation Circuit chapter (USBCKCR, via `clocks::init_usb_clock_48mhz`).
+//! Owns:        the order of the power-relevant USBFS writes (UCLK, module-stop, SCKE, VDCEN) and
+//!              the regulator soak delay.
+//! Not here:    the USB stack or any USB traffic (`usbfs.rs`); CAN register access (`can0.rs`).
+//! Invariants:  call this BEFORE any CAN register access on CAN-update-mode entry. It is
+//!              harmless on boards without the dependency: the LDO merely energizes an unused
+//!              VCC_USB pad.
+//! Concurrency: blocking, cycle-counted delays only (no `embassy-time`), so it is callable
+//!              pre-executor; every MSTPCRB user runs sequentially in the same boot/task
+//!              context and no ISR touches it.
+//! Errors:      none; an SCKE read-back timeout falls through deliberately (SPEC §5.3) — worst
+//!              case the VDCEN write is lost and the board parks serving CAN degraded.
+//! Depends on:  `ra4m1_embassy::clocks`.
+//! See also:    docs/plan.md §4 (blocking exceptions); SPEC §9.1.1.
+//!
+//! Why it exists: until the regulator is on, CRX0 never shows recessive — the controller reaches
+//! operate mode and TRMREQ sets, but TEC stays frozen at 0, so the board is deaf and mute on
+//! every ID (SPEC §9.1.1, bench-confirmed via the C bootloader's one-boot staircase diagnostic
+//! on a real bus). The USB-DFU path always powered the rail as a side effect of `tud_init()`,
+//! which is why only the CAN-only magic-entry path was silent.
+//!
+//! The port keeps only the power-relevant writes of the proven DFU bring-up, in its order, with
+//! no USB stack. Registers: R01UM0007 (RA4M1 HW manual), USBFS chapter (SYSCFG, USBMC), Low
+//! Power Modes chapter (MSTPCRB), and the Clock Generation Circuit chapter (USBCKCR, via
+//! `clocks::init_usb_clock_48mhz`).
+
 use ra4m1_embassy::clocks;
 
 /// SCKE read-back poll bound — C parity (`CAN_USB_RAIL_SCKE_TIMEOUT_LOOPS`).

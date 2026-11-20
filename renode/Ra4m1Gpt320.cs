@@ -1,7 +1,16 @@
+// Renode model of RA4M1 GPT320 channel 0: the time base the embassy-time driver needs.
 //
-// Ra4m1Gpt320.cs — minimal GPT320 channel-0 model for the ra4m1-hal
-// embassy-time driver.  MIT-licensed; a test-time Renode peripheral, never
-// linked into firmware.
+// Replaces Renode v1.16.1's stock `Timers.RenesasRA_GPT`, which ignores GTCR.CST and has no
+// GTCCRA compare-match, so the executor's alarm fires in emulation. A test-time Renode
+// peripheral (MIT-licensed), compiled at runtime via `include` with no Renode rebuild.
+//
+// Owns:        the free-running GTCNT, the GTCCRA compare, and the CCMPA pulse on
+//              connection 0.
+// Not here:    the ICU event link (`0 -> icu@0x57` in ra4m1-uno-r4.repl).
+// Invariants:  never linked into firmware; connection 0 is CCMPA, in the stock model's IRQ
+//              bundling order.
+// See also:    crates/ra4m1-embassy/src/time_driver.rs; ra4m1-uno-r4.repl; smoke.robot;
+//              docs/plan-m2.5-renode.md §2.
 //
 // WHY THIS EXISTS
 // ---------------

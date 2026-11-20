@@ -1,11 +1,17 @@
-//! CRC-32 per SPEC §3.2 / R14: IEEE 802.3 / zlib-compatible — **reflected**,
-//! polynomial `0xEDB88320`, init `0xFFFFFFFF`, final XOR `0xFFFFFFFF`.
-//! Golden vector: `crc32(b"123456789") == 0xCBF43926`.
+//! CRC-32 (IEEE 802.3 / zlib) used for image metadata, payload and config-block checks.
 //!
-//! Bitwise, table-less implementation — the same flash-size trade the C
-//! bootloader made; throughput is irrelevant next to CAN at 250 kbit/s and
-//! flash P/E times. The incremental [`Crc32`] state lets multi-hundred-KB
-//! images stream through a small buffer (`image_meta` validation, VERIFY).
+//! Bitwise, table-less implementation — the same flash-size trade the C bootloader made;
+//! throughput is irrelevant next to CAN at 250 kbit/s and flash P/E times. The incremental
+//! [`Crc32`] state lets multi-hundred-KB images stream through a small buffer (`image_meta`
+//! validation, VERIFY).
+//!
+//! Owns:         the CRC-32 parameters (SPEC §3.2 / R14): reflected, polynomial `0xEDB88320`,
+//!               init `0xFFFFFFFF`, final XOR `0xFFFFFFFF`.
+//! Not here:     what is checksummed and where the CRC is stored (`image_meta`, `dfu_config`).
+//! Invariants:   chunking is transparent — any split of the input yields the same CRC as one
+//!               contiguous pass; golden vector `crc32(b"123456789") == 0xCBF43926`.
+//! Concurrency:  none; pure functions and a caller-owned state value.
+//! See also:     `image_meta.rs`, `dfu_config.rs` (the callers).
 
 /// Reflected IEEE 802.3 polynomial (SPEC §3.2).
 const POLYNOMIAL_REFLECTED: u32 = 0xEDB8_8320;

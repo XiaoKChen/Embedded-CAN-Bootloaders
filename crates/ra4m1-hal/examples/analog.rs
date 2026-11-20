@@ -1,10 +1,14 @@
-//! `analog` — the M3.4 ADC14 + DAC12 smoke example (plan §3/§7).
+//! ADC14 + DAC12 smoke example: mirror analog input A0 to DAC output DA0.
 //!
-//! Reads analog input **A0 (AN000 = P000)** with the ADC's async scan-complete
-//! path (bound via [`ra4m1_hal::bind_interrupts`] to IEL2 — no busy-wait) and
-//! mirrors it to the **DAC output DA0 (P014)**, scaling the 14-bit count down to
-//! the DAC's 12-bit range. A 1 s defmt heartbeat prints the raw counts so the
-//! bench sees the loop live while the base GPT320 `embassy-time` driver keeps
+//! Reads A0 (AN000 = P000) with the ADC's async scan-complete path, bound to IEL2 with no busy-
+//! wait, and writes it to DA0 (P014), scaling 14 bits down to 12. A 1 s defmt heartbeat prints raw
+//! counts while the base GPT320 time driver (IEL0) keeps ticking.
+//!
+//! Concurrency:  one thread-mode Embassy executor; the ADC scan-complete interrupt wakes the
+//!               reading task.
+//! Depends on:   `ra4m1_hal` and the shared `ra4m1_embassy` base (clocks, time driver).
+//! See also:     `src/adc.rs`; `src/dac.rs`.
+//!
 //! ticking (IEL0 undisturbed by the ADC's IEL2).
 //!
 //! Wire A0 to a potentiometer / voltage and scope DA0 to see it track.

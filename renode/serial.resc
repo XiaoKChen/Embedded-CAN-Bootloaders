@@ -1,7 +1,12 @@
-:name: RA4M1 HAL serial-bus smoke (SCI UART / RIIC I2C / RSPI SPI)
-:description: Boots a real ra4m1-hal serial-bus example ELF on the UNO R4 Minima
-:             platform, adding the stock SCI/IIC wiring the drivers need plus a
-:             custom SPI model and a mock I2C slave.
+: RA4M1 HAL serial-bus smoke machine (SCI UART / RIIC I2C / RSPI SPI) for manual runs.
+:
+: Boots a real ra4m1-hal serial-bus example ELF on the UNO R4 Minima platform, adding the
+: stock SCI/IIC wiring the drivers need plus a custom SPI model and a mock I2C slave.
+:
+: Not here:    starting the run (the caller issues `start` or `emulation RunFor`); the
+:              automated pass/fail (renode/serial.robot).
+: Invariants:  every custom model is `include`d before any platform description references it.
+: See also:    ra4m1-uno-r4.repl; Ra4m1Spi.cs; MockI2CSlave.cs.
 :
 : Run headless from the REPO ROOT (paths are repo-relative; Renode's monitor
 : cannot tokenize the spaces/parens some checkout paths contain, so keep the

@@ -1,5 +1,21 @@
-//! Interrupt binding + the central ICU/NVIC slot & priority table (spike S-A,
-//! plan §4.7).
+//! Interrupt binding and the central ICU/NVIC slot and priority table.
+//!
+//! `bind_interrupts!` generates strong `IELn` vectors that override the base crate's weak
+//! `PROVIDE(IELn = DefaultHandler)` aliases at link time, with no edit to the base crate (spike
+//! S-A, plan section 4.7). This is the HAL half of the project's single interrupt-priority scheme.
+//!
+//! Owns:         `bind_interrupts!`, [`InterruptHandler`], [`clear_pending`], [`enable`], and the
+//!               slot and priority table below.
+//! Not here:     the 240-slot `__INTERRUPTS` table and the IEL0 time-driver vector
+//!               (`ra4m1_embassy::time_driver`); peripheral handlers (each driver module).
+//! Invariants:   slots 0 (time driver) and 1 (reserved for the bootloader's USBFS) are never
+//!               claimed here; app slots are [`FIRST_APP_SLOT`]..=[`LAST_SLOT`]; an `IELn` name and
+//!               its handler's `SLOT` must agree.
+//! Concurrency:  generated vectors run in interrupt context: clear `IELSR.IR` (with read-back),
+//!               then call the handler, which only records state and wakes a task. `IELSR` is
+//!               written only while the line is masked.
+//! Depends on:   the `ra4m1` PAC.
+//! See also:     `ra4m1_embassy::time_driver`; rules/embedded.md; rules/embassy.md.
 //!
 //! # The mechanism
 //!

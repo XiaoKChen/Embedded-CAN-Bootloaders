@@ -1,11 +1,18 @@
-//! Clock query/config surface over the base crate's clock tree.
+//! Clock query surface over the base crate's clock tree.
 //!
-//! This module **wraps, never duplicates**, [`ra4m1_embassy::clocks`]: the
-//! HOCO 48 MHz bring-up and every rate constant live in the base crate (plan
-//! §8 reuse ledger). Here they are re-exported and given a by-name query API
-//! so driver code can derive timing (baud divisors, GPT prescale, ADC
-//! sampling clock) from the exact domain that feeds each peripheral —
-//! e.g. SCI baud is off PCLKB, GPT counts off PCLKD — without hard-coding a
+//! Wraps, never duplicates, [`ra4m1_embassy::clocks`]: the HOCO 48 MHz bring-up and every rate
+//! constant live in the base crate (plan section 8 reuse ledger). Here they are re-exported and
+//! given a by-name query API so drivers derive timing (baud divisors, GPT prescale, ADC sampling
+//! clock) from the domain that feeds each peripheral, e.g. SCI baud off PCLKB and GPT counting off
+//! PCLKD, without hard-coding a frequency at the call site.
+//!
+//! Owns:        the [`Clock`] enum and its [`Clock::hz`] mapping.
+//! Not here:    the clock bring-up code and rate constants (`ra4m1_embassy::clocks`); per-
+//!              peripheral module-stop gating, which each driver's `init` owns.
+//! Invariants:  rates are the post-[`init_hoco_48mhz`] values; [`Clock::Usb`] is valid only after
+//!              [`init_usb_clock_48mhz`].
+//! Depends on:  `ra4m1_embassy::clocks`.
+//!
 //! frequency at the call site (rules/principles.md "constants are centralized").
 //!
 //! # Configuration

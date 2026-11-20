@@ -1,11 +1,28 @@
-//! Bootloader entry point — the SPEC §2 boot decision, the `boot5` jump
-//! sequence (R12), and per-mode task spawning (U1.3–U1.5).
+//! Bootloader entry point: the SPEC §2 boot decision, the `boot5` jump sequence, task spawning.
 //!
-//! The boot decision runs as plain blocking code BEFORE the executor exists
-//! (docs/plan.md §4): the app-boot path never pays executor startup and the
-//! jump sequence never has to tear an executor down. The executor comes up
-//! only for the two update modes, and once started it only ever dies by
-//! reset — GO exits via `NVIC_SystemReset` (R13).
+//! The boot decision runs as plain blocking code BEFORE the executor exists (docs/plan.md §4):
+//! the app-boot path never pays executor startup and the jump sequence never has to tear an
+//! executor down. The executor comes up only for the two update modes (U1.3–U1.5), and once
+//! started it only ever dies by reset — GO exits via `NVIC_SystemReset` (R13).
+//!
+//! Owns:        the boot decision (double-tap and CAN-update magics, the 500 ms double-tap
+//!              window, app validation), the jump sequence to `APP_BASE` (R12), the thread-mode
+//!              `EXECUTOR`, the shared `FLASH` driver and `CONFIG`, and per-mode task spawning.
+//! Not here:    clock bring-up and peripheral singletons (`board.rs`); the transceiver-rail
+//!              power-up (`drivers/usb_rail.rs`); the CAN, USB DFU and LED task bodies
+//!              (`tasks/`); image validation logic (`boot_logic`).
+//! Invariants:  the boot decision and `jump_to_app` run pre-executor and never return into the
+//!              bootloader; the config block is read exactly once (R37); `NoopRawMutex` is sound
+//!              because one thread-mode executor runs everything and no ISR touches the flash
+//!              driver.
+//! Concurrency: one thread-mode executor; the flash driver is shared behind [`FlashMutex`] and
+//!              guards are never held across an await.
+//! Errors:      validation or flash-read failure fails CLOSED into parked mode (never a dead
+//!              board); spawn failures are init errors and panic; a panic resets (lean flavor)
+//!              or logs then resets (`defmt` flavor).
+//! Depends on:  `boot_logic` (pure decisions), `ra4m1_embassy` (clocks, time driver, VBTBKR),
+//!              `board`, `drivers`, `tasks`.
+//! See also:    `board.rs`; `tasks/can_update.rs`; `tasks/usb_dfu.rs`; docs/plan.md §4; SPEC §2.
 //!
 //! Task spawn wiring (docs/plan.md §4):
 //!
@@ -14,9 +31,9 @@
 //! | CAN-only (`VBTBKR[4]` magic) | `can_update` |
 //! | Parked (double-tap magic / no valid app) | `can_update` + `usb_dfu` + `led` fade |
 //!
-//! Parked mode (U2.3) runs USB DFU, the CAN engine, and the LED fade at once,
-//! sharing one flash driver behind [`FlashMutex`]; CAN-only mode stays
-//! CAN-only, exactly as M1 (SPEC §2.3 vs §2.5).
+//! Parked mode (U2.3) runs USB DFU, the CAN engine, and the LED fade at once, sharing one flash
+//! driver behind [`FlashMutex`]; CAN-only mode stays CAN-only, exactly as M1 (SPEC §2.3 vs
+//! §2.5).
 
 #![no_std]
 #![no_main]

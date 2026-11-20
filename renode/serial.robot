@@ -1,9 +1,15 @@
 *** Comments ***
-# M2.5 serial-bus suite for ra4m1-hal under Renode v1.16.1: SCI UART, RIIC I2C,
-# and RSPI SPI.  Each case boots a REAL release example ELF (the artifact `cargo
-# build --release --example` produces) on the UNO R4 Minima platform, adds the
-# per-bus peripherals/wiring the driver needs, and asserts the bus transaction
-# the firmware drives.
+# M2.5 serial-bus suite: the ra4m1-hal SCI UART, RIIC I2C and RSPI SPI drivers in Renode.
+#
+# Each case boots a REAL release example ELF (the artifact `cargo build --release --example`
+# produces) on the UNO R4 Minima platform under Renode v1.16.1, adds the per-bus peripherals
+# and wiring the driver needs, and asserts the bus transaction the firmware drives.
+#
+# Covers:       the UART async echo, SPI full-duplex loopback transfers, the I2C bus scan,
+#               and an I2C register read-back driven at the register level.
+# Not covered:  bit rates, SCL/SCK timing, clock tolerance, SSL/CS, analog, the silicon ICU
+#               event numbers, and the Rust driver's I2C `write_read` path (no example ELF).
+# See also:     Ra4m1Spi.cs; MockI2CSlave.cs; serial.resc; renode/TODO.md.
 #
 # WHAT THIS VALIDATES: driver REGISTER-LOGIC (the SPCR/SPSR/SPDR, SSR/TDR/RDR,
 # ICCR/ICDRT/ICDRR handshakes and the START/addr/data/STOP sequencing), NOT

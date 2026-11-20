@@ -1,8 +1,22 @@
-//! Demo app — the image the bootloader flashes over CAN/USB-DFU (U1.6,
-//! docs/plan.md §6). Links at `APP_BASE = 0x8000` (docs/plan.md §1.2);
-//! cortex-m-rt places `.vector_table` at the FLASH origin, and the
-//! bootloader's jump sequence points VTOR/MSP there (R12) — the app never
-//! touches VTOR itself.
+//! Demo app: the image the bootloader flashes over CAN/USB-DFU.
+//!
+//! U1.6, docs/plan.md §6. Links at `APP_BASE = 0x8000` (docs/plan.md §1.2); cortex-m-rt places
+//! `.vector_table` at the FLASH origin, and the bootloader's jump sequence points VTOR/MSP there
+//! (R12) — the app never touches VTOR itself.
+//!
+//! Owns:        the demo's bench identity: the USB-CDC serial port (own USB PID), the RTT
+//!              heartbeat, the P111 double-blink, and this binary's `IEL1` vector binding.
+//! Not here:    the boot decision and update protocols (`bootloader/`); the USBFS driver
+//!              (`ra4m1_embassy::usb`); the image's CRC/metadata record (committed by the
+//!              bootloader's VERIFY/commit flow, never baked into the `.bin`).
+//! Invariants:  the link origin and length in `memory.x` agree with the bootloader's
+//!              `BOOT_SIZE`/`APP_SLOT_SIZE`; the USB PID differs from the bootloader's DFU PID
+//!              (0x0369).
+//! Concurrency: one thread-mode executor with three tasks (LED, heartbeat, CDC); `IEL1` forwards
+//!              the USB interrupt to the driver.
+//! Errors:      spawn failures are init errors and panic; a panic logs over defmt, then resets.
+//! Depends on:  `ra4m1_embassy` (clocks, time driver, pfs, usb), `embassy_usb`.
+//! See also:    `build.rs` (`DEMO_APP_BUILT`); `memory.x`; `bootloader/src/main.rs`.
 //!
 //! # Bench identity
 //!

@@ -1,7 +1,16 @@
-//! Linker-script plumbing for the HAL `examples/` (same mechanism as
-//! `demo-app/build.rs`): copy `memory.x` into `OUT_DIR` and put it on the
-//! linker search path so cortex-m-rt's `link.x` can `INCLUDE memory.x`. Only
-//! the example binaries link; the library itself needs no linker script.
+//! Linker-script plumbing for the HAL `examples/`.
+//!
+//! Copies `memory.x` into `OUT_DIR` and puts it on the linker search path so cortex-m-rt's `link.x`
+//! can `INCLUDE memory.x`; same mechanism as `demo-app/build.rs`. Only the example binaries link;
+//! the library itself needs no linker script.
+//!
+//! Owns:        the `memory.x` handoff to the linker, and the `-Tdefmt.x` link argument for
+//!              examples.
+//! Not here:    the memory map itself (`memory.x`); the target and runner (workspace
+//!              `.cargo/config.toml`).
+//! Invariants:  the workspace `.cargo/config.toml` no longer passes `-Tdefmt.x` (the lean
+//!              bootloader has no `defmt.x`), so this script adds it, for examples only.
+//! See also:    `memory.x`; `demo-app/build.rs`.
 
 use std::env;
 use std::fs::File;

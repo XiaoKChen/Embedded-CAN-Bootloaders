@@ -1,7 +1,23 @@
-//! LGPL-free application HAL for the Renesas **R7FA4M1AB** (Arduino UNO R4
-//! Minima), built from scratch and licensed MIT OR Apache-2.0
-//! (docs/plan-m3-hal.md §1.1 — the whole reason M3 exists: the community RA
-//! HALs are LGPL and cannot ship in this repo's MIT/Apache firmware).
+//! Application HAL for the Renesas R7FA4M1AB (Arduino UNO R4 Minima), licensed MIT OR Apache-2.0.
+//!
+//! Peripheral drivers (GPIO, GPT/PWM, SCI/UART, SPI, I2C, ADC14, DAC12) layered on the shared
+//! `ra4m1_embassy` chip base. Built from scratch because the community RA HALs are LGPL and cannot
+//! ship in this repo's MIT/Apache firmware (docs/plan-m3-hal.md section 1.1).
+//!
+//! Owns:         the module tree, and the base re-exports [`init_time`] and [`pfs`] so apps need
+//!               not name `ra4m1_embassy`.
+//! Not here:     the clock tree, PFS pin-mux and the single `embassy-time` driver (all in
+//!               `ra4m1_embassy`); the HAL ships no second `time_driver_impl!`.
+//! Invariants:   GPT channel 0 (`GPT320`) is reserved for the time base and never offered as an app
+//!               channel; the bootloader never depends on this crate.
+//! Concurrency:  async drivers wake from interrupt handlers bound through
+//!               [`crate::bind_interrupts`] via `embassy-sync` `AtomicWaker`; see each driver
+//!               module.
+//! Errors:       one error enum per fallible peripheral module (`gpio` and `dac` cannot fail);
+//!               there is deliberately no crate-wide enum ([`error`]).
+//! Depends on:   `ra4m1_embassy` (clocks, PFS, time driver, vector table), the `ra4m1` PAC,
+//!               `embedded-hal` 1.0 and its async/io companions.
+//! See also:     `examples/`; `docs/plan-m3-hal.md`; rules/embassy.md.
 //!
 //! # What this crate is
 //!

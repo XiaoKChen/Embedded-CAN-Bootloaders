@@ -1,15 +1,22 @@
-//! Board seam — the one module that names concrete chip peripherals
-//! (shape per `.claude/template/embassy/board.rs`; no Embassy HAL exists
-//! for the RA4M1, so the "HAL" here is `crates/ra4m1-embassy` over the raw
-//! PAC singletons).
+//! Board seam: the one module that names concrete chip peripherals.
 //!
-//! `init()` acquires the PAC peripherals exactly once, brings the clock
-//! tree up, and splits what `main` and the tasks need into [`Board`]:
-//! `main` consumes `system` for the boot decision (VBTBKR handoff words,
-//! reset-status read) and hands the GPT/PFS pieces to the parked-mode LED
-//! task at spawn time. Peripherals the drivers bring up themselves (CAN0,
-//! USBFS's rail registers, the flash sequencer) are acquired inside those
-//! drivers under their own documented ownership rules.
+//! No Embassy HAL exists for the RA4M1, so the "HAL" here is `crates/ra4m1-embassy` over the raw
+//! PAC singletons (shape per `.claude/template/embassy/board.rs`). `init()` acquires the PAC
+//! peripherals exactly once, brings the clock tree up, and splits what `main` and the tasks
+//! need into [`Board`].
+//!
+//! Owns:        the single `Peripherals::steal()` of the PAC singletons, and the pin choice for
+//!              the on-board LED.
+//! Not here:    peripherals the drivers bring up themselves (CAN0, USBFS's rail registers, the
+//!              flash sequencer); they are acquired inside those drivers under their own
+//!              documented ownership rules (`drivers/`).
+//! Invariants:  `init()` runs exactly once, from `main`, before any other peripheral access.
+//! Depends on:  `ra4m1_embassy` (clocks, pin-function helpers) and the `ra4m1` PAC.
+//! See also:    `main.rs` (consumes `system` for the boot decision), `tasks/led.rs` (takes the
+//!              GPT/PFS pieces at spawn time).
+//!
+//! `main` consumes `system` for the boot decision (VBTBKR handoff words, reset-status read) and
+//! hands the GPT/PFS pieces to the parked-mode LED task.
 
 use ra4m1_embassy::{clocks, pfs};
 

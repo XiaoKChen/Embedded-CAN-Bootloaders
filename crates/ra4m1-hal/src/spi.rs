@@ -1,4 +1,22 @@
-//! SPI bus — dedicated SPI (RSPI) block, master mode (M3.3, plan §4.2/§4.3).
+//! SPI bus: dedicated SPI (RSPI) block, master mode.
+//!
+//! Blocking `embedded_hal::spi::SpiBus` plus async `embedded_hal_async::spi::SpiBus` over `SPI0`
+//! and `SPI1` (M3.3, plan sections 4.2 and 4.3). The async path reuses the spike S-C pattern of
+//! [`crate::sci`].
+//!
+//! Owns:         [`Spi`], [`SpiState`], the RXI/TXI handlers, and the per-instance `'static` waker
+//!               state.
+//! Not here:     chip-select: no hardware SSL is driven, so the caller composes a GPIO CS with
+//!               `embedded-hal-bus`; pin muxing (`ra4m1_embassy::pfs`).
+//! Invariants:   each frame is one write then one read of `SPDR`, which keeps `SPSR.OVRF` from
+//!               asserting.
+//! Concurrency:  one `AtomicWaker` per direction per instance. Each handler masks its own `SPCR`
+//!               enable bit, wakes that direction's waker and returns; the awaiting future re-arms
+//!               the bit and re-checks `SPSR`.
+//! Errors:       [`Error`], reported in-band on the receive step.
+//! Depends on:   [`crate::interrupt`], [`crate::clock`], `embassy-sync` `AtomicWaker`, the `ra4m1`
+//!               PAC.
+//! See also:     [`crate::sci`]; `examples/spi.rs`.
 //!
 //! Blocking [`embedded_hal::spi::SpiBus`] plus async
 //! [`embedded_hal_async::spi::SpiBus`] over the RA4M1 dedicated SPI peripheral

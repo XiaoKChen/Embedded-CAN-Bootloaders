@@ -1,5 +1,13 @@
 //! Error convention for the HAL.
 //!
+//! Documents why each peripheral module owns its own error enum instead of one crate-wide type, and
+//! holds no types today.
+//!
+//! Owns:      the convention only: one error enum per peripheral module, `Infallible` for
+//!            operations that cannot fail.
+//! Not here:  the error types themselves (`adc`, `gpt`, `i2c`, `sci`, `spi`).
+//! See also:  rules/rust.md; rules/principles.md.
+//!
 //! Per rules/rust.md ("one error enum per module or subsystem") each
 //! peripheral module owns its own error enum, `#[derive(Debug, defmt::Format)]`,
 //! mapping to the relevant `embedded-hal` `ErrorKind` where the trait requires

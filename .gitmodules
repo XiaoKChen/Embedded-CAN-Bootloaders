@@ -1,4 +1,4 @@
 [submodule ".claude"]
 	path = .claude
 	url = git@github-XiaoKChen:XiaoKChen/.claude.git
-	branch = config/embassy
+	branch = config/rust

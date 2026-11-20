@@ -1,16 +1,18 @@
-//! PWPR-locked pin-function (PmnPFS) writes, PSEL-before-PMR ordering
-//! (SPEC §5.2).
+//! PWPR-locked pin-function (PmnPFS) writes, PSEL-before-PMR ordering (SPEC §5.2).
 //!
-//! Registers: R01UM0007 (RA4M1 HW manual), I/O Ports chapter — PmnPFS pin
-//! function control registers and the PWPR write-protect register.
+//! The PAC types every PmnPFS register individually (`p111pfs()`, ...), which cannot express a
+//! `(port, pin)`-generic driver. This module instead computes each register's address from the
+//! documented map — PFS base + `0x40 * port + 4 * pin` — and performs volatile whole-word
+//! accesses.
 //!
-//! The PAC types every PmnPFS register individually (`p111pfs()`, ...),
-//! which cannot express a `(port, pin)`-generic driver. This module instead
-//! computes each register's address from the documented map — PFS base +
-//! `0x40 * port + 4 * pin` — and performs volatile whole-word accesses.
-//! This is the project's one contained raw-MMIO exception
-//! (rules/embedded.md); every caller still proves ownership by passing the
-//! `PFS`/`PMISC` peripheral singletons.
+//! Owns:        the project's one contained raw-MMIO exception (rules/embedded.md) and the PWPR
+//!              unlock/lock sequence around each PmnPFS write.
+//! Not here:    pin-to-function assignment (the callers choose port, pin and PSEL).
+//! Invariants:  every caller proves ownership by passing the `PFS`/`PMISC` peripheral
+//!              singletons; PSEL is written before PMR is set.
+//! Depends on:  the `ra4m1` PAC.
+//! See also:    R01UM0007 (RA4M1 HW manual), I/O Ports chapter — PmnPFS pin function control
+//!              registers and the PWPR write-protect register.
 
 use ra4m1::{PFS, PMISC};
 

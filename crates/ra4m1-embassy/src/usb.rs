@@ -1,5 +1,19 @@
-//! `embassy-usb-driver` implementation for the RA4M1 USBFS full-speed device
-//! controller — the shared chip-level USB device driver.
+//! `embassy-usb-driver` implementation for the RA4M1 USBFS full-speed device controller.
+//!
+//! The shared chip-level USB device driver: EP0 control plus bulk IN/OUT and one interrupt IN
+//! pipe, enough for USB-CDC. The `bootloader` keeps its own DFU-only `drivers::usbfs` for now
+//! (silicon-proven); this module is the general driver `demo-app` uses and the eventual home
+//! the bootloader can rebase onto.
+//!
+//! Owns:         the USBFS register block, its pipe and FIFO assignment, and the driver's
+//!               shared interrupt state.
+//! Not here:     the `IEL1` vector definition — a strong symbol here would collide with the
+//!               bootloader's own, so each binary binds it to [`on_interrupt`].
+//! Invariants:   [`power_up_rail`] runs before [`Driver::new`]/`Bus::enable`.
+//! Concurrency:  one cooperative thread-mode executor plus the USB ISR; shared state is
+//!               atomics and interrupt-safe cells.
+//! Depends on:   `clocks`, the `ra4m1` PAC, `embassy-usb-driver`.
+//! See also:     `bootloader::drivers::usbfs` for the R01UM0007 §28 register-recipe citations.
 //!
 //! # Scope & the IEL1 binding
 //!

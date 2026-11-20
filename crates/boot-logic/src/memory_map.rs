@@ -1,12 +1,14 @@
-//! Code-flash partition map for the R7FA4M1AB (256 KB code flash, 128 × 2 KB
-//! erase blocks), per the locked decisions in docs/plan.md §1.2 — these values
-//! **supersede SPEC §1.1** (bootloader grew 16 KB → 32 KB, `APP_BASE` moved to
-//! `0x8000`, app slot shrank to 111 blocks).
+//! Code-flash partition map for the R7FA4M1AB (256 KB code flash, 128 × 2 KB erase blocks).
 //!
-//! Single source of truth for partition constants; the linker scripts
-//! (`bootloader/memory.x`, `demo-app/memory.x`) must agree with these values.
-//! The const-asserts at the bottom prove the partitions tile the flash exactly
-//! and stay erase-block aligned — any inconsistent edit fails to compile.
+//! Values follow the locked decisions in docs/plan.md §1.2 and **supersede SPEC §1.1**
+//! (bootloader grew 16 KB → 32 KB, `APP_BASE` moved to `0x8000`, app slot shrank to 111
+//! blocks).
+//!
+//! Owns:        the partition constants; the linker scripts (`bootloader/memory.x`,
+//!              `demo-app/memory.x`) must agree with these values.
+//! Invariants:  the const-asserts at the bottom prove the partitions tile the flash exactly and
+//!              stay erase-block aligned — any inconsistent edit fails to compile.
+//! See also:    `bootloader/memory.x`, `demo-app/memory.x`.
 
 /// Code flash is memory-mapped at address 0 (SPEC §1.1).
 pub const CODE_FLASH_BASE: u32 = 0x0000_0000;

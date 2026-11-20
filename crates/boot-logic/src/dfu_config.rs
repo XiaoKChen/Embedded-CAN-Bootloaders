@@ -1,11 +1,18 @@
-//! v1/v2 DFU config-block parsing (SPEC §6.2, R40) — flash-time USB names
-//! plus per-device CAN-ID overrides.
+//! v1/v2 DFU config-block parsing: flash-time USB names plus per-device CAN-ID overrides.
 //!
-//! The block lives in data flash at [`DFU_CONFIG_ADDR`] and is a **frozen
-//! external contract** shared with the ESP-Prog-2 provisioning flasher — the
-//! layout never changes. The caller (the bootloader, behind the data-flash
-//! read gate of SPEC §2.4/R34) hands in the raw bytes; parsing never touches
-//! hardware and never panics on any byte pattern.
+//! The caller (the bootloader, behind the data-flash read gate of SPEC §2.4/R34) hands in the
+//! raw bytes; parsing never touches hardware and never panics on any byte pattern (SPEC §6.2,
+//! R40).
+//!
+//! Owns:        the config-block layout at [`DFU_CONFIG_ADDR`] — a **frozen external contract**
+//!              shared with the ESP-Prog-2 provisioning flasher, so the layout never changes.
+//! Not here:    reading data flash and the readability gate (the bootloader).
+//! Invariants:  total over arbitrary input — every byte pattern yields a config or a
+//!              [`ParseError`]; name bytes past each length are normalized to `0x00`.
+//! Errors:      [`ParseError`], in check order magic, version, lens, CRC (plus `Truncated`);
+//!              callers fall back to compiled defaults.
+//! Depends on:  `crc32`.
+//! See also:    `protocol.rs` (CAN IDs and the INFO name field).
 //!
 //! Fallback ladder (R17/R40): unreadable/absent/corrupt block → compiled
 //! defaults for everything; valid **v1** block → names from the block, both

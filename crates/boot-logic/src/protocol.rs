@@ -1,12 +1,21 @@
-//! CAN Update Protocol v1 engine — phases, windowing, replies (SPEC §4,
-//! R16–R26; SIZE/ERASE/HELLO values superseded by docs/plan.md §1.2).
+//! CAN Update Protocol v1 engine: phases, windowing and replies (SPEC §4, R16–R26).
 //!
-//! The engine is a pure state machine: the firmware task feeds it [`Event`]s
-//! (received frames plus completions of previously requested operations) and
-//! gets back an [`Output`] — at most one reply frame to transmit on the
-//! effective boot→host ID and at most one abstract [`Effect`] to perform.
-//! Flash, CAN, and the clock never appear here, so every wire behavior is
+//! The engine is a pure state machine: the firmware task feeds it [`Event`]s (received frames
+//! plus completions of previously requested operations) and gets back an [`Output`] — at most
+//! one reply frame to transmit on the effective boot→host ID and at most one abstract
+//! [`Effect`] to perform. Flash, CAN and the clock never appear here, so every wire behavior is
 //! host-testable (R41).
+//!
+//! Owns:        the session state machine and the frame formats; SIZE/ERASE/HELLO values
+//!              superseded by docs/plan.md §1.2 follow the plan.
+//! Not here:    performing flash, CRC streaming and CAN I/O — the firmware task executes each
+//!              [`Effect`] and feeds the completion back.
+//! Invariants:  the machine can never wedge: a completion matching no outstanding effect is
+//!              ignored, and a frame arriving mid-effect is NAKed `ERR_STATE` rather than
+//!              corrupting the in-flight operation.
+//! Errors:      reported on the wire as NAK codes (`ERR_*`), never as `Result`.
+//! Depends on:  `dfu_config` (name field width).
+//! See also:    `image_meta.rs`, `crc32.rs`.
 //!
 //! # Effect / completion contract
 //!

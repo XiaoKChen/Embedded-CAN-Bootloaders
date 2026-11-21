@@ -37,8 +37,9 @@ jobs:
 
       - name: Wire deploy keys for private first-party deps
         if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -46,11 +47,17 @@ jobs:
             name=${dep#*/}
             var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
             alias="dep-${name}"
-            jq -r --arg k "$var" '.[$k] // empty' <<<"$SECRETS" > ~/.ssh/"$alias"
-            [ -s ~/.ssh/"$alias" ] || { echo "::error::missing secret $var for $dep"; exit 1; }
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
             chmod 600 ~/.ssh/"$alias"
-            printf 'Host %s\n  HostName github.com\n  HostKeyAlias github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' \
-              "$alias" "$alias" >> ~/.ssh/config
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
             git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
           done
 
@@ -66,8 +73,9 @@ jobs:
 
       - name: Wire deploy keys for private first-party deps
         if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -75,11 +83,17 @@ jobs:
             name=${dep#*/}
             var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
             alias="dep-${name}"
-            jq -r --arg k "$var" '.[$k] // empty' <<<"$SECRETS" > ~/.ssh/"$alias"
-            [ -s ~/.ssh/"$alias" ] || { echo "::error::missing secret $var for $dep"; exit 1; }
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
             chmod 600 ~/.ssh/"$alias"
-            printf 'Host %s\n  HostName github.com\n  HostKeyAlias github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' \
-              "$alias" "$alias" >> ~/.ssh/config
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
             git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
           done
 
@@ -106,8 +120,9 @@ jobs:
 
       - name: Wire deploy keys for private first-party deps
         if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -115,11 +130,17 @@ jobs:
             name=${dep#*/}
             var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
             alias="dep-${name}"
-            jq -r --arg k "$var" '.[$k] // empty' <<<"$SECRETS" > ~/.ssh/"$alias"
-            [ -s ~/.ssh/"$alias" ] || { echo "::error::missing secret $var for $dep"; exit 1; }
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
             chmod 600 ~/.ssh/"$alias"
-            printf 'Host %s\n  HostName github.com\n  HostKeyAlias github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' \
-              "$alias" "$alias" >> ~/.ssh/config
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
             git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
           done
 
@@ -139,8 +160,9 @@ jobs:
 
       - name: Wire deploy keys for private first-party deps
         if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -148,11 +170,17 @@ jobs:
             name=${dep#*/}
             var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
             alias="dep-${name}"
-            jq -r --arg k "$var" '.[$k] // empty' <<<"$SECRETS" > ~/.ssh/"$alias"
-            [ -s ~/.ssh/"$alias" ] || { echo "::error::missing secret $var for $dep"; exit 1; }
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
             chmod 600 ~/.ssh/"$alias"
-            printf 'Host %s\n  HostName github.com\n  HostKeyAlias github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' \
-              "$alias" "$alias" >> ~/.ssh/config
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
             git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
           done
 
@@ -235,8 +263,9 @@ jobs:
 
       - name: Wire deploy keys for private first-party deps
         if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
@@ -244,11 +273,17 @@ jobs:
             name=${dep#*/}
             var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
             alias="dep-${name}"
-            jq -r --arg k "$var" '.[$k] // empty' <<<"$SECRETS" > ~/.ssh/"$alias"
-            [ -s ~/.ssh/"$alias" ] || { echo "::error::missing secret $var for $dep"; exit 1; }
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
             chmod 600 ~/.ssh/"$alias"
-            printf 'Host %s\n  HostName github.com\n  HostKeyAlias github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' \
-              "$alias" "$alias" >> ~/.ssh/config
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
             git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
           done
 

@@ -732,13 +732,13 @@ impl ControlPipe<'_> {
             .write(|w| unsafe { w.bits(FIFOSEL_ISEL_WRITE | FIFOSEL_MBW_16BIT) });
         spin_until(|| usb.cfifosel.read().bits() & FIFOSEL_ISEL_WRITE != 0);
 
-        let mut chunks = data.chunks_exact(2);
-        for pair in &mut chunks {
-            let word = u16::from(pair[0]) | (u16::from(pair[1]) << 8);
+        let (pairs, tail) = data.as_chunks::<2>();
+        for pair in pairs {
+            let word = u16::from_le_bytes(*pair);
             // SAFETY: FIFO data port.
             usb.cfifo().write(|w| unsafe { w.bits(word) });
         }
-        if let [tail] = chunks.remainder() {
+        if let [tail] = tail {
             // SAFETY: 8-bit FIFO data port.
             usb.cfifol().write(|w| unsafe { w.bits(*tail) });
         }
@@ -914,13 +914,13 @@ impl EndpointInTrait for EndpointIn<'_> {
             return Err(EndpointError::Disabled);
         }
 
-        let mut chunks = buf.chunks_exact(2);
-        for pair in &mut chunks {
-            let word = u16::from(pair[0]) | (u16::from(pair[1]) << 8);
+        let (pairs, tail) = buf.as_chunks::<2>();
+        for pair in pairs {
+            let word = u16::from_le_bytes(*pair);
             // SAFETY: D0FIFO data port.
             usb.d0fifo().write(|w| unsafe { w.bits(word) });
         }
-        if let [tail] = chunks.remainder() {
+        if let [tail] = tail {
             // SAFETY: 8-bit D0FIFO data port.
             usb.d0fifol().write(|w| unsafe { w.bits(*tail) });
         }

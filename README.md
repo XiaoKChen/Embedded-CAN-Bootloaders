@@ -159,6 +159,13 @@ docs/
 Toolchain is pinned via [`rust-toolchain.toml`](rust-toolchain.toml) (stable, with the
 `thumbv7em-none-eabihf` target and `llvm-tools`); `rustup show` picks it up automatically.
 
+The bootloader takes `ra4m1-embassy` from the private GitHub repo
+`Embedded-Embassy/ra4m1-embassy` as a git dependency pinned by `rev` in
+[`bootloader/Cargo.toml`](bootloader/Cargo.toml) (the in-tree `crates/ra4m1-embassy` serves
+`demo-app` and `ra4m1-hal`). Cargo fetches it with the git CLI over SSH
+(`git-fetch-with-cli` in [`.cargo/config.toml`](.cargo/config.toml)), so a build needs read
+access to that repo through the `github-XiaoKChen` host alias in `~/.ssh/config`.
+
 ```sh
 # Build the bootloader (lean) on its own, then everything else. A single
 # workspace-wide build fails to link the lean bootloader: cargo unifies features,
@@ -236,6 +243,8 @@ driver *logic* only — see the honesty boundaries in [`renode/README.md`](renod
 `.github/workflows/ci.yml` runs on **`embassy-ra4m1-v*` tag pushes (releases)** and manual `workflow_dispatch`
 only — no longer on every branch push or PR:
 
+- every job that runs cargo first wires the `DEPLOY_KEY_RA4M1_EMBASSY` deploy key so cargo can
+  fetch the private `ra4m1-embassy` git dependency
 - `cargo fmt --all -- --check`
 - `cargo clippy -- -D warnings` (firmware members on the target triple, `boot-logic` on the host)
 - `cargo test -p boot-logic` (host)

@@ -30,8 +30,12 @@ rustflags = [
   # build.rs adds it, gated on the `defmt` feature (see that file).
 ]
 
-[registries.gitea]
-index = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
+[net]
+# Fetch git dependencies with the git CLI instead of cargo's built-in client:
+# only the CLI reads ~/.ssh/config, so only it resolves the `github-XiaoKChen`
+# host alias in the bootloader's ra4m1-embassy URL. CI sets the same through
+# CARGO_NET_GIT_FETCH_WITH_CLI.
+git-fetch-with-cli = true
 
 [build]
 target = "thumbv7em-none-eabihf"

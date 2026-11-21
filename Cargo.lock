@@ -725,8 +725,7 @@ dependencies = [
 [[package]]
 name = "ra4m1-embassy"
 version = "1.0.0"
-source = "sparse+http://172.16.8.103:8003/api/packages/Embassy/cargo/"
-checksum = "9f7c4329638c801852a1bdb7274e608651bfac9e5500f9a7e4fe6138544a36e7"
+source = "git+ssh://git@github-XiaoKChen/Embedded-Embassy/ra4m1-embassy.git?rev=eeafae7a0b24ad57e6e3e43eb6fda45ef4fcb4d0#eeafae7a0b24ad57e6e3e43eb6fda45ef4fcb4d0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

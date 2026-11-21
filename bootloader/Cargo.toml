@@ -39,11 +39,14 @@ defmt = [
 
 [dependencies]
 boot-logic = { path = "../crates/boot-logic", default-features = false }
-# Relocated to the Normal-Embedded-Embassy repo (interim path dep; switches to a
-# git-pinned dep once that repo is pushed — CI needs git, see workspace Cargo.toml).
-# `default-features = false` keeps defmt out of the lean graph; `ra4m1-embassy/defmt`
-# in the `defmt` feature above pulls it back for the debug flavor.
-ra4m1-embassy = { version = "1.0.0", registry = "gitea", default-features = false }
+# The shared chip runtime from the private Embedded-Embassy/ra4m1-embassy GitHub
+# repo (not the in-tree crates/ra4m1-embassy), pinned by `rev` so the shipped
+# bootloader.bin is reproducible: bump the rev deliberately and re-check the size
+# and OFS gates. Fetched over SSH with the git CLI (`[net]` in .cargo/config.toml;
+# CI wires a deploy key). `default-features = false` keeps defmt out of the lean
+# graph; `ra4m1-embassy/defmt` in the `defmt` feature above pulls it back for the
+# debug flavor.
+ra4m1-embassy = { git = "ssh://git@github-XiaoKChen/Embedded-Embassy/ra4m1-embassy.git", rev = "eeafae7a0b24ad57e6e3e43eb6fda45ef4fcb4d0", default-features = false }
 ra4m1 = { workspace = true }
 
 # U0.3 (spike S2): thread-mode executor only — no interrupt executor; nothing

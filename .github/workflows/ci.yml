@@ -9,6 +9,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Cargo's built-in git ignores ~/.ssh/config and url.insteadOf, which the key wiring needs.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  # Private first-party repos in the dependency graph, each with a DEPLOY_KEY_<NAME> secret
+  # on this repo (Embedded-Embassy/scripts ci-library.yml).
+  PRIVATE_DEPS: "Embedded-Embassy/ra4m1-embassy"
   # docs/plan.md §1: bootloader `.bin` hard size gate.
   SIZE_GATE_BYTES: 32768
   # docs/plan.md §1.5 / bootloader/src/ofs.rs: OFS0/OFS1/Security-MPU words,
@@ -29,6 +34,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wire deploy keys for private first-party deps
+        if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
+        env:
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for dep in $PRIVATE_DEPS; do
+            name=${dep#*/}
+            var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
+            alias="dep-${name}"
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
+            chmod 600 ~/.ssh/"$alias"
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
+            git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
+          done
+
       - name: Install pinned toolchain
         run: rustup show
       - run: cargo fmt --all -- --check
@@ -38,6 +70,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wire deploy keys for private first-party deps
+        if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
+        env:
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for dep in $PRIVATE_DEPS; do
+            name=${dep#*/}
+            var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
+            alias="dep-${name}"
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
+            chmod 600 ~/.ssh/"$alias"
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
+            git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
+          done
+
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -58,6 +117,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wire deploy keys for private first-party deps
+        if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
+        env:
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for dep in $PRIVATE_DEPS; do
+            name=${dep#*/}
+            var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
+            alias="dep-${name}"
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
+            chmod 600 ~/.ssh/"$alias"
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
+            git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
+          done
+
       - name: Install pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -71,6 +157,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wire deploy keys for private first-party deps
+        if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
+        env:
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for dep in $PRIVATE_DEPS; do
+            name=${dep#*/}
+            var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
+            alias="dep-${name}"
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
+            chmod 600 ~/.ssh/"$alias"
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
+            git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
+          done
+
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -147,6 +260,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wire deploy keys for private first-party deps
+        if: env.PRIVATE_DEPS != ''
+        # Each key is passed by name: never hand the whole secrets context to a step.
+        env:
+          DEPLOY_KEY_RA4M1_EMBASSY: ${{ secrets.DEPLOY_KEY_RA4M1_EMBASSY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          for dep in $PRIVATE_DEPS; do
+            name=${dep#*/}
+            var="DEPLOY_KEY_$(printf '%s' "${name//-/_}" | tr '[:lower:]' '[:upper:]')"
+            alias="dep-${name}"
+            [ -n "${!var:-}" ] || { echo "::error::secret $var for $dep is not passed to this step"; exit 1; }
+            echo "${!var}" > ~/.ssh/"$alias"
+            chmod 600 ~/.ssh/"$alias"
+            {
+              echo "Host $alias"
+              echo "  HostName github.com"
+              echo "  HostKeyAlias github.com"
+              echo "  User git"
+              echo "  IdentityFile ~/.ssh/$alias"
+              echo "  IdentitiesOnly yes"
+            } >> ~/.ssh/config
+            git config --global url."ssh://git@${alias}/${dep}.git".insteadOf "ssh://git@github-XiaoKChen/${dep}.git"
+          done
+
       - name: Install pinned toolchain (+ thumbv7em-none-eabihf)
         run: rustup show
       - uses: Swatinem/rust-cache@v2

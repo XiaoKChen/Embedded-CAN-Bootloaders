@@ -63,14 +63,31 @@ the host sends it to the sibling's own pair after discovery reports it as
 clears both recovery counters (so the restart is not the first of a new
 three), ACKs and restarts into that app without writing `otadata`. Because the
 counter-forced path preserves `otadata`, the sibling returns to the image it
-was running. EXIT does not apply to:
+was running. EXIT is accepted in any session phase until GO has activated a
+slot (an abandoned HELLO..VERIFY session is closed first; the partly written
+slot is the one `otadata` does not select). What EXIT decides:
 
 - a node entered by **app request** (ENTER_UPDATER, `--enter-bootloader`): its
   `otadata` was erased, so EXIT answers `0x07` and the node stays parked until a
-  GO;
-- a node whose app had not yet confirmed itself (`PENDING_VERIFY`): the
-  bootloader would roll it back, so EXIT answers `0x07` too;
-- a node with a session open (HELLO sent, GO not finished): `0x05`.
+  GO (a rollback of an image flashed this way also parks the node, needing a
+  reflash);
+- a node whose app had not yet confirmed itself (`PENDING_VERIFY`) **with an
+  older VALID entry**: EXIT **rolls back** to that older image (the bootloader
+  writes `ABORTED` for the pending one when it restarts, as it would on any
+  reset);
+- a `PENDING_VERIFY` image with nothing else bootable: `0x07`;
+- a refused EXIT (`0x07`, or `0x02` when the counters could not be cleared)
+  leaves the node parked, session untouched.
+
+The NAKs of this updater carry arg `0x0A`; an updater from before
+`c-cpp-esp32-v1.4.0` answers `0x0A` as an unknown command (`err 0x05`, arg
+`0x00`), which hosts report as "updater too old, reinstall over USB".
+
+Host flow after a recovery pulse train: keep sending EXIT for at least 3 s
+after the last pulse (the updater needs that long to boot), allow 2 s per
+attempt (it verifies the app image before answering), and when no attempt is
+answered re-probe APP_INFO for about 5 s: an app answering means the ACK was
+lost (released), an updater answering means the node was not released.
 
 ## Parked behaviour and stable clear
 

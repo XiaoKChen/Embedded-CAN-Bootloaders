@@ -32,7 +32,9 @@ discovery (`--scan`).
 Replies: ACK `{0x79, cmd_echo, 0x00, arg, ...}` / NAK `{0x79, cmd_echo, err, arg, ...}`
 with err `0x01` unexpected seq (arg = seq to rewind to), `0x02` flash failure,
 `0x03` CRC mismatch, `0x04` size out of bounds, `0x05` bad state, `0x06` image
-rejected by the target, `0x07` no bootable app (EXIT_UPDATER only).
+rejected by the target, `0x07` no bootable app (EXIT_UPDATER only). Every
+EXIT_UPDATER NAK of a v1.4.0+ updater carries arg `0x0A`; a legacy updater's
+unknown-command NAK (`err 0x05`, arg `0x00`) means "updater too old".
 
 **Windows:** one window = one 2048-byte flash block = 342 DATA frames
 (341×6 + 1×2 bytes; the final image block may be short). Individual DATA
@@ -135,9 +137,10 @@ leaves the updater without flashing. It is **answered by the parked updater**
 |---|---|
 | Request | `{0x0A, 0x01, 0xFE, 0xCA, 0x07, 0xB0, 0xFF, 0xFF}` (version `0x01`, key `0xB007CAFE` uint32 LE, as ENTER_UPDATER) |
 | ACK | `{0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}` |
-| NAK err `0x05` | wrong version or key, or **a session is in progress**: any state after HELLO until GO completes (the transfer is untouched) |
-| NAK err `0x07` | no bootable app: `otadata` selects nothing the bootloader would start (the node stays parked) |
-| NAK err `0x02` | the recovery counters could not be cleared (the node stays parked) |
+| NAK err `0x05` | `{0x79, 0x0A, 0x05, 0x0A, ...}`: wrong version, key or DLC, or GO has already activated a slot. An HELLO..VERIFY session in any phase does **not** block EXIT: it is aborted (the OTA handle closed) and the slot it wrote is not the one `otadata` selects |
+| NAK err `0x07` | `{0x79, 0x0A, 0x07, 0x0A, ...}`: nothing bootable, `otadata` selects no slot the bootloader would start (the node stays parked, any session untouched) |
+| NAK err `0x02` | `{0x79, 0x0A, 0x02, 0x0A, ...}`: the recovery counters could not be cleared (the node stays parked) |
+| legacy NAK | `{0x79, 0x0A, 0x05, 0x00, ...}`: an updater from `c-cpp-esp32-v1.3.0` or earlier does not know the command (arg `0x00`, not `0x0A`): hosts report "updater too old, reinstall over USB" |
 
 On an ACK the updater has already cleared both recovery counters (`bootcnt` and
 the RTC record, read-back verified, exactly as before GO), so the restart does
@@ -146,15 +149,18 @@ it restarts. **`otadata` is never written**: the bootloader boots the app it
 already selects.
 
 "Bootable" is decided the way the bootloader will decide at that restart
-(`node_updater/main/main.c: selected_app_bootable`, from ESP-IDF v5.3's
-`bootloader_utility_get_selected_boot_partition`), not by reading a state byte:
+(`src/boot/ota_select.c: ota_select_boot_slot`, host-tested, from ESP-IDF v5.3's
+`bootloader_utility_get_selected_boot_partition`; `node_updater/main/main.c`
+adds the `esp_image_verify`), not by reading a state byte. The check is
+conservative: only the slot `otadata` selects is considered.
 
 1. Read both `otadata` entries. An entry in state `PENDING_VERIFY` counts as
    `ABORTED` (the bootloader marks it so before choosing, because rollback is
    enabled); `INVALID`, `ABORTED`, a bad CRC or sequence `0xFFFFFFFF` never
    qualify. `NEW` and `VALID` qualify.
-2. The highest valid sequence wins; its slot is `(seq - 1) % ota partition count`.
-   An older valid entry still qualifies when a newer one was aborted.
+2. The highest valid sequence wins (a plain unsigned comparison, as in the
+   bootloader); its slot is `(seq - 1) % ota partition count`. An older valid
+   entry still qualifies when a newer one was aborted.
 3. That slot's image must pass the bootloader's own image check
    (`esp_image_verify`), otherwise the restart would just land in the updater
    again.
@@ -165,8 +171,9 @@ EXIT answers `0x07` and only a CAN flash (GO) leaves. A node **parked by the
 recovery counters** (for example by a shared reset, see
 [recovery.md](../concepts/recovery.md#shared-reset-and-exit_updater)) keeps its
 `otadata`, so EXIT returns it to the app it was running. A node whose app was
-still `PENDING_VERIFY` when the counters tripped answers `0x07` for the same
-reason: the bootloader would roll it back.
+still `PENDING_VERIFY` when the counters tripped is rolled back by EXIT to its
+older VALID entry (the bootloader writes `ABORTED` for the pending one); with no
+older entry it answers `0x07`.
 
 A **running app never answers `0x0A`**: the app-control codec parses it as no
 app-control opcode, so the node stays silent (never an ACK with arg `0xA5`),
@@ -175,14 +182,25 @@ therefore send it only after discovery says "updater":
 
 ```text
 discover (APP_INFO probe / INFO scan)  ->  node is "updater"
-  -> EXIT_UPDATER on its pair
-       ACK            -> wait ~1.5 s, APP_INFO: the app answers
-       NAK 0x07/0x05  -> stays parked; flash an image (or finish the transfer)
-       silence        -> ambiguous (lost ACK after the restart, or it is an app): APP_INFO decides
+  -> EXIT_UPDATER on its pair (3 attempts, 2 s each: the updater verifies its app first)
+       ACK            -> released; wait for the app (APP_INFO)
+       NAK 0x07/0x02  -> stays parked; flash an image / retry
+       NAK 0x05 + arg 0x0A -> bad request, or GO already activated a slot
+       NAK 0x05 + arg 0x00 -> legacy updater: too old, reinstall over USB
+       silence        -> re-probe APP_INFO for ~5 s (the app needs seconds to start TWAI):
+                         app answers      -> released (ACK lost)
+                         updater answers  -> not released
+                         nothing          -> absent, or not in its updater
 ```
 
-Hosts: `can_flash_host_exit_updater()` (C, same retry/flush rules as
-`enter_updater`; NAK carries `result.nak`) and `can_flash.py --exit-updater`.
+A reply that arrives after its attempt's window is classified by the next
+attempt's flush, not discarded. After a recovery pulse train keep trying for at
+least 3 s after the last pulse: the updater needs that long to boot.
+
+Hosts: `can_flash_host_exit_updater()` (C; outcomes `OK` (with `result.ack_lost`),
+`NAK` with `result.nak`, `UPDATER_OLD`, `IN_UPDATER`, `TIMEOUT`) and
+`can_flash.py --exit-updater` (`released`, `released_ack_lost`, `no_app`,
+`flash_error`, `bad_state`, `updater_too_old`, `not_acknowledged`, `absent`).
 
 ## Host implementations and known limits
 

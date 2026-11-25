@@ -33,7 +33,9 @@ already runs all CTest suites.
   clear with idle/stuck/permanently stuck SDA, clock-stretch budget, the SOLO
   ODU sequence and the 4,475 us worst-case bound), app-control codec (`test_app_control`, with golden
   vectors shared with `can_flash.py --selftest`, including EXIT_UPDATER's request
-  and its updater-only reply classification), package parser
+  and its updater-only reply classification including the legacy NAK), the otadata
+  slot decision (`test_ota_select`: VALID, NEW, PENDING with and without an older
+  VALID entry, erased, bad CRC, sequence wrap), package parser
   (`test_update_pkg`), boot counter, and the RA4M1 image validator kept as
   prior art.
 - The SLCAN codec in `components/slcan_codec/`.

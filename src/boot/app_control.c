@@ -101,7 +101,7 @@ void app_control_encode_request(uint8_t cmd, uint8_t out[APP_CONTROL_FRAME_BYTES
     memset(out, CAN_UPDATE_FILL_BYTE, APP_CONTROL_FRAME_BYTES);
     out[0] = cmd;
     out[1] = CAN_UPDATE_PROTOCOL_VERSION;
-    if (cmd == CAN_UPDATE_CMD_ENTER_UPDATER) {
+    if (cmd == CAN_UPDATE_CMD_ENTER_UPDATER || cmd == CAN_UPDATE_CMD_EXIT_UPDATER) {
         store_le32(&out[2], CAN_UPDATE_ENTER_KEY);
     }
 }
@@ -140,6 +140,21 @@ app_control_reply_t app_control_classify_reply(uint8_t cmd,
 {
     if (data[HDR_MARKER] != CAN_UPDATE_REPLY_MARKER || data[HDR_CMD] != cmd) {
         return APP_CONTROL_REPLY_FOREIGN;
+    }
+    if (cmd == CAN_UPDATE_CMD_EXIT_UPDATER) {
+        /* Only an updater answers EXIT: ACK arg 0x00, NAK arg 0x0A (v1.4.0+), or the legacy
+         * unknown-command NAK (err 0x05, arg 0x00). An arg 0xA5 reply is not an updater's. */
+        if (data[HDR_ARG] == CAN_UPDATE_EXIT_NAK_ARG && data[HDR_ERR] != CAN_UPDATE_OK) {
+            return APP_CONTROL_REPLY_UPDATER_REFUSED;
+        }
+        if (data[HDR_ARG] != 0x00u) {
+            return APP_CONTROL_REPLY_FOREIGN;
+        }
+        if (data[HDR_ERR] == CAN_UPDATE_OK) {
+            return APP_CONTROL_REPLY_UPDATER_ACK;
+        }
+        return (data[HDR_ERR] == CAN_UPDATE_ERR_STATE) ? APP_CONTROL_REPLY_UPDATER_NAK
+                                                       : APP_CONTROL_REPLY_FOREIGN;
     }
     if (data[HDR_ARG] == CAN_UPDATE_APP_MARKER) {
         return (data[HDR_ERR] == CAN_UPDATE_OK) ? APP_CONTROL_REPLY_APP_ACK

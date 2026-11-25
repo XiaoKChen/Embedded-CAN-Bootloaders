@@ -11,8 +11,8 @@
  * Owns:         The protocol constants (below), the session phases and window buffer
  *               (can_update_state_t) and the slot HAL contract (can_update_hal_t).
  * Not here:     INFO, answered by the integration layer (node_updater/main/main.c); the
- *               app-control codec (app_control.h); the CAN driver and the reset after GO (the
- *               caller).
+ *               app-control codec (app_control.h); the CAN driver and the reset after GO or
+ *               EXIT_UPDATER (the caller).
  * Invariants:   Per-device IDs: the host -> boot command ID the engine matches on is a runtime
  *               value supplied to can_update_init (default CAN_ID_HOST_TO_BOOT); the caller
  *               transmits every reply on the paired boot -> host ID (default CAN_ID_BOOT_TO_HOST).
@@ -76,6 +76,26 @@
  *   arg 0xA5 means "a running app answered", arg 0x00 with err 0x05 means "the
  *   node is already in its updater", and silence means neither.
  *
+ * Release extension (answered by the PARKED updater, this engine; a running app ignores it):
+ *     0x0A EXIT_UPDATER   byte1 = protocol version, bytes2..5 = CAN_UPDATE_ENTER_KEY
+ *                         uint32 LE. Releases a node a shared-reset recovery parked in its
+ *                         updater: restart into the app otadata selects. Accepted in any phase
+ *                         until GO has activated a slot (an abandoned HELLO..VERIFY session is
+ *                         closed first); otadata is only ever read.
+ *     ACK  {0x79, 0x0A, 0x00, 0x00, 0xFF x4}, sent BEFORE the restart; the recovery counters are
+ *          cleared first so this restart does not count towards the next recovery.
+ *     NAK  {0x79, 0x0A, err, 0x0A, 0xFF x4}: arg 0x0A marks an EXIT-aware (v1.4.0+) updater.
+ *          err 0x05 bad version/key/DLC, or GO already activated a slot;
+ *          err 0x07 nothing bootable (stays parked); err 0x02 the counter clear failed.
+ *          A legacy updater (<= v1.3.0) answers the unknown command {0x79, 0x0A, 0x05, 0x00}:
+ *          arg 0x00 tells a host "updater too old".
+ *   "Bootable" is conservative: only the slot otadata selects after the bootloader's
+ *   PENDING_VERIFY -> ABORTED rule, and only if its image passes the bootloader's own check. A
+ *   pending (never confirmed) image with an older VALID entry is therefore NOT started: EXIT
+ *   rolls back to the older entry (the bootloader writes ABORTED for the pending one).
+ *   A running app never answers 0x0A (app_control.h parses it as no app-control opcode), so a
+ *   host sends it only after discovery said "updater".
+ *
  * Session restart: HELLO is additionally accepted in ANY phase and resets the
  * session (documented deviation for host-retry robustness; every other
  * command is strictly ordered and NAKs err 0x05 out of order).
@@ -123,11 +143,14 @@ extern "C" {
  * only by a running app. The engine NAKs both as unknown commands. */
 #define CAN_UPDATE_CMD_APP_INFO      0x08u
 #define CAN_UPDATE_CMD_ENTER_UPDATER 0x09u
+/* Release extension: answered by the parked updater (this engine), ignored by apps. */
+#define CAN_UPDATE_CMD_EXIT_UPDATER  0x0Au
 #define CAN_UPDATE_APP_MARKER        0xA5u  /* byte3 of every app reply; the
                                                engine's NAK arg is 0x00 here */
-#define CAN_UPDATE_ENTER_KEY         CAN_UPDATE_MAGIC  /* ENTER_UPDATER bytes2..5:
-                                               the same "enter CAN update"
-                                               magic the RA4M1 app hands off */
+#define CAN_UPDATE_ENTER_KEY         CAN_UPDATE_MAGIC  /* ENTER_UPDATER and
+                                               EXIT_UPDATER bytes2..5: the same
+                                               "enter CAN update" magic the
+                                               RA4M1 app hands off */
 
 #define CAN_UPDATE_REPLY_MARKER      0x79u  /* byte0 of every ACK/NAK          */
 #define CAN_UPDATE_OK                0x00u  /* byte2 of an ACK                 */
@@ -139,6 +162,11 @@ extern "C" {
 #define CAN_UPDATE_ERR_IMAGE         0x06u  /* CRC ok, but the target rejected
                                                the image (ESP32: esp_ota_end
                                                format/chip/SHA-256 checks)     */
+#define CAN_UPDATE_ERR_NO_APP        0x07u  /* EXIT_UPDATER: otadata selects no
+                                               bootable app; stays parked      */
+#define CAN_UPDATE_EXIT_NAK_ARG      0x0Au  /* arg of every EXIT_UPDATER NAK from a
+                                               v1.4.0+ updater; a legacy updater's
+                                               unknown-command NAK has arg 0x00 */
 
 #define CAN_UPDATE_DATA_BYTES_PER_FRAME 6u
 #define CAN_UPDATE_FILL_BYTE            0xFFu
@@ -178,6 +206,19 @@ typedef struct {
     /* GO: make the verified slot the boot image. false -> NAK
      * CAN_UPDATE_ERR_FLASH and the device stays in the updater. */
     bool (*slot_activate)(void);
+
+    /* EXIT_UPDATER: true when the target's boot selection (ESP32: otadata, after the
+     * bootloader's PENDING_VERIFY -> ABORTED rule) names an app it can start. Conservative:
+     * only the selected slot is considered. NULL counts as false. */
+    bool (*app_bootable)(void);
+
+    /* EXIT_UPDATER, once an app is bootable: clear the recovery counters so the coming restart
+     * is not counted. false -> NAK CAN_UPDATE_ERR_FLASH, stays parked. NULL skips the step. */
+    bool (*exit_prepare)(void);
+
+    /* EXIT_UPDATER, once accepted: close any open write session (ESP32: esp_ota_abort).
+     * NULL skips the step. */
+    void (*slot_abort)(void);
 } can_update_hal_t;
 
 /* -----------------------------------------------------------------------------
@@ -196,12 +237,15 @@ typedef enum {
     CAN_UPDATE_ACTION_NONE = 0,
     CAN_UPDATE_ACTION_RESET,       /* GO accepted, slot activated: the caller
                                       performs the reset                      */
+    CAN_UPDATE_ACTION_EXIT,        /* EXIT_UPDATER accepted and ACKed: the caller
+                                      restarts without touching otadata       */
 } can_update_action_t;
 
 typedef struct {
     const can_update_hal_t *hal;
     uint32_t cmd_id;               /* host -> boot ID this engine answers      */
     can_update_phase_t phase;
+    bool     activated;            /* GO has activated a slot: EXIT_UPDATER refused */
     uint32_t image_size;           /* from SIZE                                */
     uint32_t bytes_received;       /* image bytes accepted so far              */
     uint32_t block_index;          /* next/current window                      */
@@ -228,7 +272,9 @@ void can_update_init(can_update_state_t *st, const can_update_hal_t *hal,
  * @param data        8 payload bytes.
  * @param reply_data  Out: 8-byte reply payload for CAN_ID_BOOT_TO_HOST.
  * @param out_action  Out: CAN_UPDATE_ACTION_RESET after an accepted GO (the
- *                    slot is already activated; the caller only resets).
+ *                    slot is already activated; the caller only resets), or
+ *                    CAN_UPDATE_ACTION_EXIT after an accepted EXIT_UPDATER (the
+ *                    caller sends the ACK first, then restarts).
  * @return true when reply_data holds a reply to transmit; false otherwise.
  */
 bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,

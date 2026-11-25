@@ -161,18 +161,19 @@ The updater, in `node_updater/build/`:
 | `0xE000` | `ota_data_initial.bin` | empty `otadata` → boots `factory` |
 | `0x20000` | `can_updater.bin` | common CAN updater (factory offset differs on IDU) |
 
-A successful updater build also creates `partition-table-node-4MB.bin` and
-`partition-table-idu-16MB.bin`, then both:
+A successful updater build also creates `partition-table-node-4MB.bin`,
+`partition-table-node-16MB.bin` and `partition-table-idu-16MB.bin`, then both:
 
 - `esp32s3-can-updater-<version>.zip`: `bootloader.bin`, `can_updater.bin`,
-  `ota_data_initial.bin`, both named partition tables, and `manifest.json`.
-  Manifest format 1 identifies the `node-4MB` and `idu-16MB` layouts,
+  `ota_data_initial.bin`, the three named partition tables, and `manifest.json`.
+  Manifest format 1 identifies the `node-4MB`, `node-16MB` and `idu-16MB` layouts,
   flash sizes and flash offsets; it contains **no per-board `cancfg`**.
   [Provisioning](../guides/provisioning-can-ids.md) generates that image.
 - `esp32s3-node-updater-<version>.zip`: the retained legacy 4 MB node bundle,
   with its original paths and flashing metadata.
 
-Use the universal bundle for both SOLO boards. The first good release
+Use the universal bundle for every SOLO board (the ODU, the IDU and, from
+`c-cpp-esp32-v1.4.0`, the Interaction board's `node-16MB`). The first good release
 carrying it is `c-cpp-esp32-v1.2.1` (v1.2.0's updater left the ROM port
 unreachable after a 1200-baud touch; issue #24). A local `<version>`
 comes from `git describe`; on a release tag it is the tag's version suffix.

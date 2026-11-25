@@ -63,6 +63,7 @@ static void discard_window(can_update_state_t *st)
 static void reset_session(can_update_state_t *st)
 {
     st->phase            = CAN_UPDATE_PHASE_IDLE;
+    st->activated        = false;
     st->image_size       = 0u;
     st->bytes_received   = 0u;
     st->block_index      = 0u;
@@ -211,9 +212,41 @@ static bool handle_go(can_update_state_t *st, uint8_t reply[8],
         return make_reply(reply, CAN_UPDATE_CMD_GO, CAN_UPDATE_ERR_FLASH, 0u);
     }
 
-    st->phase   = CAN_UPDATE_PHASE_IDLE;
-    *out_action = CAN_UPDATE_ACTION_RESET;
+    st->phase     = CAN_UPDATE_PHASE_IDLE;
+    st->activated = true;  /* from here EXIT_UPDATER is refused: the reset is under way */
+    *out_action   = CAN_UPDATE_ACTION_RESET;
     return make_reply(reply, CAN_UPDATE_CMD_GO, CAN_UPDATE_OK, 0u);
+}
+
+static bool exit_nak(uint8_t reply[8], uint8_t err)
+{
+    /* The arg tells a host this NAK came from an EXIT-aware updater (v1.4.0+): a legacy
+     * updater answers the unknown 0x0A with err 0x05 and arg 0x00. */
+    return make_reply(reply, CAN_UPDATE_CMD_EXIT_UPDATER, err, CAN_UPDATE_EXIT_NAK_ARG);
+}
+
+static bool handle_exit(can_update_state_t *st, const uint8_t data[8], uint8_t reply[8],
+                        can_update_action_t *out_action)
+{
+    /* Releasing a parked node is consequential: fail closed on any doubt, like ENTER_UPDATER.
+     * Any session phase is fine until GO has activated a slot: an abandoned HELLO..VERIFY
+     * leaves only the slot otadata does not select. */
+    if (data[1] != CAN_UPDATE_PROTOCOL_VERSION || load_le32(&data[2]) != CAN_UPDATE_ENTER_KEY ||
+        st->activated) {
+        return exit_nak(reply, CAN_UPDATE_ERR_STATE);
+    }
+    if (st->hal->app_bootable == NULL || !st->hal->app_bootable()) {
+        return exit_nak(reply, CAN_UPDATE_ERR_NO_APP);
+    }
+    if (st->hal->exit_prepare != NULL && !st->hal->exit_prepare()) {
+        return exit_nak(reply, CAN_UPDATE_ERR_FLASH);
+    }
+    if (st->hal->slot_abort != NULL) {
+        st->hal->slot_abort();  /* close any open OTA handle before the restart */
+    }
+    reset_session(st);
+    *out_action = CAN_UPDATE_ACTION_EXIT;
+    return make_reply(reply, CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_OK, 0u);
 }
 
 /* -----------------------------------------------------------------------------
@@ -242,7 +275,8 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
 
     if (dlc != 8u) {
         /* Protocol frames are always DLC 8; anything else is malformed. */
-        return make_reply(reply_data, cmd, CAN_UPDATE_ERR_STATE, 0u);
+        return make_reply(reply_data, cmd, CAN_UPDATE_ERR_STATE,
+                          (cmd == CAN_UPDATE_CMD_EXIT_UPDATER) ? CAN_UPDATE_EXIT_NAK_ARG : 0u);
     }
 
     /* HELLO restarts the session from any phase (see can_update.h). */
@@ -277,6 +311,8 @@ bool can_update_handle_frame(can_update_state_t *st, uint32_t id, uint8_t dlc,
             return handle_go(st, reply_data, out_action);
         }
         break;
+    case CAN_UPDATE_CMD_EXIT_UPDATER:
+        return handle_exit(st, data, reply_data, out_action);
     default:
         break;  /* unknown command */
     }

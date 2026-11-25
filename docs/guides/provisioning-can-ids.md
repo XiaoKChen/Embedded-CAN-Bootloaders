@@ -1,31 +1,33 @@
 # Provisioning CAN IDs and the board profile
 
-Use [ESP-PROG-2-PY-CLI](https://github.com/XiaoKChen/ESP-PROG-2-PY-CLI) on the **board's own USB port** for first flash. It selects the partition table and writes the v2 CAN-ID/name block plus the [board profile](../reference/board-profile.md) in `cancfg`. An unprovisioned v2 block means IDs `0x79E/0x79F` and an empty INFO name; an absent/invalid profile means TWAI TX 4/RX 5 at 250 kbit/s with no holds and no I2C safe writes. The records are validated independently. The profile is a 24-byte v1 or a 56-byte v2 record; **write v2 only together with a `c-cpp-esp32-v1.3.0` or later bundle**, because older bootloaders and updaters refuse v2 and fall back to the defaults ([compatibility](../reference/board-profile.md#v1-and-v2-compatibility)). The IDU preset is both brain and node; its app answers APP_INFO/ENTER_UPDATER on `0x07/0x08`.
+Use [ESP-PROG-2-PY-CLI](https://github.com/XiaoKChen/ESP-PROG-2-PY-CLI) on the **board's own USB port** for first flash. It selects the partition table and writes the v2 CAN-ID/name block plus the [board profile](../reference/board-profile.md) in `cancfg`. An unprovisioned v2 block means IDs `0x79E/0x79F` and an empty INFO name; an absent/invalid profile means TWAI TX 4/RX 5 at 250 kbit/s with no holds and no I2C safe writes. The records are validated independently. The profile is a 24-byte v1 or a 56-byte v2 record; **write v2 only together with a `c-cpp-esp32-v1.3.0` or later bundle**, because older bootloaders and updaters refuse v2 and fall back to the defaults ([compatibility](../reference/board-profile.md#v1-and-v2-compatibility)). The IDU preset is both brain and node; its app answers APP_INFO/ENTER_UPDATER on `0x05/0x06`.
 
 ## Recommended: flash a SOLO preset
 
-From the ESP-PROG-2-PY-CLI checkout, use its `esp-prog2-flasher` entry point. Supply the board's port; it is not auto-detected. With no board argument on a terminal, `--flash-solo` prompts for `odu` or `idu`.
+From the ESP-PROG-2-PY-CLI checkout, use its `esp-prog2-flasher` entry point. Supply the board's port; it is not auto-detected. With no board argument on a terminal, `--flash-solo` prompts for `odu`, `idu` or `interaction`.
 
 ```sh
 uv run esp-prog2-flasher --flash-solo odu --port COM7 --bundle path/to/unzipped-bundle
 uv run esp-prog2-flasher --flash-solo idu --port COM8 --bundle path/to/unzipped-bundle --app idu.bin
+uv run esp-prog2-flasher --flash-solo interaction --port COM9 --bundle path/to/unzipped-bundle
 uv run esp-prog2-flasher --flash-solo --port COM8 --bundle path/to/unzipped-bundle
 ```
 
-The bundle is `esp32s3-can-updater-<version>.zip`, containing one bootloader, one updater, both partition tables, blank `otadata` and `manifest.json`. From the first good release (`c-cpp-esp32-v1.2.1`), use `--bundle-tag c-cpp-esp32-v1.2.1` instead of `--bundle` to fetch it with authenticated `gh`; or use a locally built, unzipped [bundle](../getting-started/build.md#outputs). Do not pass both options. `--manufacturer NAME` overrides the preset manufacturer; preset product and IDs cannot be overridden. `--migrate-stock` first erases `0x10000..0x1FFFF` when moving from a stock Arduino layout. `--app app.bin` additionally writes an app to `ota_0` and selects it in `otadata`; without it the factory updater boots.
+The bundle is `esp32s3-can-updater-<version>.zip`, containing one bootloader, one updater, the `node-4MB`, `node-16MB` and `idu-16MB` partition tables, blank `otadata` and `manifest.json`. The `interaction` preset needs a bundle from `c-cpp-esp32-v1.4.0` (the first with `node-16MB`). From the first good release (`c-cpp-esp32-v1.2.1`), use `--bundle-tag c-cpp-esp32-v1.2.1` instead of `--bundle` to fetch it with authenticated `gh`; or use a locally built, unzipped [bundle](../getting-started/build.md#outputs). Do not pass both options. `--manufacturer NAME` overrides the preset manufacturer; preset product and IDs cannot be overridden. `--migrate-stock` first erases `0x10000..0x1FFFF` when moving from a stock Arduino layout. `--app app.bin` additionally writes an app to `ota_0` and selects it in `otadata`; without it the factory updater boots.
 
 | Preset | Layout | TWAI TX/RX | Hold LOW | Hold HIGH | I2C safe writes | v2 product | CAN command/reply |
 |---|---|---|---|---|---|---|---|
-| `odu` | `node-4MB` | 4/5, 250 kbit/s | GPIO 1, 2, 6, 17, 18, 33, 34, 35, 47, 48 | GPIO21 | EMC2305 `0x2C`, SDA 8 / SCL 9: `0x30`..`0x70` = 0 | `SOLO ODU Controller` | `0x05/0x06` |
-| `idu` | `idu-16MB` | 6/7, 250 kbit/s | GPIO3 | none | none | `SOLO IDU Controller` | `0x07/0x08` |
+| `odu` | `node-4MB` | 4/5, 250 kbit/s | GPIO 1, 2, 6, 17, 18, 33, 34, 35, 47, 48 | GPIO21 | EMC2305 `0x2C`, SDA 8 / SCL 9: `0x30`..`0x70` = 0 | `SOLO ODU Controller` | `0x03/0x04` |
+| `idu` | `idu-16MB` | 6/7, 250 kbit/s | GPIO3 | none | none | `SOLO IDU Controller` | `0x05/0x06` |
+| `interaction` | `node-16MB` | 4/5, 250 kbit/s | GPIO1 | none | PCAL6416A `0x20`, SDA 8 / SCL 18: `{0x02,0x00} {0x06,0xFF} {0x07,0xFF}` | `SOLO IDU Interaction` | `0x07/0x08` |
 
-These are the v2 records ([golden bytes](../reference/board-profile.md#solo-presets-and-golden-bytes)). The ODU's I2C writes set the EMC2305's five Fan Setting registers to 0 % on every reset and every second in the updater, which also disables its power-up watchdog that would otherwise run every fan at full scale. With a bundle up to `c-cpp-esp32-v1.2.1` only the v1 records apply (ODU: no holds; IDU: GPIO3).
+These are the v2 records ([golden bytes](../reference/board-profile.md#solo-presets-and-golden-bytes)). The ODU's I2C writes set the EMC2305's five Fan Setting registers to 0 % on every reset and every second in the updater, which also disables its power-up watchdog that would otherwise run every fan at full scale. The Interaction board's writes clear the PCAL6416A's output port 0 and make both ports inputs, so the panel and touch reset lines fall back to their pull-downs. With a bundle up to `c-cpp-esp32-v1.2.1` only the v1 records apply (ODU: no holds; IDU: GPIO3). The pairs are the post-renumber SOLO assignment (ODU `0x03/0x04`, IDU `0x05/0x06`, Interaction `0x07/0x08`).
 
 The tool optionally erases the stock region, then writes bootloader `0x0`, selected table `0x8000`, blank `otadata` `0xE000`, updater at the layout's `factory`, and 4 KB `cancfg` at `0x11000` in one `write-flash` with `dio`, `80m` and the layout's flash size. It reads back and compares `cancfg`. An optional app is written at the layout's `ota_0` with an OTA selection entry. It finishes with `--after watchdog-reset`; USB RTS hard reset did not reboot these boards on the bench. See [first flash](../getting-started/first-flash.md).
 
 To re-provision an existing install without reflashing the updater, use
-`--provision-node --port COM7 --product <name>`. For `SOLO ODU Controller` and
-`SOLO IDU Controller` it writes and verifies the full 4 KB `cancfg` image (v2
+`--provision-node --port COM7 --product <name>`. For `SOLO ODU Controller`,
+`SOLO IDU Controller` and `SOLO IDU Interaction` it writes and verifies the full 4 KB `cancfg` image (v2
 block + that preset's board profile). For any other product it writes the
 80-byte v2 block only, with the pair from `--boot-cmd-id`/`--boot-reply-id`
 (`--manufacturer` is optional). esptool erases the whole 4 KB sector, so a
@@ -44,7 +46,7 @@ import zlib
 from pathlib import Path
 
 manufacturer, product = b"Normal Corporation", b"SOLO IDU Controller"
-cmd, reply, tx, rx, bitrate = 0x07, 0x08, 6, 7, 1
+cmd, reply, tx, rx, bitrate = 0x05, 0x06, 6, 7, 1
 hold_low, hold_high = 1 << 3, 0
 sda, scl, addr, writes = 0xFF, 0xFF, 0xFF, []  # no I2C safe writes
 assert len(manufacturer) <= 32 and len(product) <= 32 and len(writes) <= 8
@@ -66,7 +68,7 @@ Path("cancfg.bin").write_bytes((v2 + profile).ljust(4096, b"\xff"))
 PY
 ```
 
-Use the *unzipped* universal bundle. For the IDU, `factory` is `0xFA0000` and `ota_0` is `0x20000`. For the ODU, use `partition-table-node-4MB.bin`, `--flash-size 4MB`, factory `0x20000` and adjust the records to the ODU values. These commands do not write an app, so blank `otadata` boots the updater. Replace `<port>` and `<bundle>`:
+Use the *unzipped* universal bundle. For the IDU, `factory` is `0xFA0000` and `ota_0` is `0x20000`. For the ODU, use `partition-table-node-4MB.bin`, `--flash-size 4MB`, factory `0x20000` and adjust the records to the ODU values; for the Interaction board, `partition-table-node-16MB.bin`, `--flash-size 16MB`, factory `0x20000` and its records. These commands do not write an app, so blank `otadata` boots the updater. Replace `<port>` and `<bundle>`:
 
 ```sh
 uv run --with esptool -m esptool --chip esp32s3 -p <port> --after watchdog-reset write-flash --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 <bundle>/bootloader.bin 0x8000 <bundle>/partition-table-idu-16MB.bin 0xe000 <bundle>/ota_data_initial.bin 0x11000 cancfg.bin 0xfa0000 <bundle>/can_updater.bin

@@ -74,6 +74,13 @@ CMD_INFO = 0x07                # identify a parked bootloader (5-frame reply)
 # by a RUNNING app; the updater NAKs both as unknown commands (err 0x05, arg 0).
 CMD_APP_INFO = 0x08            # identify a running app (9-frame reply)
 CMD_ENTER_UPDATER = 0x09       # running app ACKs, then restarts into its updater
+# Release extension: answered only by the PARKED updater; an app stays silent. ACK arg 0x00;
+# every NAK of a v1.4.0+ updater carries arg 0x0A, a legacy updater's unknown-command NAK arg 0x00.
+CMD_EXIT_UPDATER = 0x0A        # updater ACKs, then restarts into its selected app
+EXIT_NAK_ARG = 0x0A
+EXIT_ATTEMPTS = 3
+EXIT_TIMEOUT_S = 2.0           # per attempt: the updater verifies a 1.75 MB slot first
+APP_BOOT_WAIT_S = 5.0          # after an unanswered EXIT: wait this long for the app to answer
 APP_MARKER = 0xA5              # byte3 (arg) of every app reply
 ENTER_KEY = 0xB007CAFE         # ENTER_UPDATER bytes2..5, uint32 LE
 APP_INFO_FIELD = 32            # esp_app_desc_t version / project_name
@@ -94,6 +101,7 @@ ERR_CRC_MISMATCH = 0x03
 ERR_SIZE_BOUNDS = 0x04
 ERR_BAD_STATE = 0x05
 ERR_IMAGE_REJECTED = 0x06      # CRC ok, target refused the image (ESP32: not a valid esp32s3 app)
+ERR_NO_APP = 0x07              # EXIT_UPDATER: nothing bootable (rolled-back/pending/erased); stays parked
 
 ERR_NAMES = {
     ERR_UNEXPECTED_SEQ: "unexpected sequence number",
@@ -102,6 +110,7 @@ ERR_NAMES = {
     ERR_SIZE_BOUNDS: "image size out of bounds",
     ERR_BAD_STATE: "command received in bad state",
     ERR_IMAGE_REJECTED: "image rejected by the target (not a valid app for this chip?)",
+    ERR_NO_APP: "no bootable app (otadata selects none; the node stays in its updater)",
 }
 
 FRAME_DLC = 8
@@ -259,8 +268,9 @@ def encode_uart_packet(path, body=b""):
 # App-control codec (byte-identical to src/boot/app_control.c)
 # ---------------------------------------------------------------------------
 def encode_app_request(cmd):
-    """APP_INFO {0x08, 0x01, FF...} or ENTER_UPDATER {0x09, 0x01, key LE, FF, FF}."""
-    tail = struct.pack("<I", ENTER_KEY) if cmd == CMD_ENTER_UPDATER else b""
+    """APP_INFO {0x08, 0x01, FF...}, ENTER_UPDATER {0x09, 0x01, key LE, FF, FF} or
+    EXIT_UPDATER {0x0A, 0x01, key LE, FF, FF}."""
+    tail = struct.pack("<I", ENTER_KEY) if cmd in (CMD_ENTER_UPDATER, CMD_EXIT_UPDATER) else b""
     return _pad_frame(bytes([cmd, PROTOCOL_VERSION]) + tail)
 
 
@@ -273,6 +283,44 @@ def classify_app_reply(cmd, data):
     if data[2] == ERR_BAD_STATE and data[3] == 0x00:
         return "updater_nak"
     return None
+
+
+def classify_exit_reply(data):
+    """Outcome of one frame answering EXIT_UPDATER, else None (not a reply to it):
+    'released' (ACK), 'no_app' (0x07), 'flash_error' (0x02), 'bad_state' (0x05), all with the
+    EXIT-aware arg 0x0A; 'updater_too_old' for a legacy updater's unknown-command NAK
+    (0x05, arg 0x00); 'unclear' for another err with arg 0x0A. An arg 0xA5 is never an updater's."""
+    if len(data) != FRAME_DLC or data[0] != REPLY_MAGIC or data[1] != CMD_EXIT_UPDATER:
+        return None
+    err, arg = data[2], data[3]
+    if arg == EXIT_NAK_ARG and err != ACK:
+        return {ERR_NO_APP: "no_app", ERR_FLASH_FAILURE: "flash_error",
+                ERR_BAD_STATE: "bad_state"}.get(err, "unclear")
+    if arg != 0x00:
+        return None
+    if err == ACK:
+        return "released"
+    return "updater_too_old" if err == ERR_BAD_STATE else None
+
+
+EXIT_MESSAGES = {
+    "released": "EXIT_UPDATER acknowledged; the node restarts into its app "
+                "(check with --app-info after %.1f s)" % APP_BOOT_WAIT_S,
+    "released_ack_lost": "EXIT_UPDATER: no ACK, but the node now answers as an app "
+                         "(released; the ACK was lost)",
+    "no_app": "EXIT_UPDATER refused: no bootable app (nothing valid is selected, or the new "
+              "image was never confirmed); the node stays in its updater - reflash it",
+    "flash_error": "EXIT_UPDATER refused: the recovery counters could not be cleared "
+                   "(flash failure); the node stays in its updater",
+    "bad_state": "EXIT_UPDATER refused: bad request, or an update was already activated",
+    "updater_too_old": "EXIT_UPDATER: the updater is too old to know the command "
+                       "(v1.3.0 or earlier): reinstall it over USB",
+    "not_acknowledged": "EXIT_UPDATER: no reply, and the node still answers as an updater "
+                        "(not released)",
+    "absent": "EXIT_UPDATER: no reply and no app answered within %.0f s (node absent, or not "
+              "parked in its updater: a running app never answers EXIT)" % APP_BOOT_WAIT_S,
+    "unclear": "EXIT_UPDATER: the updater sent an unrecognised NAK",
+}
 
 
 def _app_info_check(frames):
@@ -505,6 +553,46 @@ class CanFlasher:
         into its updater), ('updater', None) when the updater answered instead
         (already parked, or a retry after a lost ACK)."""
         return self._app_request(CMD_ENTER_UPDATER, "ENTER_UPDATER")
+
+    def exit_updater(self):
+        """EXIT_UPDATER to a node parked in its updater. Returns an outcome key of EXIT_MESSAGES:
+        'released', 'released_ack_lost', 'no_app', 'flash_error', 'bad_state', 'updater_too_old',
+        'not_acknowledged', 'absent' or 'unclear'. Up to EXIT_ATTEMPTS sends, EXIT_TIMEOUT_S
+        each (the updater verifies its app first); a reply left over from an earlier attempt is
+        classified, never flushed. With no reply at all the node is re-probed with APP_INFO
+        for APP_BOOT_WAIT_S: an app answering means the ACK was lost, an updater answering
+        means the node was not released."""
+        for _ in range(EXIT_ATTEMPTS):
+            while True:  # stale frames, but keep a late EXIT reply
+                msg = self.bus.recv(0.0)
+                if msg is None:
+                    break
+                outcome = self._exit_outcome(msg)
+                if outcome is not None:
+                    return outcome
+            self._send(encode_app_request(CMD_EXIT_UPDATER))
+            deadline = time.monotonic() + EXIT_TIMEOUT_S
+            while True:
+                msg = self._recv_reply_frame(deadline)
+                if msg is None:
+                    break
+                outcome = self._exit_outcome(msg)
+                if outcome is not None:
+                    return outcome
+        probe_end = time.monotonic() + APP_BOOT_WAIT_S
+        while time.monotonic() < probe_end:
+            try:
+                kind, _ = self.query_app_info()
+            except FlashError:
+                continue  # silent or still starting
+            return "released_ack_lost" if kind == "app" else "not_acknowledged"
+        return "absent"
+
+    def _exit_outcome(self, msg):
+        if (msg.arbitration_id != self.id_rx or msg.is_extended_id or msg.is_error_frame
+                or msg.is_remote_frame):
+            return None
+        return classify_exit_reply(bytes(msg.data))
 
     def _app_request(self, cmd, name):
         answered = False  # something spoke on id_rx, never validly
@@ -811,6 +899,12 @@ class FakeBootloader(threading.Thread):
         self.rewind_naks_sent = 0
         self.verify_ok = False
         self.go_received = False
+        self.bootable = True        # does otadata select a bootable app (EXIT_UPDATER)?
+        self.exit_received = False
+        self.legacy = False         # a v1.3.0 updater: EXIT is an unknown command (arg 0x00)
+        self.exit_delay_s = 0.0     # verify time before the EXIT reply
+        self.drop_exit_reply = False
+        self.exit_nak_err = None    # force an EXIT NAK err (arg 0x0A)
 
         self._state = "idle"
         self._expect_frame = 0      # next global DATA frame index expected
@@ -891,6 +985,21 @@ class FakeBootloader(threading.Thread):
             self._reply(CMD_GO, ACK)
         elif cmd == CMD_INFO:
             self._reply_info()
+        elif cmd == CMD_EXIT_UPDATER and not self.legacy:
+            # Like the real engine: any phase until GO, the right key, a bootable app; every NAK
+            # carries arg 0x0A.
+            time.sleep(self.exit_delay_s)
+            if data[1] != PROTOCOL_VERSION or data[2:6] != struct.pack("<I", ENTER_KEY):
+                self._reply(CMD_EXIT_UPDATER, ERR_BAD_STATE, bytes([EXIT_NAK_ARG]))
+            elif self.exit_nak_err is not None:
+                self._reply(CMD_EXIT_UPDATER, self.exit_nak_err, bytes([EXIT_NAK_ARG]))
+            elif not self.bootable:
+                self._reply(CMD_EXIT_UPDATER, ERR_NO_APP, bytes([EXIT_NAK_ARG]))
+            else:
+                self.exit_received = True
+                self._state = "idle"
+                if not self.drop_exit_reply:
+                    self._reply(CMD_EXIT_UPDATER, ACK, bytes([0x00]))
         else:
             # Like the real engine: unknown commands (APP_INFO, ENTER_UPDATER)
             # are NAKed err 0x05 with arg 0x00 and change nothing.
@@ -989,6 +1098,7 @@ def check_app_control_vector():
     checks = [
         (encode_app_request(CMD_ENTER_UPDATER), bytes.fromhex("0901feca07b0ffff")),
         (encode_app_request(CMD_APP_INFO), bytes.fromhex("0801ffffffffffff")),
+        (encode_app_request(CMD_EXIT_UPDATER), bytes.fromhex("0a01feca07b0ffff")),
         (encode_app_info("1.2.3", "node_app"), expected_info),
     ]
     for actual, expected in checks:
@@ -1004,7 +1114,26 @@ def check_app_control_vector():
     updater_nak = bytes([REPLY_MAGIC, CMD_ENTER_UPDATER, ERR_BAD_STATE, 0x00]) + b"\xff" * 4
     if classify_app_reply(CMD_ENTER_UPDATER, updater_nak) != "updater_nak":
         raise FlashError("selftest FAILED: updater NAK not recognised")
-    print("selftest: APP_INFO / ENTER_UPDATER golden vectors OK")
+    def exit_frame(err, arg):
+        return bytes([REPLY_MAGIC, CMD_EXIT_UPDATER, err, arg]) + b"\xff" * 4
+
+    exit_cases = [
+        (exit_frame(ACK, 0x00), "released"),
+        (exit_frame(ERR_NO_APP, EXIT_NAK_ARG), "no_app"),
+        (exit_frame(ERR_FLASH_FAILURE, EXIT_NAK_ARG), "flash_error"),
+        (exit_frame(ERR_BAD_STATE, EXIT_NAK_ARG), "bad_state"),
+        (exit_frame(ERR_CRC_MISMATCH, EXIT_NAK_ARG), "unclear"),
+        (exit_frame(ERR_BAD_STATE, 0x00), "updater_too_old"),   # the legacy unknown-command NAK
+        (exit_frame(ERR_NO_APP, 0x00), None),
+        (exit_frame(ACK, EXIT_NAK_ARG), None),
+        (exit_frame(ACK, APP_MARKER), None),
+        (bytes([REPLY_MAGIC, CMD_ENTER_UPDATER, ACK, 0x00]) + b"\xff" * 4, None),
+    ]
+    for frame, expected in exit_cases:
+        if classify_exit_reply(frame) != expected:
+            raise FlashError("selftest FAILED: EXIT_UPDATER reply %s classified %r, expected %r"
+                             % (frame.hex(), classify_exit_reply(frame), expected))
+    print("selftest: APP_INFO / ENTER_UPDATER / EXIT_UPDATER golden vectors OK")
 
 
 def run_app_control_selftest(retries):
@@ -1045,11 +1174,70 @@ def run_app_control_selftest(retries):
         flasher = CanFlasher(bus, DEFAULT_ID_TX, DEFAULT_ID_RX, retries)
         check(flasher.query_app_info() == ("updater", None), "updater NAK to APP_INFO not detected")
         check(flasher.enter_updater() == ("updater", None), "updater NAK to ENTER_UPDATER not detected")
+        fake.bootable = False
+        check(flasher.exit_updater() == "no_app", "EXIT_UPDATER NAK 0x07 not reported")
+        check(not fake.exit_received, "the updater exited without a bootable app")
+        fake.bootable = True
+        fake.exit_nak_err = ERR_FLASH_FAILURE
+        check(flasher.exit_updater() == "flash_error", "EXIT_UPDATER NAK 0x02 not reported")
+        fake.exit_nak_err = None
+        check(flasher.exit_updater() == "released", "EXIT_UPDATER not ACKed by the updater")
+        check(fake.exit_received, "the updater did not exit")
+        # An open session does not block the release (any phase until GO).
+        fake.exit_received = False
+        fake._state = "hello"
+        check(flasher.exit_updater() == "released" and fake.exit_received,
+              "EXIT_UPDATER refused with a session open")
+        # A late reply (after its window) is classified, not discarded: shrink the window.
+        fake.exit_received = False
+        fake.exit_delay_s = 0.5
+        saved_timeout = globals()["EXIT_TIMEOUT_S"]
+        globals()["EXIT_TIMEOUT_S"] = 0.3
+        try:
+            check(flasher.exit_updater() == "released", "a late EXIT reply was lost")
+        finally:
+            globals()["EXIT_TIMEOUT_S"] = saved_timeout
+        fake.exit_delay_s = 0.0
+        time.sleep(1.0)  # let the fake answer the second EXIT, then drop that leftover reply
+        while bus.recv(0.0) is not None:
+            pass
+        # A legacy updater answers the unknown command with arg 0x00: "too old".
+        fake.legacy = True
+        check(flasher.exit_updater() == "updater_too_old", "legacy updater not recognised")
+        fake.legacy = False
+        # No reply at all but still an updater (APP_INFO is NAKed): not released.
+        fake.drop_exit_reply = True
+        fake.exit_delay_s = 0.0
+        saved = (globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"])
+        globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"] = 1, 0.2, 0.6
+        try:
+            check(flasher.exit_updater() == "not_acknowledged", "unanswered EXIT of an updater not reported")
+        finally:
+            globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"] = saved
     finally:
         fake.stop()
         bus.shutdown()
-    print("selftest PASS: app answers APP_INFO/ENTER_UPDATER, ignores INFO; "
-          "the updater's NAK is told apart")
+
+    app = FakeApp(SELFTEST_CHANNEL, DEFAULT_ID_TX, DEFAULT_ID_RX, "v6.0.0-test", "node_app")
+    app.start()
+    bus = can.Bus(interface="virtual", channel=SELFTEST_CHANNEL)
+    bus.set_filters([{"can_id": DEFAULT_ID_RX, "can_mask": 0x7FF, "extended": False}])
+    try:
+        flasher = CanFlasher(bus, DEFAULT_ID_TX, DEFAULT_ID_RX, retries)
+        saved = (globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"])
+        globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"] = 1, 0.2, 1.0
+        try:
+            # A running app never answers EXIT; it does answer APP_INFO, so the silence reads as
+            # "released (ACK lost)" -- hosts send EXIT only after discovery said "updater".
+            check(flasher.exit_updater() == "released_ack_lost", "a silent app not re-probed")
+        finally:
+            globals()["EXIT_ATTEMPTS"], globals()["EXIT_TIMEOUT_S"], globals()["APP_BOOT_WAIT_S"] = saved
+        check(app.ignored >= 1 and not app.entered, "the fake app mishandled EXIT_UPDATER")
+    finally:
+        app.stop()
+        bus.shutdown()
+    print("selftest PASS: app answers APP_INFO/ENTER_UPDATER, ignores INFO and EXIT_UPDATER; "
+          "the updater's NAK is told apart; EXIT_UPDATER releases a bootable updater only")
 
 
 def check_enter_bootloader_vector():
@@ -1673,6 +1861,15 @@ def parse_args(argv):
                              "frames on --id-tx/--id-rx), wait %.1f s, then "
                              "flash; with no firmware, just park it and exit"
                              % UPDATER_BOOT_WAIT_S)
+    parser.add_argument("--exit-updater", action="store_true",
+                        help="release a node PARKED in its CAN updater (EXIT_UPDATER, "
+                             "CMD 0x0A, native frames on --id-tx/--id-rx): it restarts "
+                             "into the app its otadata selects (an unconfirmed new image "
+                             "rolls back to an older valid one; NAK 0x07 and parked when "
+                             "nothing is bootable). 2 s per attempt, then up to 5 s of "
+                             "APP_INFO re-probing to tell 'released (ACK lost)' from 'still "
+                             "parked'. Run it alone, only after --scan/--info says the node "
+                             "is in its updater")
     parser.add_argument("--selftest", action="store_true",
                         help="run the full flow against an in-process fake "
                              "bootloader on a virtual bus (no hardware)")
@@ -1682,10 +1879,14 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     if (not args.selftest and not args.info and not args.scan
             and not args.enter_bootloader and not args.app_info
-            and not args.enter_updater and not args.tui and not args.firmware):
+            and not args.enter_updater and not args.exit_updater
+            and not args.tui and not args.firmware):
         parser.error("firmware image is required unless --selftest, --info, "
                      "--scan, --app-info, --enter-bootloader, --enter-updater, "
-                     "or --tui is given")
+                     "--exit-updater, or --tui is given")
+    if args.exit_updater and (args.info or args.scan or args.firmware or args.app_info
+                              or args.enter_bootloader or args.enter_updater):
+        parser.error("--exit-updater releases a parked node and exits; run it alone")
     if args.app_info and (args.info or args.scan or args.firmware
                           or args.enter_bootloader or args.enter_updater):
         parser.error("--app-info identifies a running app and exits; run it alone")
@@ -1763,6 +1964,16 @@ def main(argv=None):
             if image is None:
                 print("Bootloader entry requested; no firmware to flash.")
                 return 0
+
+        if args.exit_updater:
+            bus = can.Bus(**bus_kwargs)
+            bus.set_filters([{"can_id": args.id_rx, "can_mask": 0x7FF, "extended": False}])
+            try:
+                outcome = CanFlasher(bus, args.id_tx, args.id_rx, args.retries).exit_updater()
+            finally:
+                bus.shutdown()
+            print(EXIT_MESSAGES[outcome])
+            return 0 if outcome in ("released", "released_ack_lost") else 1
 
         if args.app_info or args.enter_updater:
             bus = can.Bus(**bus_kwargs)

@@ -81,8 +81,11 @@ The v2 block uses manufacturer `Normal Corporation`. The bytes below are the exa
 
 | Board | Layout | TWAI TX/RX | v2 product | CAN cmd/reply | v2-block CRC (LE) |
 |---|---|---|---|---|---|
-| SOLO ODU | `node-4MB` | 4/5, 250 kbit/s | `SOLO ODU Controller` | `0x05/0x06` | `02bd587b` |
-| SOLO IDU | `idu-16MB` | 6/7, 250 kbit/s | `SOLO IDU Controller` | `0x07/0x08` | `e12a8269` |
+| SOLO ODU | `node-4MB` | 4/5, 250 kbit/s | `SOLO ODU Controller` | `0x03/0x04` | `5c80056c` |
+| SOLO IDU | `idu-16MB` | 6/7, 250 kbit/s | `SOLO IDU Controller` | `0x05/0x06` | `e4cf085d` |
+| SOLO IDU Interaction | `node-16MB` | 4/5, 250 kbit/s | `SOLO IDU Interaction` | `0x07/0x08` | `cbdf7233` |
+
+The pairs are the post-renumber SOLO assignment (2026-11-11): ODU `0x03/0x04`, IDU `0x05/0x06`, Interaction `0x07/0x08` (Airform-SOLO#52). The v2-block CRC covers the IDs, so it changed with them; the profile records below do not depend on the IDs.
 
 **SOLO ODU v2**: hold LOW GPIO 1, 2, 6, 17, 18, 33, 34, 35, 47, 48 (mask `0x0001800E00060046`); hold HIGH GPIO 21 (mask `0x0000000000200000`); EMC2305 at `0x2C` on SDA GPIO8 / SCL GPIO9, five writes `{0x30,0x00} {0x40,0x00} {0x50,0x00} {0x60,0x00} {0x70,0x00}` (Fan 1..5 Setting = 0 %):
 
@@ -103,4 +106,12 @@ d1a7b0df0238ffff060701ff08000000000000000000000000000000ffffff00ffffffffffffffff
 | SOLO ODU | none | `d1a7b0df0118ffff040501ff0000000000000000209e783a` |
 | SOLO IDU | GPIO3 (`1 << 3`) | `d1a7b0df0118ffff060701ff0800000000000000cba2ca5d` |
 
-The IDU is both a brain and a CAN node: its application must answer APP_INFO and ENTER_UPDATER on its own `0x07/0x08` pair. Unprovisioned v2 IDs instead default to `0x79E/0x79F`; those defaults are independent of the profile's GPIO defaults.
+**SOLO IDU Interaction v2** (`c-cpp-esp32-v1.4.0`+, `node-16MB`): hold LOW GPIO1 (`1 << 1`, the LEDC backlight PWM: LOW is dark); no hold HIGH; PCAL6416A I2C expander at `0x20` on SDA GPIO8 / SCL GPIO18, three writes `{0x02,0x00}` (output port 0 = 0) `{0x06,0xFF} {0x07,0xFF}` (both configuration ports = inputs). The expander survives an ESP32 reset, so this releases what the app drove and leaves the panel and touch reset lines on their pull-downs:
+
+```text
+d1a7b0df0238ffff040501ff0200000000000000000000000000000008122003020006ff07ffffffffffffffffffffffffffffff7f8660b8
+```
+
+Pinned by `tests/vectors/board_profile_v2.txt` (`interaction_v2`), matching the provisioning tool's golden vector. A v1 record (hold LOW GPIO1 only, no I2C writes) would drop the expander writes, so provision this board with a bundle that reads v2 (`c-cpp-esp32-v1.4.0` ships `node-16MB` and reads v2).
+
+The IDU is both a brain and a CAN node: its application must answer APP_INFO and ENTER_UPDATER on its own `0x05/0x06` pair. Unprovisioned v2 IDs instead default to `0x79E/0x79F`; those defaults are independent of the profile's GPIO defaults.

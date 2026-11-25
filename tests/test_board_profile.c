@@ -41,6 +41,7 @@ static const uint8_t IDU_V1_RECORD[BOARD_PROFILE_SIZE_V1] = {
 };
 static uint8_t s_odu_v2[BOARD_PROFILE_SIZE_V2];  /* loaded from BOARD_PROFILE_VECTORS */
 static uint8_t s_idu_v2[BOARD_PROFILE_SIZE_V2];
+static uint8_t s_interaction_v2[BOARD_PROFILE_SIZE_V2];
 
 #define GPIO(n) (1ull << (n))
 
@@ -71,6 +72,19 @@ static board_profile_t odu_v2_profile(void)
         p.i2c_writes[i].reg   = (uint8_t)(0x30u + 0x10u * i);  /* Fan 1..5 Setting */
         p.i2c_writes[i].value = 0x00u;
     }
+    return p;
+}
+
+static board_profile_t interaction_v2_profile(void)
+{
+    board_profile_t p = v1_profile(4u, 5u, GPIO(1));  /* LEDC backlight: LOW is dark */
+    p.i2c_sda_gpio    = 8u;
+    p.i2c_scl_gpio    = 18u;
+    p.i2c_addr7       = 0x20u;  /* PCAL6416A */
+    p.i2c_write_count = 3u;
+    p.i2c_writes[0].reg = 0x02u; p.i2c_writes[0].value = 0x00u;  /* output port 0 = 0  */
+    p.i2c_writes[1].reg = 0x06u; p.i2c_writes[1].value = 0xFFu;  /* config port 0: in  */
+    p.i2c_writes[2].reg = 0x07u; p.i2c_writes[2].value = 0xFFu;  /* config port 1: in  */
     return p;
 }
 
@@ -114,10 +128,12 @@ static void load_vectors(void)
             found += decode_hex(line + 7, s_odu_v2);
         } else if (strncmp(line, "idu_v2 ", 7u) == 0) {
             found += decode_hex(line + 7, s_idu_v2);
+        } else if (strncmp(line, "interaction_v2 ", 15u) == 0) {
+            found += decode_hex(line + 15, s_interaction_v2);
         }
     }
     fclose(f);
-    if (found != 2) {
+    if (found != 3) {
         memset(s_odu_v2, 0, sizeof s_odu_v2);  /* fails every v2 golden test loudly */
     }
 }
@@ -195,6 +211,9 @@ static void test_v2_encode_matches_golden_vectors(void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(s_odu_v2, out, BOARD_PROFILE_SIZE_V2);
     TEST_ASSERT_EQUAL_INT(BOARD_PROFILE_OK, board_profile_encode(&idu, out));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(s_idu_v2, out, BOARD_PROFILE_SIZE_V2);
+    const board_profile_t interaction = interaction_v2_profile();
+    TEST_ASSERT_EQUAL_INT(BOARD_PROFILE_OK, board_profile_encode(&interaction, out));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(s_interaction_v2, out, BOARD_PROFILE_SIZE_V2);
 }
 
 static void test_v2_parse_golden_vectors(void)
@@ -206,6 +225,10 @@ static void test_v2_parse_golden_vectors(void)
     assert_profile(&odu, &p);
     TEST_ASSERT_EQUAL_INT(BOARD_PROFILE_OK, board_profile_parse(s_idu_v2, sizeof s_idu_v2, &p));
     assert_profile(&idu, &p);
+    const board_profile_t interaction = interaction_v2_profile();
+    TEST_ASSERT_EQUAL_INT(BOARD_PROFILE_OK,
+                          board_profile_parse(s_interaction_v2, sizeof s_interaction_v2, &p));
+    assert_profile(&interaction, &p);
 }
 
 static void test_v1_encode_matches_golden_vectors(void)

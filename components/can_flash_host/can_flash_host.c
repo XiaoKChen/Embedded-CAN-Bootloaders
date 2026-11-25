@@ -371,43 +371,91 @@ static can_flash_host_status_t app_info_body(can_flash_host_t *h, uint16_t reply
     return app_control_decode_info(frames, info) ? CAN_FLASH_HOST_STATUS_OK : CAN_FLASH_HOST_STATUS_PROTOCOL;
 }
 
-/* One app-control request with bounded retries; info is NULL for ENTER. */
+/* Wait for one classifiable reply to cmd within window_ms. OK: *kind is set. TIMEOUT: nothing
+ * usable; PROTOCOL/TRANSPORT as app_frame. *answered records a malformed reply to our command. */
+static can_flash_host_status_t await_reply(can_flash_host_t *h, uint16_t reply_id, uint8_t cmd,
+                                           uint32_t start, uint32_t window_ms,
+                                           can_flash_host_frame_t *f, app_control_reply_t *kind,
+                                           bool *answered)
+{
+    can_flash_host_status_t status;
+    *kind = APP_CONTROL_REPLY_FOREIGN;
+    do {
+        status = app_frame(h, reply_id, start, window_ms, f);
+        if (status == CAN_FLASH_HOST_STATUS_OK) {
+            *kind = app_control_classify_reply(cmd, f->data);
+            /* Our echo with nonsense is malformed; other replies on the
+             * ID (stale HELLO/INFO answers) are just skipped. */
+            if (*kind == APP_CONTROL_REPLY_FOREIGN && f->data[0] == CAN_UPDATE_REPLY_MARKER &&
+                f->data[1] == cmd) { *answered = true; }
+        } else if (status == CAN_FLASH_HOST_STATUS_PROTOCOL) {
+            *answered = true;
+        }
+    } while (*kind == APP_CONTROL_REPLY_FOREIGN &&
+             (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_PROTOCOL));
+    return status;
+}
+
+/* EXIT only: a reply that outlived its attempt must not be thrown away with the stale frames.
+ * Drains the queue like flush_queued, but stops at the first frame that classifies as an EXIT
+ * reply and returns it. */
+static can_flash_host_status_t flush_keeping_exit_reply(can_flash_host_t *h, uint16_t reply_id,
+                                                        can_flash_host_frame_t *f,
+                                                        app_control_reply_t *kind)
+{
+    *kind = APP_CONTROL_REPLY_FOREIGN;
+    for (uint32_t i = 0u; i < CAN_FLASH_HOST_FLUSH_FRAMES; ++i) {
+        const can_flash_host_io_t io = h->receive(h->user, f, 0u);
+        if (io == CAN_FLASH_HOST_IO_TIMEOUT) { return CAN_FLASH_HOST_STATUS_OK; }
+        if (io != CAN_FLASH_HOST_IO_OK) { return outcome(h, CAN_FLASH_HOST_STATUS_TRANSPORT); }
+        if (f->id == reply_id && data_frame(f)) {
+            *kind = app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, f->data);
+            if (*kind != APP_CONTROL_REPLY_FOREIGN) { return CAN_FLASH_HOST_STATUS_OK; }
+        }
+    }
+    return CAN_FLASH_HOST_STATUS_OK;
+}
+
+/* One app-control request with bounded retries; info is NULL for ENTER and EXIT. */
 static can_flash_host_status_t app_request(can_flash_host_t *h, uint16_t cmd_id, uint16_t reply_id,
-                                           uint8_t cmd, app_control_info_t *info)
+                                           uint8_t cmd, app_control_info_t *info,
+                                           uint32_t attempts, uint32_t window_ms)
 {
     uint8_t request[CAN_FLASH_HOST_DLC];
     app_control_encode_request(cmd, request);
     h->result.step = (can_flash_host_step_t)cmd;
     bool answered = false;  /* something spoke on reply_id, never validly */
-    for (uint32_t attempt = 1u; attempt <= CAN_FLASH_HOST_APP_ATTEMPTS; ++attempt) {
+    for (uint32_t attempt = 1u; attempt <= attempts; ++attempt) {
         h->result.attempts = attempt;
-        if (flush_queued(h) != CAN_FLASH_HOST_STATUS_OK ||
-            send_frame(h, cmd_id, request) != CAN_FLASH_HOST_STATUS_OK) { return h->result.status; }
-        const uint32_t start = h->clock_ms(h->user);
         can_flash_host_frame_t f;
         app_control_reply_t kind = APP_CONTROL_REPLY_FOREIGN;
-        can_flash_host_status_t status;
-        do {
-            status = app_frame(h, reply_id, start, CAN_FLASH_HOST_APP_MS, &f);
-            if (status == CAN_FLASH_HOST_STATUS_OK) {
-                kind = app_control_classify_reply(cmd, f.data);
-                /* Our echo with nonsense is malformed; other replies on the
-                 * ID (stale HELLO/INFO answers) are just skipped. */
-                if (kind == APP_CONTROL_REPLY_FOREIGN && f.data[0] == CAN_UPDATE_REPLY_MARKER &&
-                    f.data[1] == cmd) { answered = true; }
-            } else if (status == CAN_FLASH_HOST_STATUS_PROTOCOL) {
-                answered = true;
+        can_flash_host_status_t status = CAN_FLASH_HOST_STATUS_OK;
+        uint32_t start = 0u;
+        if (cmd == CAN_UPDATE_CMD_EXIT_UPDATER) {
+            if (flush_keeping_exit_reply(h, reply_id, &f, &kind) != CAN_FLASH_HOST_STATUS_OK) {
+                return h->result.status;
             }
-        } while (kind == APP_CONTROL_REPLY_FOREIGN &&
-                 (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_PROTOCOL));
+        } else if (flush_queued(h) != CAN_FLASH_HOST_STATUS_OK) {
+            return h->result.status;
+        }
+        if (kind == APP_CONTROL_REPLY_FOREIGN) {  /* no late EXIT reply: ask (again) */
+            if (send_frame(h, cmd_id, request) != CAN_FLASH_HOST_STATUS_OK) { return h->result.status; }
+            start = h->clock_ms(h->user);
+            status = await_reply(h, reply_id, cmd, start, window_ms, &f, &kind, &answered);
+        }
         if (status == CAN_FLASH_HOST_STATUS_TRANSPORT) { return status; }
         if (status == CAN_FLASH_HOST_STATUS_TIMEOUT) { continue; }
         h->result.nak = f.data[2];
         h->result.arg = f.data[3];
-        if (kind == APP_CONTROL_REPLY_UPDATER_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_IN_UPDATER); }
-        if (kind == APP_CONTROL_REPLY_APP_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_NAK); }
+        if (kind == APP_CONTROL_REPLY_UPDATER_NAK) {
+            return outcome(h, cmd == CAN_UPDATE_CMD_EXIT_UPDATER ? CAN_FLASH_HOST_STATUS_UPDATER_OLD
+                                                                 : CAN_FLASH_HOST_STATUS_IN_UPDATER);
+        }
+        if (kind == APP_CONTROL_REPLY_APP_NAK || kind == APP_CONTROL_REPLY_UPDATER_REFUSED) {
+            return outcome(h, CAN_FLASH_HOST_STATUS_NAK);
+        }
         if (info == NULL) { return outcome(h, CAN_FLASH_HOST_STATUS_OK); }
-        status = app_info_body(h, reply_id, start, CAN_FLASH_HOST_APP_MS, &f, info);
+        status = app_info_body(h, reply_id, start, window_ms, &f, info);
         if (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_TRANSPORT) {
             return outcome(h, status);
         }
@@ -427,7 +475,8 @@ can_flash_host_status_t can_flash_host_app_info(can_flash_host_t *h, uint16_t cm
     if (info == NULL || !valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
     memset(&h->result, 0, sizeof(h->result));
     memset(info, 0, sizeof(*info));
-    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_APP_INFO, info);
+    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_APP_INFO, info,
+                       CAN_FLASH_HOST_APP_ATTEMPTS, CAN_FLASH_HOST_APP_MS);
 }
 
 can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *h, uint16_t cmd_id,
@@ -435,7 +484,42 @@ can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *h, uint16
 {
     if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
     memset(&h->result, 0, sizeof(h->result));
-    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_ENTER_UPDATER, NULL);
+    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_ENTER_UPDATER, NULL,
+                       CAN_FLASH_HOST_APP_ATTEMPTS, CAN_FLASH_HOST_APP_MS);
+}
+
+/* After an EXIT without any reply: the node either restarted (ACK lost) and its app needs a few
+ * seconds to start TWAI, or never exited. Re-probe APP_INFO until CAN_FLASH_HOST_APP_BOOT_MS. */
+static can_flash_host_status_t confirm_released(can_flash_host_t *h, uint16_t cmd_id,
+                                                uint16_t reply_id)
+{
+    const can_flash_host_result_t exit_result = h->result;
+    const uint32_t start = h->clock_ms(h->user);
+    app_control_info_t info;
+    do {
+        const can_flash_host_status_t status = app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_APP_INFO,
+                                                          &info, 1u, CAN_FLASH_HOST_APP_MS);
+        if (status == CAN_FLASH_HOST_STATUS_TRANSPORT) { return status; }
+        if (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_NAK ||
+            status == CAN_FLASH_HOST_STATUS_IN_UPDATER) {
+            const bool released = (status != CAN_FLASH_HOST_STATUS_IN_UPDATER);
+            h->result = exit_result;
+            h->result.ack_lost = released;
+            return outcome(h, released ? CAN_FLASH_HOST_STATUS_OK : CAN_FLASH_HOST_STATUS_IN_UPDATER);
+        }
+    } while (remaining(h, start, CAN_FLASH_HOST_APP_BOOT_MS) > 0u);
+    h->result = exit_result;
+    return outcome(h, CAN_FLASH_HOST_STATUS_TIMEOUT);
+}
+
+can_flash_host_status_t can_flash_host_exit_updater(can_flash_host_t *h, uint16_t cmd_id,
+                                                   uint16_t reply_id)
+{
+    if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
+    memset(&h->result, 0, sizeof(h->result));
+    const can_flash_host_status_t status = app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_EXIT_UPDATER,
+                                                      NULL, CAN_FLASH_HOST_EXIT_ATTEMPTS, CAN_FLASH_HOST_EXIT_MS);
+    return status == CAN_FLASH_HOST_STATUS_TIMEOUT ? confirm_released(h, cmd_id, reply_id) : status;
 }
 
 /* One scan probe: APP_INFO on any reply ID within one SCAN_MS window. TIMEOUT
@@ -505,12 +589,44 @@ can_flash_host_status_t can_flash_host_discover(can_flash_host_t *h, uint16_t fr
     return outcome(h, full ? CAN_FLASH_HOST_STATUS_CAPACITY : CAN_FLASH_HOST_STATUS_OK);
 }
 
+/* EXIT_UPDATER has its own wording: the generic one says "rejected" for a lost ACK's follow-up. */
+static bool exit_result_text(const can_flash_host_result_t *r, char *buf, size_t len)
+{
+    const char *text;
+    switch (r->status) {
+    case CAN_FLASH_HOST_STATUS_OK:
+        text = r->ack_lost ? "EXIT_UPDATER: released (ACK lost; the app answers APP_INFO)"
+                           : "EXIT_UPDATER: released";
+        break;
+    case CAN_FLASH_HOST_STATUS_UPDATER_OLD:
+        text = "EXIT_UPDATER: updater too old, no EXIT support (reinstall over USB)";
+        break;
+    case CAN_FLASH_HOST_STATUS_IN_UPDATER:
+        text = "EXIT_UPDATER: not acknowledged, node still in its updater";
+        break;
+    case CAN_FLASH_HOST_STATUS_TIMEOUT:
+        text = "EXIT_UPDATER: no reply and no app answered (node absent or not in its updater)";
+        break;
+    case CAN_FLASH_HOST_STATUS_NAK:
+        text = (r->nak == CAN_UPDATE_ERR_NO_APP) ? "EXIT_UPDATER refused: no bootable app, node stays in its updater"
+             : (r->nak == CAN_UPDATE_ERR_FLASH)  ? "EXIT_UPDATER refused: recovery counters could not be cleared (flash failure)"
+             : (r->nak == CAN_UPDATE_ERR_STATE)  ? "EXIT_UPDATER refused: bad request or an update already activated"
+                                                  : "EXIT_UPDATER refused: unknown NAK";
+        break;
+    default:
+        return false;
+    }
+    (void)snprintf(buf, len, "%s (attempts %" PRIu32 ")", text, r->attempts);
+    return true;
+}
+
 void can_flash_host_result_text(const can_flash_host_result_t *r, char *buf, size_t len)
 {
-    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO", "APP_INFO", "ENTER_UPDATER" };
-    static const char *const errors[] = { "OK", "unexpected sequence", "flash failure", "CRC mismatch", "size out of bounds", "bad state", "image rejected" };
-    static const char *const statuses[] = { "success", "invalid argument", "transport failure", "timeout", "rejected", "invalid reply", "image read failed", "scan capacity exceeded", "node is in its updater" };
+    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO", "APP_INFO", "ENTER_UPDATER", "EXIT_UPDATER" };
+    static const char *const errors[] = { "OK", "unexpected sequence", "flash failure", "CRC mismatch", "size out of bounds", "bad state", "image rejected", "no bootable app" };
+    static const char *const statuses[] = { "success", "invalid argument", "transport failure", "timeout", "rejected", "invalid reply", "image read failed", "scan capacity exceeded", "node is in its updater", "updater too old" };
     if (r == NULL || buf == NULL || len == 0u) { return; }
+    if (r->step == CAN_FLASH_HOST_STEP_EXIT_UPDATER && exit_result_text(r, buf, len)) { return; }
     const char *step = (unsigned)r->step < sizeof(steps) / sizeof(steps[0]) ? steps[r->step] : "?";
     const char *status = (unsigned)r->status < sizeof(statuses) / sizeof(statuses[0]) ? statuses[r->status] : "?";
     if (r->status == CAN_FLASH_HOST_STATUS_NAK) {

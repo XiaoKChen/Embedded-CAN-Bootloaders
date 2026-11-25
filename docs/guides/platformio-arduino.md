@@ -165,10 +165,13 @@ For an Arduino-ESP32 app that already installs/receives TWAI frames, set
 `custom_arduino_node_app = yes` in **that PlatformIO environment**. The library
 then compiles `components/arduino_node_app/` (C++); without the flag, it does
 not. Copy the matching [partition table](../concepts/flash-layout.md), set
-`board_upload.flash_size = 4MB` for the ODU or `16MB` for the IDU, and do
-not run PlatformIO's default full-chip upload. Both CSVs
-(`node_updater/partitions.csv`, `node_updater/partitions_idu_16MB.csv`) ship
-in the installed library package. The stock
+`board_upload.flash_size = 4MB` for the ODU or `16MB` for the IDU and the
+Interaction board, and do not run PlatformIO's default full-chip upload. All
+three CSVs (`node_updater/partitions.csv`,
+`node_updater/partitions_node_16MB.csv`, `node_updater/partitions_idu_16MB.csv`)
+ship in the installed library package; a 16 MB CAN node uses
+`partitions_node_16MB.csv` (its first 4 MB equal `partitions.csv`, plus an
+`assets` partition). The stock
 core does not need `custom_sdkconfig` or `custom_can_updater_client` for this
 helper.
 

@@ -24,7 +24,7 @@ already runs all CTest suites.
 
 - The shared pure-logic core in `src/boot/`: protocol engine, CRC32,
   config-block parser, **`test_board_profile`** (both SOLO golden 24-byte v1
-  records and the 56-byte v2 records in `tests/vectors/board_profile_v2.txt`,
+  records and the 56-byte v2 records (ODU, IDU, Interaction) in `tests/vectors/board_profile_v2.txt`,
   v1 read through a v2-sized buffer, default fallback, invalid
   header/CRC/rules for both versions, hold-HIGH and I2C rules, reserved fields
   and unused write pairs, high GPIOs, both encoders and bitrate codes),
@@ -32,7 +32,10 @@ already runs all CTest suites.
   open-drain bus and slave: exact bit sequence of one write, NACK, UM10204 bus
   clear with idle/stuck/permanently stuck SDA, clock-stretch budget, the SOLO
   ODU sequence and the 4,475 us worst-case bound), app-control codec (`test_app_control`, with golden
-  vectors shared with `can_flash.py --selftest`), package parser
+  vectors shared with `can_flash.py --selftest`, including EXIT_UPDATER's request
+  and its updater-only reply classification including the legacy NAK), the otadata
+  slot decision (`test_ota_select`: VALID, NEW, PENDING with and without an older
+  VALID entry, erased, bad CRC, sequence wrap), package parser
   (`test_update_pkg`), boot counter, and the RA4M1 image validator kept as
   prior art.
 - The SLCAN codec in `components/slcan_codec/`.

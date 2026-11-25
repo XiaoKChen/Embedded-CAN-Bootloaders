@@ -79,7 +79,7 @@ switch it with `build.ps1 examples/bench_app menuconfig` →
 
 | Project | Notable settings |
 |---|---|
-| `node_updater` | build-time 4 MB `partitions.csv` (the universal bundle also generates `partitions_idu_16MB.csv`), rollback, no GPIO factory reset, the RTC contract below, `CONFIG_ESP_TASK_WDT_PANIC`; TinyUSB CDC-ACM, UART0-only console (`CONFIG_ESP_CONSOLE_SECONDARY_NONE`) |
+| `node_updater` | build-time 4 MB `partitions.csv` (the universal bundle also generates `partitions_node_16MB.csv` and `partitions_idu_16MB.csv`), rollback, no GPIO factory reset, the RTC contract below, `CONFIG_ESP_TASK_WDT_PANIC`; TinyUSB CDC-ACM, UART0-only console (`CONFIG_ESP_CONSOLE_SECONDARY_NONE`) |
 | `brain` | `CONFIG_ESPTOOLPY_FLASHSIZE_16MB`, its own A/B `partitions.csv`, rollback, `CONFIG_ETH_SPI_ETHERNET_W5500`; octal PSRAM stays disabled; console on UART0 plus USB-Serial-JTAG secondary (`CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`) |
 | `examples/bench_app`, `examples/node_app` | the node's table via `../../node_updater/partitions.csv`, 4 MB, rollback, the RTC contract, console on USB-Serial-JTAG (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`) |
 | `examples/slcan_bridge` | logs and panics to UART0 only: `CONFIG_ESP_CONSOLE_SECONDARY_NONE`, so the USB port carries SLCAN only |

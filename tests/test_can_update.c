@@ -32,6 +32,11 @@ static bool     s_fail_next_program;
 static bool     s_fail_read;
 static bool     s_fail_commit;
 static bool     s_fail_next_activate;
+static bool     s_app_bootable;
+static bool     s_fail_exit_prepare;
+static uint32_t s_bootable_calls;
+static uint32_t s_exit_prepare_calls;
+static uint32_t s_abort_calls;
 static uint32_t s_commit_calls;
 static uint32_t s_activate_calls;
 static uint32_t s_last_program_offset;
@@ -95,6 +100,24 @@ static bool fake_slot_activate(void)
     return true;
 }
 
+static bool fake_app_bootable(void)
+{
+    s_bootable_calls++;
+    return s_app_bootable;
+}
+
+static bool fake_exit_prepare(void)
+{
+    s_exit_prepare_calls++;
+    return !s_fail_exit_prepare;
+}
+
+static void fake_slot_abort(void)
+{
+    s_abort_calls++;
+    s_session_open = false;
+}
+
 static const can_update_hal_t s_hal = {
     .slot_size     = TEST_SLOT_SIZE,
     .slot_erase    = fake_slot_erase,
@@ -102,6 +125,9 @@ static const can_update_hal_t s_hal = {
     .slot_read     = fake_slot_read,
     .slot_commit   = fake_slot_commit,
     .slot_activate = fake_slot_activate,
+    .app_bootable  = fake_app_bootable,
+    .exit_prepare  = fake_exit_prepare,
+    .slot_abort    = fake_slot_abort,
 };
 
 /* -----------------------------------------------------------------------------
@@ -242,6 +268,11 @@ void setUp(void)
     s_fail_read           = false;
     s_fail_commit         = false;
     s_fail_next_activate  = false;
+    s_app_bootable        = true;
+    s_fail_exit_prepare   = false;
+    s_bootable_calls      = 0u;
+    s_exit_prepare_calls  = 0u;
+    s_abort_calls         = 0u;
     s_commit_calls        = 0u;
     s_activate_calls      = 0u;
     s_last_program_offset = 0u;
@@ -593,6 +624,179 @@ static void test_app_control_opcodes_naked_in_every_phase(void)
     TEST_ASSERT_EQUAL_HEX8_ARRAY(s_image, s_slot, TEST_IMAGE_SIZE);
 }
 
+/* EXIT_UPDATER (0x0A): accepted in any phase until GO has activated a slot, and only with a
+ * bootable app (can_update.h). Every NAK carries arg 0x0A (v1.4.0+). */
+static bool send_exit(void)
+{
+    return send_cmd(CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_PROTOCOL_VERSION, true,
+                    CAN_UPDATE_ENTER_KEY);
+}
+
+static void assert_exit_refused(uint8_t err)
+{
+    assert_reply(CAN_UPDATE_CMD_EXIT_UPDATER, err, CAN_UPDATE_EXIT_NAK_ARG);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_NONE, s_action);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_exit_prepare_calls);
+}
+
+static void test_exit_updater_acks_clears_counters_and_requests_exit(void)
+{
+    static const uint8_t expected[8] = { 0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    TEST_ASSERT_TRUE(send_exit());
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expected, s_reply, 8);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_EXIT, s_action);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_bootable_calls);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_exit_prepare_calls);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_activate_calls);  /* the boot selection is never written */
+}
+
+static void test_exit_updater_without_bootable_app_naks_no_app_and_stays_parked(void)
+{
+    static const uint8_t expected[8] = { 0x79, 0x0A, 0x07, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF };
+    s_app_bootable = false;
+    TEST_ASSERT_TRUE(send_exit());
+    assert_exit_refused(CAN_UPDATE_ERR_NO_APP);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expected, s_reply, 8);
+
+    s_app_bootable = true;  /* the refusal changed nothing: a retry succeeds */
+    TEST_ASSERT_TRUE(send_exit());
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_EXIT, s_action);
+}
+
+static void test_exit_updater_counter_clear_failure_naks_flash_and_stays_parked(void)
+{
+    s_fail_exit_prepare = true;
+    TEST_ASSERT_TRUE(send_exit());
+    assert_reply(CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_ERR_FLASH, CAN_UPDATE_EXIT_NAK_ARG);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_NONE, s_action);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_abort_calls);
+}
+
+static void test_exit_updater_without_hal_hooks_naks_no_app(void)
+{
+    static const can_update_hal_t bare = {
+        .slot_size = TEST_SLOT_SIZE, .slot_erase = fake_slot_erase, .slot_program = fake_slot_program,
+        .slot_read = fake_slot_read, .slot_commit = fake_slot_commit, .slot_activate = fake_slot_activate,
+    };
+    can_update_init(&s_state, &bare, s_cmd_id);
+    TEST_ASSERT_TRUE(send_exit());
+    assert_exit_refused(CAN_UPDATE_ERR_NO_APP);
+}
+
+static void test_exit_updater_bad_version_key_or_dlc_naks_state(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_EXIT_UPDATER, 0x02u, true, CAN_UPDATE_ENTER_KEY));
+    assert_exit_refused(CAN_UPDATE_ERR_STATE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_PROTOCOL_VERSION, true,
+                              CAN_UPDATE_ENTER_KEY ^ 1u));
+    assert_exit_refused(CAN_UPDATE_ERR_STATE);
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    assert_exit_refused(CAN_UPDATE_ERR_STATE);
+
+    uint8_t d[8] = { CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_PROTOCOL_VERSION, 0xFE, 0xCA, 0x07, 0xB0, 0xFF, 0xFF };
+    TEST_ASSERT_TRUE(can_update_handle_frame(&s_state, s_cmd_id, 7u, d, s_reply, &s_action));
+    assert_exit_refused(CAN_UPDATE_ERR_STATE);  /* a short frame still carries the EXIT-aware arg */
+    TEST_ASSERT_EQUAL_UINT32(0u, s_bootable_calls);  /* a bad request never reaches the target */
+}
+
+static void assert_exit_accepted_in_session(can_update_phase_t phase)
+{
+    TEST_ASSERT_EQUAL(phase, s_state.phase);
+    const uint32_t aborts = s_abort_calls;
+    TEST_ASSERT_TRUE(send_exit());
+    assert_reply(CAN_UPDATE_CMD_EXIT_UPDATER, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_EXIT, s_action);
+    TEST_ASSERT_EQUAL_UINT32(aborts + 1u, s_abort_calls);
+    TEST_ASSERT_FALSE(s_session_open);                  /* the OTA handle is closed          */
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_IDLE, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_activate_calls);     /* the abandoned slot is never selected */
+}
+
+static void test_exit_updater_accepted_in_every_phase_before_go(void)
+{
+    /* Each phase gets a fresh engine: the accepted EXIT ends the session. */
+    for (int phase = CAN_UPDATE_PHASE_IDLE; phase <= CAN_UPDATE_PHASE_VERIFIED; ++phase) {
+        setUp();
+        if (phase >= CAN_UPDATE_PHASE_GREETED) {
+            TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+        }
+        if (phase >= CAN_UPDATE_PHASE_SIZED) {
+            TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+        }
+        if (phase >= CAN_UPDATE_PHASE_TRANSFER) {
+            TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+        }
+        if (phase >= CAN_UPDATE_PHASE_TRANSFERRED) {
+            s_seq = 0u;
+            stream_block(0u);
+            stream_block(CAN_UPDATE_WINDOW_SIZE);
+            stream_block(2u * CAN_UPDATE_WINDOW_SIZE);
+        }
+        if (phase == CAN_UPDATE_PHASE_VERIFIED) {
+            verify_good_crc();
+            assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+        }
+        if (phase == CAN_UPDATE_PHASE_IDLE) {
+            TEST_ASSERT_TRUE(send_exit());
+            TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_EXIT, s_action);
+        } else {
+            assert_exit_accepted_in_session(phase);
+        }
+    }
+}
+
+static void test_exit_updater_mid_transfer_is_accepted_and_the_session_is_gone(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    s_seq = 0u;
+    stream_block(0u);
+    assert_exit_accepted_in_session(CAN_UPDATE_PHASE_TRANSFER);
+    /* DATA after the accepted EXIT is out of order: nothing continues the dead session. */
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_DATA, 0u, false, 0u));
+    TEST_ASSERT_EQUAL_HEX8(CAN_UPDATE_ERR_STATE, s_reply[2]);
+}
+
+static void test_exit_updater_refused_without_a_bootable_app_keeps_the_session(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    s_app_bootable = false;
+    TEST_ASSERT_TRUE(send_exit());
+    assert_exit_refused(CAN_UPDATE_ERR_NO_APP);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_TRANSFER, s_state.phase);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_abort_calls);
+}
+
+static void test_exit_updater_refused_after_go_activated_a_slot(void)
+{
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_HELLO, CAN_UPDATE_PROTOCOL_VERSION, false, 0u));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_SIZE, 0xFFu, true, TEST_IMAGE_SIZE));
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_ERASE, 0xFFu, false, 0u));
+    s_seq = 0u;
+    stream_block(0u);
+    stream_block(CAN_UPDATE_WINDOW_SIZE);
+    stream_block(2u * CAN_UPDATE_WINDOW_SIZE);
+    verify_good_crc();
+    assert_reply(CAN_UPDATE_CMD_VERIFY, CAN_UPDATE_OK, 0u);
+
+    /* A failed GO activated nothing: EXIT stays possible. */
+    s_fail_next_activate = true;
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_ERR_FLASH, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_PHASE_VERIFIED, s_state.phase);
+
+    TEST_ASSERT_TRUE(send_cmd(CAN_UPDATE_CMD_GO, 0xFFu, false, 0u));
+    assert_reply(CAN_UPDATE_CMD_GO, CAN_UPDATE_OK, 0u);
+    TEST_ASSERT_EQUAL(CAN_UPDATE_ACTION_RESET, s_action);
+
+    TEST_ASSERT_TRUE(send_exit());  /* the reset is under way: no release after activation */
+    assert_exit_refused(CAN_UPDATE_ERR_STATE);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_abort_calls);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -614,5 +818,14 @@ int main(void)
     RUN_TEST(test_malformed_dlc_naks_state);
     RUN_TEST(test_custom_cmd_id_is_matched_and_default_ignored);
     RUN_TEST(test_app_control_opcodes_naked_in_every_phase);
+    RUN_TEST(test_exit_updater_acks_clears_counters_and_requests_exit);
+    RUN_TEST(test_exit_updater_without_bootable_app_naks_no_app_and_stays_parked);
+    RUN_TEST(test_exit_updater_counter_clear_failure_naks_flash_and_stays_parked);
+    RUN_TEST(test_exit_updater_without_hal_hooks_naks_no_app);
+    RUN_TEST(test_exit_updater_bad_version_key_or_dlc_naks_state);
+    RUN_TEST(test_exit_updater_accepted_in_every_phase_before_go);
+    RUN_TEST(test_exit_updater_mid_transfer_is_accepted_and_the_session_is_gone);
+    RUN_TEST(test_exit_updater_refused_without_a_bootable_app_keeps_the_session);
+    RUN_TEST(test_exit_updater_refused_after_go_activated_a_slot);
     return UNITY_END();
 }

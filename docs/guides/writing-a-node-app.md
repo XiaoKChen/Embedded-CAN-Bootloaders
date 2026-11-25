@@ -14,7 +14,7 @@ GPIO4/GPIO5 at 250 kbit/s. Those app settings must match the board's
 configures the factory updater. The reference app self-tests, marks itself
 valid, and answers APP_INFO/ENTER_UPDATER on its own pair
 ([CAN protocol](../reference/can-protocol.md#app-control-app_info-and-enter_updater)).
-The SOLO IDU instead uses the `idu-16MB` layout and its `0x07/0x08` pair:
+A 16 MB node (the SOLO IDU Interaction board) uses `node-16MB`, the same first 4 MB plus an `assets` partition, with its own pair (`0x07/0x08`). The SOLO IDU instead uses the `idu-16MB` layout and its `0x05/0x06` pair:
 it is both brain and node, and its app must answer on that pair.
 With it, the brain's package relay and `/node/flash`, and
 `can_flash.py --enter-updater`, park a running node over CAN without the

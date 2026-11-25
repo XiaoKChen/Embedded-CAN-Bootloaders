@@ -15,8 +15,8 @@ PC ──Ethernet/HTTP──► brain ──CAN 250 kbit/s──► node ─► 
 
 ## Features
 
-- One `bootloader.bin` and `can_updater.bin`, with `node-4MB` and
-  `idu-16MB` layouts in the universal release bundle. Flash size patches the
+- One `bootloader.bin` and `can_updater.bin`, with `node-4MB`, `node-16MB`
+  and `idu-16MB` layouts in the universal release bundle. Flash size patches the
   bootloader header at write time.
 - Per-board `cancfg` profile selects TWAI TX/RX, bitrate and hold-LOW GPIOs;
   invalid/missing records fall back to TX4/RX5, 250 kbit/s, no holds.

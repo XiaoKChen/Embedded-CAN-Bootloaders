@@ -48,6 +48,12 @@ extern "C" {
  * a task within milliseconds, so fewer, shorter attempts than the updater's. */
 #define CAN_FLASH_HOST_APP_ATTEMPTS 3u
 #define CAN_FLASH_HOST_APP_MS 500u
+/* EXIT_UPDATER: the updater verifies its selected app (up to ~2 s for a 1.75 MB slot) before it
+ * answers, so each attempt waits CAN_FLASH_HOST_EXIT_MS. When no attempt is answered the node is
+ * re-probed with APP_INFO for CAN_FLASH_HOST_APP_BOOT_MS (an app needs seconds to start TWAI). */
+#define CAN_FLASH_HOST_EXIT_ATTEMPTS 3u
+#define CAN_FLASH_HOST_EXIT_MS 2000u
+#define CAN_FLASH_HOST_APP_BOOT_MS 5000u
 #define CAN_FLASH_HOST_FLUSH_FRAMES 64u /* stale frames discarded per request */
 #define CAN_FLASH_HOST_FRAMES_PER_WINDOW \
     ((CAN_UPDATE_WINDOW_SIZE + CAN_UPDATE_DATA_BYTES_PER_FRAME - 1u) / CAN_UPDATE_DATA_BYTES_PER_FRAME)
@@ -62,6 +68,8 @@ typedef enum {
     CAN_FLASH_HOST_STATUS_READ,
     CAN_FLASH_HOST_STATUS_CAPACITY,
     CAN_FLASH_HOST_STATUS_IN_UPDATER, /* the updater NAKed an app-control request */
+    CAN_FLASH_HOST_STATUS_UPDATER_OLD, /* EXIT_UPDATER: a legacy updater (<= v1.3.0) NAKed it
+                                          as an unknown command (arg 0x00): reinstall over USB */
 } can_flash_host_status_t;
 
 typedef enum {
@@ -81,6 +89,7 @@ typedef enum {
     CAN_FLASH_HOST_STEP_INFO = CAN_UPDATE_CMD_INFO,
     CAN_FLASH_HOST_STEP_APP_INFO = CAN_UPDATE_CMD_APP_INFO,
     CAN_FLASH_HOST_STEP_ENTER_UPDATER = CAN_UPDATE_CMD_ENTER_UPDATER,
+    CAN_FLASH_HOST_STEP_EXIT_UPDATER = CAN_UPDATE_CMD_EXIT_UPDATER,
 } can_flash_host_step_t;
 
 typedef struct {
@@ -102,6 +111,7 @@ typedef struct {
     uint32_t bytes;
     uint32_t slot_size;
     uint32_t crc32;
+    bool ack_lost;            /* EXIT_UPDATER OK without an ACK: the app answered APP_INFO */
 } can_flash_host_result_t;
 
 typedef struct {
@@ -198,6 +208,20 @@ can_flash_host_status_t can_flash_host_app_info(can_flash_host_t *host, uint16_t
                                                uint16_t reply_id, app_control_info_t *info);
 can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *host, uint16_t cmd_id,
                                                     uint16_t reply_id);
+/* EXIT_UPDATER to a node parked in its updater (send it only after discovery said "updater").
+ * Up to CAN_FLASH_HOST_EXIT_ATTEMPTS sends, CAN_FLASH_HOST_EXIT_MS each. Frames already queued
+ * are flushed first EXCEPT a late EXIT reply, which is classified instead (no resend). Results:
+ *   OK            the updater ACKed {0x79, 0x0A, 0x00, 0x00} and restarts into its app, or (with
+ *                 result.ack_lost) no reply came but the node then answered APP_INFO as an app
+ *   NAK           an EXIT-aware updater refused (arg 0x0A; result.nak: 0x05 bad request or GO
+ *                 already activated, 0x07 no bootable app, 0x02 counter clear failed); stays parked
+ *   UPDATER_OLD   a legacy updater NAKed the unknown command (err 0x05, arg 0x00)
+ *   IN_UPDATER    no reply to EXIT, and the node still answers as an updater
+ *   TIMEOUT       no reply and no app within CAN_FLASH_HOST_APP_BOOT_MS (node absent, or not in
+ *                 its updater: a running app never answers EXIT)
+ *   PROTOCOL / TRANSPORT / INVALID_ARG as elsewhere. */
+can_flash_host_status_t can_flash_host_exit_updater(can_flash_host_t *host, uint16_t cmd_id,
+                                                   uint16_t reply_id);
 /* Bounded diagnostic, including step, DATA window/attempts and NAK code/name. */
 void can_flash_host_result_text(const can_flash_host_result_t *result, char *buf, size_t len);
 

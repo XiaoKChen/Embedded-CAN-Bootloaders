@@ -1,6 +1,6 @@
 {
   "name": "can-update-esp32",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "Shared C/C++ code of the ESP32-S3 brain/node CAN updater for Arduino-ESP32 apps: CAN Update Protocol codecs, board profiles, recovery counters, node flashing host, brain self-OTA and opt-in node-app helpers. See docs/guides/platformio-arduino.md.",
   "keywords": ["can", "ota", "bootloader", "esp32", "twai"],
   "repository": {

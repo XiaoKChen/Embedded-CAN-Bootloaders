@@ -79,12 +79,20 @@
  * Release extension (answered by the PARKED updater, this engine; a running app ignores it):
  *     0x0A EXIT_UPDATER   byte1 = protocol version, bytes2..5 = CAN_UPDATE_ENTER_KEY
  *                         uint32 LE. Releases a node a shared-reset recovery parked in its
- *                         updater: restart into the app otadata selects, otadata untouched.
+ *                         updater: restart into the app otadata selects. Accepted in any phase
+ *                         until GO has activated a slot (an abandoned HELLO..VERIFY session is
+ *                         closed first); otadata is only ever read.
  *     ACK  {0x79, 0x0A, 0x00, 0x00, 0xFF x4}, sent BEFORE the restart; the recovery counters are
  *          cleared first so this restart does not count towards the next recovery.
- *     NAK  err 0x05 bad version/key, or any session in progress (HELLO accepted, transfer
- *          not finished): only an idle parked updater exits.
- *          err 0x07 no bootable app (stays parked), err 0x02 the counter clear failed.
+ *     NAK  {0x79, 0x0A, err, 0x0A, 0xFF x4}: arg 0x0A marks an EXIT-aware (v1.4.0+) updater.
+ *          err 0x05 bad version/key/DLC, or GO already activated a slot;
+ *          err 0x07 nothing bootable (stays parked); err 0x02 the counter clear failed.
+ *          A legacy updater (<= v1.3.0) answers the unknown command {0x79, 0x0A, 0x05, 0x00}:
+ *          arg 0x00 tells a host "updater too old".
+ *   "Bootable" is conservative: only the slot otadata selects after the bootloader's
+ *   PENDING_VERIFY -> ABORTED rule, and only if its image passes the bootloader's own check. A
+ *   pending (never confirmed) image with an older VALID entry is therefore NOT started: EXIT
+ *   rolls back to the older entry (the bootloader writes ABORTED for the pending one).
  *   A running app never answers 0x0A (app_control.h parses it as no app-control opcode), so a
  *   host sends it only after discovery said "updater".
  *
@@ -156,6 +164,9 @@ extern "C" {
                                                format/chip/SHA-256 checks)     */
 #define CAN_UPDATE_ERR_NO_APP        0x07u  /* EXIT_UPDATER: otadata selects no
                                                bootable app; stays parked      */
+#define CAN_UPDATE_EXIT_NAK_ARG      0x0Au  /* arg of every EXIT_UPDATER NAK from a
+                                               v1.4.0+ updater; a legacy updater's
+                                               unknown-command NAK has arg 0x00 */
 
 #define CAN_UPDATE_DATA_BYTES_PER_FRAME 6u
 #define CAN_UPDATE_FILL_BYTE            0xFFu
@@ -196,13 +207,18 @@ typedef struct {
      * CAN_UPDATE_ERR_FLASH and the device stays in the updater. */
     bool (*slot_activate)(void);
 
-    /* EXIT_UPDATER: true when the target's boot selection (ESP32: otadata, judged exactly as
-     * its bootloader would) names an app it can start. NULL counts as false. */
+    /* EXIT_UPDATER: true when the target's boot selection (ESP32: otadata, after the
+     * bootloader's PENDING_VERIFY -> ABORTED rule) names an app it can start. Conservative:
+     * only the selected slot is considered. NULL counts as false. */
     bool (*app_bootable)(void);
 
     /* EXIT_UPDATER, once an app is bootable: clear the recovery counters so the coming restart
      * is not counted. false -> NAK CAN_UPDATE_ERR_FLASH, stays parked. NULL skips the step. */
     bool (*exit_prepare)(void);
+
+    /* EXIT_UPDATER, once accepted: close any open write session (ESP32: esp_ota_abort).
+     * NULL skips the step. */
+    void (*slot_abort)(void);
 } can_update_hal_t;
 
 /* -----------------------------------------------------------------------------
@@ -229,6 +245,7 @@ typedef struct {
     const can_update_hal_t *hal;
     uint32_t cmd_id;               /* host -> boot ID this engine answers      */
     can_update_phase_t phase;
+    bool     activated;            /* GO has activated a slot: EXIT_UPDATER refused */
     uint32_t image_size;           /* from SIZE                                */
     uint32_t bytes_received;       /* image bytes accepted so far              */
     uint32_t block_index;          /* next/current window                      */

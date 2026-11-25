@@ -142,11 +142,19 @@ app_control_reply_t app_control_classify_reply(uint8_t cmd,
         return APP_CONTROL_REPLY_FOREIGN;
     }
     if (cmd == CAN_UPDATE_CMD_EXIT_UPDATER) {
-        if (data[HDR_ARG] != 0x00u) {
-            return APP_CONTROL_REPLY_FOREIGN;  /* only the updater answers EXIT */
+        /* Only an updater answers EXIT: ACK arg 0x00, NAK arg 0x0A (v1.4.0+), or the legacy
+         * unknown-command NAK (err 0x05, arg 0x00). An arg 0xA5 reply is not an updater's. */
+        if (data[HDR_ARG] == CAN_UPDATE_EXIT_NAK_ARG && data[HDR_ERR] != CAN_UPDATE_OK) {
+            return APP_CONTROL_REPLY_UPDATER_REFUSED;
         }
-        return (data[HDR_ERR] == CAN_UPDATE_OK) ? APP_CONTROL_REPLY_UPDATER_ACK
-                                                : APP_CONTROL_REPLY_UPDATER_REFUSED;
+        if (data[HDR_ARG] != 0x00u) {
+            return APP_CONTROL_REPLY_FOREIGN;
+        }
+        if (data[HDR_ERR] == CAN_UPDATE_OK) {
+            return APP_CONTROL_REPLY_UPDATER_ACK;
+        }
+        return (data[HDR_ERR] == CAN_UPDATE_ERR_STATE) ? APP_CONTROL_REPLY_UPDATER_NAK
+                                                       : APP_CONTROL_REPLY_FOREIGN;
     }
     if (data[HDR_ARG] == CAN_UPDATE_APP_MARKER) {
         return (data[HDR_ERR] == CAN_UPDATE_OK) ? APP_CONTROL_REPLY_APP_ACK

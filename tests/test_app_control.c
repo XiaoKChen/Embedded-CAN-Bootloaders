@@ -47,7 +47,10 @@ static bool slot_read(uint32_t offset, uint8_t *buf, uint32_t len)
     memset(buf, 0xFF, len);
     return true;
 }
-static const can_update_hal_t s_hal = { 0x10000u, slot_ok, slot_program, slot_read, slot_ok, slot_ok };
+static const can_update_hal_t s_hal = {
+    .slot_size = 0x10000u, .slot_erase = slot_ok, .slot_program = slot_program,
+    .slot_read = slot_read, .slot_commit = slot_ok, .slot_activate = slot_ok,
+};
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -74,19 +77,32 @@ static void test_exit_updater_request_vector_and_app_silence(void)
 
 static void test_exit_updater_reply_classification(void)
 {
-    static const uint8_t ack[8]       = { 0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
-    static const uint8_t no_app[8]    = { 0x79, 0x0A, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
-    static const uint8_t busy[8]      = { 0x79, 0x0A, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t ack[8]        = { 0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t no_app[8]     = { 0x79, 0x0A, 0x07, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t flash[8]      = { 0x79, 0x0A, 0x02, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t bad_state[8]  = { 0x79, 0x0A, 0x05, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t legacy[8]     = { 0x79, 0x0A, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t ack_arg[8]    = { 0x79, 0x0A, 0x00, 0x0A, 0xFF, 0xFF, 0xFF, 0xFF };
     static const uint8_t app_marker[8] = { 0x79, 0x0A, 0x00, 0xA5, 0xFF, 0xFF, 0xFF, 0xFF };
-    static const uint8_t other_cmd[8] = { 0x79, 0x09, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t no_app_0[8]   = { 0x79, 0x0A, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t other_cmd[8]  = { 0x79, 0x09, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
     TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_ACK,
                       app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, ack));
     TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_REFUSED,
                       app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, no_app));
     TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_REFUSED,
-                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, busy));
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, flash));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_REFUSED,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, bad_state));
+    /* The legacy updater's unknown-command NAK (arg 0x00) is "updater too old", not a refusal. */
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_NAK,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, legacy));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, ack_arg));
     TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
                       app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, app_marker));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, no_app_0));
     TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
                       app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, other_cmd));
 }

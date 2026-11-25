@@ -62,12 +62,15 @@ typedef enum {
     APP_CONTROL_REPLY_FOREIGN = 0,  /* not a valid reply to this command       */
     APP_CONTROL_REPLY_APP_ACK,      /* a running app accepted                  */
     APP_CONTROL_REPLY_APP_NAK,      /* a running app refused (err in byte2)    */
-    APP_CONTROL_REPLY_UPDATER_NAK,  /* the updater's unknown-command NAK       */
+    APP_CONTROL_REPLY_UPDATER_NAK,  /* the updater's unknown-command NAK (err 0x05,
+                                       arg 0x00); for EXIT_UPDATER it means a
+                                       legacy updater (<= v1.3.0): too old     */
     APP_CONTROL_REPLY_UPDATER_ACK,  /* EXIT_UPDATER only: the updater accepted
                                        and restarts into its app               */
-    APP_CONTROL_REPLY_UPDATER_REFUSED, /* EXIT_UPDATER only: the updater refused
-                                       (err in byte2: 0x05 state, 0x07 no app,
-                                       0x02 flash)                             */
+    APP_CONTROL_REPLY_UPDATER_REFUSED, /* EXIT_UPDATER only: an EXIT-aware updater
+                                       refused, arg 0x0A (err in byte2: 0x05 bad
+                                       request, 0x07 nothing bootable, 0x02
+                                       counter clear failed)                   */
 } app_control_reply_t;
 
 typedef struct {
@@ -94,8 +97,9 @@ app_control_request_t app_control_parse_request(uint8_t dlc,
 void app_control_encode_reply(uint8_t cmd, uint8_t err, uint8_t out[APP_CONTROL_FRAME_BYTES]);
 
 /** Host: classify a DLC-8 frame from the reply ID against the command sent. For
- *  CAN_UPDATE_CMD_EXIT_UPDATER only the two UPDATER_ACK/REFUSED kinds (arg 0x00) are valid;
- *  an arg 0xA5 reply to it is FOREIGN. */
+ *  CAN_UPDATE_CMD_EXIT_UPDATER: UPDATER_ACK (arg 0x00), UPDATER_REFUSED (NAK with arg 0x0A) and
+ *  UPDATER_NAK (a legacy updater's {err 0x05, arg 0x00}); anything else, including arg 0xA5,
+ *  is FOREIGN. */
 app_control_reply_t app_control_classify_reply(uint8_t cmd,
                                                const uint8_t data[APP_CONTROL_FRAME_BYTES]);
 

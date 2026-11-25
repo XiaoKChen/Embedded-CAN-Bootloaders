@@ -1,9 +1,12 @@
 # Purpose: Provision a 16 MB CAN node (SOLO IDU Interaction, ESP32-S3 N16R8) with the common CAN updater.
 # Summary: The first 4 MB are byte-identical to partitions.csv (node-4MB) so the updater, the
-#          app slots (1.75 MB, the CAN node cap) and every offset match; the rest is `assets`.
+#          app slots (1.75 MB, the CAN node cap) and every offset match; the rest is `assets`
+#          plus a 64 KB core dump at the end.
 # Bootloader at 0x0, this table at 0x8000 (CONFIG_PARTITION_TABLE_OFFSET).
-# assets: data, subtype 0x82 (SPIFFS-style user data), 0x400000 to the end of 16 MB. Written
-#         over USB or by the app; never touched by a CAN update.
+# assets: data, subtype 0x82 (SPIFFS-style user data), 0x400000 to 0xFEFFFF. Written over USB
+#         or by the app; never touched by a CAN update.
+# coredump: the last 64 KB, where Arduino builds with core dump to flash write their dump.
+#         Every copy of this table (here, the Interaction repo, the flasher) must match.
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x5000
 otadata,    data, ota,     0xe000,   0x2000
@@ -13,4 +16,5 @@ bootcnt,    data, 0x42,    0x12000,  0x1000
 factory,    app,  factory, 0x20000,  0x60000
 ota_0,      app,  ota_0,   0x80000,  0x1C0000
 ota_1,      app,  ota_1,   0x240000, 0x1C0000
-assets,     data, 0x82,    0x400000, 0xC00000
+assets,     data, 0x82,    0x400000, 0xBF0000
+coredump,   data, coredump,0xFF0000, 0x10000

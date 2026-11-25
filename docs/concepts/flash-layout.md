@@ -33,14 +33,15 @@ HELLO announces a 1,835,008-byte slot (896 windows of 2 KB). The update path nev
 
 ## Node (16 MB, `node_updater/partitions_node_16MB.csv`)
 
-A CAN node on a 16 MB part. The first 4 MB are **identical** to the `node-4MB` table (same offsets and sizes, so the updater, `bootcnt`, `cancfg` and both 1.75 MiB app slots are where a 4 MB node expects them); `assets` takes the rest of the flash. The SOLO IDU Interaction board selects it.
+A CAN node on a 16 MB part. The first 4 MB are **identical** to the `node-4MB` table (same offsets and sizes, so the updater, `bootcnt`, `cancfg` and both 1.75 MiB app slots are where a 4 MB node expects them); `assets` takes the rest of the flash except the last 64 KB, a `coredump` partition (Arduino builds that enable core dump to flash write there). The SOLO IDU Interaction board selects it.
 
 | Partition | Offset | Size | Contents |
 |---|---|---|---|
 | bootloader | `0x0` | — | same recovery bootloader, header patched for 16 MB |
 | partition table | `0x8000` | 4 KB | `node-16MB` table |
 | `nvs` ... `ota_1` | `0x9000` ... `0x240000` | as `node-4MB` | see the 4 MB table above |
-| `assets` | `0x400000` | `0xC00000` (12 MiB) | app data (type `data`, subtype `0x82`); written over USB or by the app, never by a CAN update |
+| `assets` | `0x400000` | `0xBF0000` (just under 12 MiB) | app data (type `data`, subtype `0x82`); written over USB or by the app, never by a CAN update. Flash from before the migration may still hold stock-layout data here: format or erase it before use |
+| `coredump` | `0xFF0000` | `0x10000` (64 KiB) | type `data`, subtype `coredump`; written by the app's core-dump-to-flash handler |
 
 Node app slots stay 1.75 MiB (`0x1C0000`), the CAN node cap, so HELLO announces the same 1,835,008-byte slot and a 4 MB node image fits unchanged. An app that opens `assets` must treat it as its own data: the updater, the bootloader and a package never write it.
 

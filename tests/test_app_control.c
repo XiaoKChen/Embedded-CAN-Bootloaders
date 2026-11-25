@@ -61,6 +61,36 @@ static void test_request_golden_vectors(void)
     TEST_ASSERT_EQUAL_HEX8_ARRAY(k_app_info_request, frame, 8);
 }
 
+static void test_exit_updater_request_vector_and_app_silence(void)
+{
+    static const uint8_t k_exit_request[8] = { 0x0A, 0x01, 0xFE, 0xCA, 0x07, 0xB0, 0xFF, 0xFF };
+    uint8_t frame[8];
+    app_control_encode_request(CAN_UPDATE_CMD_EXIT_UPDATER, frame);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(k_exit_request, frame, 8);
+    /* A running app does not parse EXIT_UPDATER as app control: it never ACKs it with 0xA5. */
+    TEST_ASSERT_EQUAL(APP_CONTROL_REQ_NONE, app_control_parse_request(8u, k_exit_request));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REQ_NONE, app_control_parse_request(7u, k_exit_request));
+}
+
+static void test_exit_updater_reply_classification(void)
+{
+    static const uint8_t ack[8]       = { 0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t no_app[8]    = { 0x79, 0x0A, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t busy[8]      = { 0x79, 0x0A, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t app_marker[8] = { 0x79, 0x0A, 0x00, 0xA5, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t other_cmd[8] = { 0x79, 0x09, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_ACK,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, ack));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_REFUSED,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, no_app));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_UPDATER_REFUSED,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, busy));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, app_marker));
+    TEST_ASSERT_EQUAL(APP_CONTROL_REPLY_FOREIGN,
+                      app_control_classify_reply(CAN_UPDATE_CMD_EXIT_UPDATER, other_cmd));
+}
+
 static void test_info_golden_vector_round_trip(void)
 {
     uint8_t frames[APP_CONTROL_INFO_BYTES];
@@ -192,6 +222,8 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_request_golden_vectors);
+    RUN_TEST(test_exit_updater_request_vector_and_app_silence);
+    RUN_TEST(test_exit_updater_reply_classification);
     RUN_TEST(test_info_golden_vector_round_trip);
     RUN_TEST(test_info_every_length_and_truncation);
     RUN_TEST(test_parse_request);

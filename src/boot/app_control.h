@@ -6,6 +6,10 @@
  * updater's engine NAKs both as unknown commands, which is what lets a host tell "app answered"
  * from "node already parked in its updater".
  *
+ * EXIT_UPDATER (0x0A) is the reverse request and is answered by the PARKED updater only. This codec
+ * encodes it and classifies the updater's reply for hosts; a running app parses it as
+ * APP_CONTROL_REQ_NONE and stays silent (never an ACK with arg 0xA5).
+ *
  * Owns:         The app-control request/reply encoding, reply classification and the 9-frame
  *               APP_INFO layout, shared by both ends: the node app parses requests and encodes
  *               replies; the host (can_flash_host, tools/can-flash) encodes requests and
@@ -59,6 +63,11 @@ typedef enum {
     APP_CONTROL_REPLY_APP_ACK,      /* a running app accepted                  */
     APP_CONTROL_REPLY_APP_NAK,      /* a running app refused (err in byte2)    */
     APP_CONTROL_REPLY_UPDATER_NAK,  /* the updater's unknown-command NAK       */
+    APP_CONTROL_REPLY_UPDATER_ACK,  /* EXIT_UPDATER only: the updater accepted
+                                       and restarts into its app               */
+    APP_CONTROL_REPLY_UPDATER_REFUSED, /* EXIT_UPDATER only: the updater refused
+                                       (err in byte2: 0x05 state, 0x07 no app,
+                                       0x02 flash)                             */
 } app_control_reply_t;
 
 typedef struct {
@@ -74,7 +83,7 @@ typedef struct {
  * Public API
  * ----------------------------------------------------------------------------- */
 
-/** Host: the 8-byte request for CAN_UPDATE_CMD_APP_INFO or _ENTER_UPDATER. */
+/** Host: the 8-byte request for CAN_UPDATE_CMD_APP_INFO, _ENTER_UPDATER or _EXIT_UPDATER. */
 void app_control_encode_request(uint8_t cmd, uint8_t out[APP_CONTROL_FRAME_BYTES]);
 
 /** App: classify one frame received on the app's own cmd ID. */
@@ -84,7 +93,9 @@ app_control_request_t app_control_parse_request(uint8_t dlc,
 /** App: the single-frame ACK (err = CAN_UPDATE_OK) or NAK for `cmd`. */
 void app_control_encode_reply(uint8_t cmd, uint8_t err, uint8_t out[APP_CONTROL_FRAME_BYTES]);
 
-/** Host: classify a DLC-8 frame from the reply ID against the command sent. */
+/** Host: classify a DLC-8 frame from the reply ID against the command sent. For
+ *  CAN_UPDATE_CMD_EXIT_UPDATER only the two UPDATER_ACK/REFUSED kinds (arg 0x00) are valid;
+ *  an arg 0xA5 reply to it is FOREIGN. */
 app_control_reply_t app_control_classify_reply(uint8_t cmd,
                                                const uint8_t data[APP_CONTROL_FRAME_BYTES]);
 

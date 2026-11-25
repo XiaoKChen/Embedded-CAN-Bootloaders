@@ -27,11 +27,12 @@ discovery (`--scan`).
 | INFO | `0x07` | — | updater identifies itself (5-frame reply) |
 | APP_INFO | `0x08` | byte1 = protocol version | answered by a **running app** only (9-frame reply) |
 | ENTER_UPDATER | `0x09` | byte1 = protocol version, bytes2..5 = key `0xB007CAFE` (uint32 LE) | running app ACKs, then restarts into its updater |
+| EXIT_UPDATER | `0x0A` | byte1 = protocol version, bytes2..5 = key `0xB007CAFE` (uint32 LE) | answered by the **parked updater** only (`c-cpp-esp32-v1.4.0`+): ACKs, then restarts into the app `otadata` selects. See [EXIT_UPDATER](#exit_updater-releasing-a-parked-node) |
 
 Replies: ACK `{0x79, cmd_echo, 0x00, arg, ...}` / NAK `{0x79, cmd_echo, err, arg, ...}`
 with err `0x01` unexpected seq (arg = seq to rewind to), `0x02` flash failure,
 `0x03` CRC mismatch, `0x04` size out of bounds, `0x05` bad state, `0x06` image
-rejected by the target.
+rejected by the target, `0x07` no bootable app (EXIT_UPDATER only).
 
 **Windows:** one window = one 2048-byte flash block = 342 DATA frames
 (341×6 + 1×2 bytes; the final image block may be short). Individual DATA
@@ -123,6 +124,65 @@ running apps keep the bus busy. Nodes still need distinct command IDs.
 
 Hosts send ENTER_UPDATER (up to three 0.5 s attempts) and, on an app ACK, wait
 1.5 s for the updater to boot before INFO/HELLO.
+
+## EXIT_UPDATER: releasing a parked node
+
+`EXIT_UPDATER (0x0A)` is the inverse of ENTER_UPDATER and the one command that
+leaves the updater without flashing. It is **answered by the parked updater**
+(`src/boot/can_update.c`) and is a single frame on the node's own update pair:
+
+| | Frame |
+|---|---|
+| Request | `{0x0A, 0x01, 0xFE, 0xCA, 0x07, 0xB0, 0xFF, 0xFF}` (version `0x01`, key `0xB007CAFE` uint32 LE, as ENTER_UPDATER) |
+| ACK | `{0x79, 0x0A, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}` |
+| NAK err `0x05` | wrong version or key, or **a session is in progress**: any state after HELLO until GO completes (the transfer is untouched) |
+| NAK err `0x07` | no bootable app: `otadata` selects nothing the bootloader would start (the node stays parked) |
+| NAK err `0x02` | the recovery counters could not be cleared (the node stays parked) |
+
+On an ACK the updater has already cleared both recovery counters (`bootcnt` and
+the RTC record, read-back verified, exactly as before GO), so the restart does
+not count towards the next three-reset recovery; the ACK leaves the bus, then
+it restarts. **`otadata` is never written**: the bootloader boots the app it
+already selects.
+
+"Bootable" is decided the way the bootloader will decide at that restart
+(`node_updater/main/main.c: selected_app_bootable`, from ESP-IDF v5.3's
+`bootloader_utility_get_selected_boot_partition`), not by reading a state byte:
+
+1. Read both `otadata` entries. An entry in state `PENDING_VERIFY` counts as
+   `ABORTED` (the bootloader marks it so before choosing, because rollback is
+   enabled); `INVALID`, `ABORTED`, a bad CRC or sequence `0xFFFFFFFF` never
+   qualify. `NEW` and `VALID` qualify.
+2. The highest valid sequence wins; its slot is `(seq - 1) % ota partition count`.
+   An older valid entry still qualifies when a newer one was aborted.
+3. That slot's image must pass the bootloader's own image check
+   (`esp_image_verify`), otherwise the restart would just land in the updater
+   again.
+
+So a node whose app was **app-requested into the updater**
+(`can_updater_client_enter_updater()`, ENTER_UPDATER) has an erased `otadata`:
+EXIT answers `0x07` and only a CAN flash (GO) leaves. A node **parked by the
+recovery counters** (for example by a shared reset, see
+[recovery.md](../concepts/recovery.md#shared-reset-and-exit_updater)) keeps its
+`otadata`, so EXIT returns it to the app it was running. A node whose app was
+still `PENDING_VERIFY` when the counters tripped answers `0x07` for the same
+reason: the bootloader would roll it back.
+
+A **running app never answers `0x0A`**: the app-control codec parses it as no
+app-control opcode, so the node stays silent (never an ACK with arg `0xA5`),
+and an app that did not restart cannot be mistaken for one that did. Hosts
+therefore send it only after discovery says "updater":
+
+```text
+discover (APP_INFO probe / INFO scan)  ->  node is "updater"
+  -> EXIT_UPDATER on its pair
+       ACK            -> wait ~1.5 s, APP_INFO: the app answers
+       NAK 0x07/0x05  -> stays parked; flash an image (or finish the transfer)
+       silence        -> ambiguous (lost ACK after the restart, or it is an app): APP_INFO decides
+```
+
+Hosts: `can_flash_host_exit_updater()` (C, same retry/flush rules as
+`enter_updater`; NAK carries `result.nak`) and `can_flash.py --exit-updater`.
 
 ## Host implementations and known limits
 

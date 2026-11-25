@@ -15,6 +15,7 @@ No PCB change, signing, or CAN protocol change. History: #9.
 | **No valid app** | fresh board, both slots invalid, or an app that was rolled back because it never called `esp_ota_mark_app_valid_cancel_rollback()` |
 | **Software recovery** | three unclean SW/panic/WDT resets in RTC, or three power-on/EN boots in a flash bit log, without 10 seconds of stable uptime, force `factory` without changing `otadata`. Trips remain latched until 10 s of updater uptime or a verified GO. Normal `esp_restart()` is marked clean by the client shutdown handler |
 | **Brain-forced recovery** | `POST /node/recover`, or a package's automatic recovery: four pulses, each **GPIO3 HIGH 100 ms** (node held reset), then **LOW 400 ms** (node runs), finally leaving LOW — three power-on/EN boots trip the flash counter. Only the node physically wired to GPIO3 |
+| **Shared reset (a sibling)** | a node whose EN/reset line is shared with other nodes sees every reset its neighbours see; three rapid resets park it in the updater without touching `otadata`. See [Shared reset and EXIT_UPDATER](#shared-reset-and-exit_updater) |
 | **USB fallback** | Select 1200 baud on the updater's TinyUSB CDC port: it restarts into ROM download for esptool, without BOOT. Or erase only `otadata`: `uv run --with esptool -m esptool --chip esp32s3 -p <port> erase-region 0xe000 0x2000`; factory then remains selected until another image is flashed |
 
 ```sh
@@ -48,9 +49,33 @@ their last duty or going to full scale on the chip's 4 s power-up watchdog. On T
 retries once with TX4/RX5 defaults unless either default pin is held LOW.
 Holds win over CAN: it skips the retry and continues on USB without CAN.
 
+## Shared reset and EXIT_UPDATER
+
+On a bus where several nodes hang off one reset line (the SOLO brain pulses
+GPIO3 to reset the ODU and, by design, every sibling on that line), a brain's
+recovery pulse train for one node counts as three power-on/EN boots for **all**
+of them. The sibling that was not the target parks in its own updater with its
+`otadata` intact, still running nothing, until something releases it.
+
+**EXIT_UPDATER (`0x0A`) is that release** ([protocol](../reference/can-protocol.md#exit_updater-releasing-a-parked-node)):
+the host sends it to the sibling's own pair after discovery reports it as
+"updater". The updater verifies that `otadata` still selects a bootable app,
+clears both recovery counters (so the restart is not the first of a new
+three), ACKs and restarts into that app without writing `otadata`. Because the
+counter-forced path preserves `otadata`, the sibling returns to the image it
+was running. EXIT does not apply to:
+
+- a node entered by **app request** (ENTER_UPDATER, `--enter-bootloader`): its
+  `otadata` was erased, so EXIT answers `0x07` and the node stays parked until a
+  GO;
+- a node whose app had not yet confirmed itself (`PENDING_VERIFY`): the
+  bootloader would roll it back, so EXIT answers `0x07` too;
+- a node with a session open (HELLO sent, GO not finished): `0x05`.
+
 ## Parked behaviour and stable clear
 
-The updater always parks waiting for the host. **App-requested** entry erases
+The updater always parks waiting for the host; the exits are a completed GO,
+EXIT_UPDATER into a bootable app, or a USB re-flash. **App-requested** entry erases
 `otadata` and remains parked across resets (until an image is flashed).
 **Counter-forced** entry preserves `otadata`: after 10 s the counters clear
 but the updater keeps running; a later reset may boot the previously selected
@@ -96,7 +121,7 @@ replace the bootloader ([install once](../testing/bench/node-recovery.md#install
 ## Fail-safe and power loss
 
 Nothing in the update path writes the `factory` partition. The only
-boot-selection change is the `otadata` write on GO, which ESP-IDF makes atomic
+boot-selection change is the `otadata` write on GO (EXIT_UPDATER writes none), which ESP-IDF makes atomic
 across its two sectors. With app-requested factory entry, power loss before
 GO comes back in the updater. With counter-forced entry, after stable clear
 the prior OTA selection remains the fallback; re-trigger recovery if needed.

@@ -57,7 +57,8 @@ esp_err_t can_updater_client_start_health(void);
 
 /**
  * Factory updater only: after successful image VERIFY, clear both recovery
- * counters (read-back verifying flash) before GO selects/restarts the image.
+ * counters (read-back verifying flash) before GO selects/restarts the image,
+ * and likewise before an EXIT_UPDATER restart into the already selected app.
  * This permits immediate recovery + flash without waiting for stable uptime.
  * Requires start_health() first. Failure must reject GO, not restart.
  */

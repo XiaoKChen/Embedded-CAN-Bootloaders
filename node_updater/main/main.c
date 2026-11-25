@@ -16,8 +16,8 @@
  *               (node_updater/bootloader_components/main/boot.c); the I2C sequence
  *               (i2c_bitbang.h).
  * Invariants:   In all those cases the user wants the updater, so it always parks serving CAN
- *               Update Protocol v1 — the only exits are a completed update (GO) or a re-flash over
- *               USB/UART. The factory partition (this app) is never written by anything here.
+ *               Update Protocol v1 — the only exits are a completed update (GO), EXIT_UPDATER
+ *               into an already bootable app, or a re-flash over USB/UART. The factory partition (this app) is never written by anything here.
  *               Safety holds always win: default TWAI fallback is skipped if either default
  *               pin is held LOW; no failed-link recovery may reconfigure a held pin or drop the
  *               I2C safe writes. The writes repeat every SAFE_WRITE_PERIOD_MS (the CAN wait is
@@ -36,6 +36,8 @@
  *   VERIFY -> engine CRC over esp_partition_read, then esp_ota_end
  *             (ESP image format, chip ID and SHA-256 validation)
  *   GO     -> verified recovery-counter clear, esp_ota_set_boot_partition, restart
+ *   EXIT   -> bootable-app check (otadata judged as the bootloader would), recovery-counter
+ *             clear, ACK, restart; otadata is never written
  *
  * Power-loss table (the otadata write in GO is the only boot-selection change
  * and ESP-IDF makes it atomic across its two sectors):
@@ -57,8 +59,12 @@
 #include <string.h>
 
 #include "esp_err.h"
+#include "esp_flash_partitions.h"
+#include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "bootloader_common.h"
+#include "spi_flash_mmap.h"
 #include "can_updater_client.h"
 #include "esp_partition.h"
 #include "esp_system.h"
@@ -184,6 +190,57 @@ static bool slot_activate(void)
     const esp_err_t err = esp_ota_set_boot_partition(s_target);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "set boot partition failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+
+/* EXIT_UPDATER: would the bootloader start an OTA app from otadata alone? Mirrors
+ * bootloader_utility_get_selected_boot_partition (ESP-IDF v5.3, rollback enabled): a
+ * PENDING_VERIFY entry is turned ABORTED before the selection, so it is not bootable (an
+ * older VALID entry still is); invalid CRC, INVALID/ABORTED or 0xFFFFFFFF entries never are;
+ * with no active entry the bootloader falls back to factory, i.e. this updater. The selected
+ * slot is the (ota_seq - 1) % app_count one; its image must also pass the bootloader's own
+ * image check, else the restart would just land back here. */
+static bool selected_app_bootable(void)
+{
+    const esp_partition_t *otadata = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    const uint32_t app_count = esp_ota_get_app_partition_count();
+    if (otadata == NULL || app_count == 0u) {
+        return false;
+    }
+    esp_ota_select_entry_t entries[2];
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        if (esp_partition_read(otadata, i * SPI_FLASH_SEC_SIZE, &entries[i], sizeof(entries[i])) != ESP_OK) {
+            return false;
+        }
+        if (entries[i].ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            entries[i].ota_state = ESP_OTA_IMG_ABORTED;
+        }
+    }
+    const int active = bootloader_common_get_active_otadata(entries);
+    if (active < 0) {
+        return false;
+    }
+    const uint32_t slot = (entries[active].ota_seq - 1u) % app_count;
+    const esp_partition_t *app = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot), NULL);
+    if (app == NULL) {
+        return false;
+    }
+    const esp_partition_pos_t pos = { .offset = app->address, .size = app->size };
+    esp_image_metadata_t meta;
+    return esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) == ESP_OK;
+}
+
+static bool exit_prepare(void)
+{
+    /* Same verified, read-back clear as GO: the restart this causes must not count. */
+    const esp_err_t err = can_updater_client_prepare_verified_boot();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "recovery clear failed; EXIT_UPDATER refused: %s", esp_err_to_name(err));
         return false;
     }
     return true;
@@ -419,8 +476,10 @@ static void serve_can_forever(void)
         if (can_update_handle_frame(&s_engine, id, dlc, data, reply, &action)) {
             (void)can_link_send(s_reply_id, reply);  /* host retries on loss */
         }
-        if (action == CAN_UPDATE_ACTION_RESET) {
-            /* GO: the boot partition is already switched (slot_activate). */
+        if (action == CAN_UPDATE_ACTION_RESET || action == CAN_UPDATE_ACTION_EXIT) {
+            /* GO: the boot partition is already switched (slot_activate). EXIT_UPDATER:
+             * otadata is left alone, the bootloader boots what it already selects. In both
+             * cases can_link_deinit lets the ACK leave before the restart. */
             can_link_deinit();
             esp_restart();
         }
@@ -453,6 +512,8 @@ void app_main(void)
         .slot_read     = slot_read,
         .slot_commit   = slot_commit,
         .slot_activate = slot_activate,
+        .app_bootable  = selected_app_bootable,
+        .exit_prepare  = exit_prepare,
     };
     can_update_init(&s_engine, &s_hal, s_cmd_id);
 

@@ -43,7 +43,8 @@ static uint32_t s_fail_programs, s_verify_count, s_commands[UINT8_MAX + 1u];
 static uint8_t s_drop_command_ack;
 static bool s_corrupt, s_reject, s_activated, s_fail_send, s_bad_dlc;
 static bool s_app_mode[NODES_MAX], s_app_ext_noise, s_app_noise, s_app_corrupt, s_drop_enter_ack, s_app_refuse;
-static uint32_t s_app_drop_frame, s_app_restarts;
+static uint32_t s_app_drop_frame, s_app_restarts, s_exit_restarts;
+static bool s_app_bootable;
 #define NOISE_ID 0x123u
 #define APP_VERSION "v2.4.1-node"
 #define APP_PROJECT "node_app"
@@ -68,8 +69,9 @@ static bool read_slot(uint32_t offset, uint8_t *buf, uint32_t len)
 }
 static bool commit_slot(void) { return !s_reject; }
 static bool activate_slot(void) { s_activated = true; return true; }
+static bool app_bootable(void) { return s_app_bootable; }
 static const can_update_hal_t s_hal = {
-    SLOT_BYTES, erase_slot, program_slot, read_slot, commit_slot, activate_slot,
+    SLOT_BYTES, erase_slot, program_slot, read_slot, commit_slot, activate_slot, app_bootable, NULL,
 };
 
 static void enqueue(uint16_t id, const uint8_t data[8])
@@ -149,7 +151,13 @@ static void dispatch(uint32_t node, const can_flash_host_frame_t *frame)
     }
     uint8_t reply[8];
     can_update_action_t action;
-    if (can_update_handle_frame(&s_nodes[node], frame->id, frame->dlc, frame->data, reply, &action)) {
+    const bool replied = can_update_handle_frame(&s_nodes[node], frame->id, frame->dlc, frame->data,
+                                                 reply, &action);
+    if (action == CAN_UPDATE_ACTION_EXIT) {
+        s_app_mode[node] = true;  /* restart into the selected app, which never answers EXIT */
+        ++s_exit_restarts;
+    }
+    if (replied) {
         if (reply[2] == CAN_UPDATE_OK && reply[1] == CAN_UPDATE_CMD_DATA &&
             s_nodes[node].block_index - 1u == s_drop_ack_window) {
             s_drop_ack_window = NO_FAULT;
@@ -224,7 +232,8 @@ void setUp(void)
     memset(s_app_mode, 0, sizeof(s_app_mode));
     s_app_ext_noise = s_app_noise = s_app_corrupt = s_drop_enter_ack = s_app_refuse = false;
     s_app_drop_frame = NO_FAULT;
-    s_app_restarts = 0u;
+    s_app_restarts = s_exit_restarts = 0u;
+    s_app_bootable = true;
     memset(s_commands, 0, sizeof(s_commands));
     memset(s_names, 0, sizeof(s_names));
     memset(s_name_len, 0, sizeof(s_name_len));
@@ -513,6 +522,56 @@ static void test_enter_updater_malformed(void)
     TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_PROTOCOL, enter_updater());
     TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS, s_host.result.attempts);
 }
+static can_flash_host_status_t exit_updater(void)
+{
+    return can_flash_host_exit_updater(&s_host, s_cmd[0], s_reply[0]);
+}
+static void test_exit_updater_releases_parked_node(void)
+{
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, exit_updater());
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STEP_EXIT_UPDATER, s_host.result.step);
+    TEST_ASSERT_EQUAL_HEX8(CAN_UPDATE_OK, s_host.result.nak);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_host.result.attempts);
+    TEST_ASSERT_EQUAL_UINT32(1u, s_exit_restarts);
+    app_control_info_t info;  /* the node now runs its app and answers APP_INFO */
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_OK, app_info(&info));
+    TEST_ASSERT_EQUAL_STRING(APP_PROJECT, info.project_name);
+}
+static void test_exit_updater_no_bootable_app_is_a_nak(void)
+{
+    s_app_bootable = false;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_NAK, exit_updater());
+    TEST_ASSERT_EQUAL_HEX8(CAN_UPDATE_ERR_NO_APP, s_host.result.nak);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_exit_restarts);
+    char text[96];
+    can_flash_host_result_text(&s_host.result, text, sizeof(text));
+    TEST_ASSERT_NOT_NULL(strstr(text, "EXIT_UPDATER"));
+    TEST_ASSERT_NOT_NULL(strstr(text, "no bootable app"));
+}
+static void test_exit_updater_refused_mid_session(void)
+{
+    s_app_bootable = false;  /* proves the state rule wins before the target is asked */
+    uint8_t hello[8] = { CAN_UPDATE_CMD_HELLO, CAN_UPDATE_PROTOCOL_VERSION, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    can_flash_host_frame_t frame = { .id = s_cmd[0], .dlc = 8u };
+    memcpy(frame.data, hello, sizeof(hello));
+    dispatch(0u, &frame);
+    s_app_bootable = true;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_NAK, exit_updater());
+    TEST_ASSERT_EQUAL_HEX8(CAN_UPDATE_ERR_STATE, s_host.result.nak);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_exit_restarts);
+}
+static void test_exit_updater_silence_is_a_timeout(void)
+{
+    s_app_mode[0] = true;  /* a running app never answers EXIT */
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, exit_updater());
+    TEST_ASSERT_EQUAL_UINT32(CAN_FLASH_HOST_APP_ATTEMPTS, s_host.result.attempts);
+}
+static void test_exit_updater_lost_ack_looks_like_a_timeout(void)
+{
+    s_drop_command_ack = CAN_UPDATE_CMD_EXIT_UPDATER;
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_TIMEOUT, exit_updater());
+    TEST_ASSERT_EQUAL_UINT32(1u, s_exit_restarts);  /* the node did exit; only the ACK was lost */
+}
 static void test_app_control_invalid_args(void)
 {
     app_control_info_t info;
@@ -520,7 +579,10 @@ static void test_app_control_invalid_args(void)
     TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_app_info(&s_host, 1u, 1u, NULL));
     TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_enter_updater(NULL, 1u, 1u));
     TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_enter_updater(&s_host, 1u, 0x800u));
-    TEST_ASSERT_EQUAL_UINT32(0u, s_commands[CAN_UPDATE_CMD_APP_INFO] + s_commands[CAN_UPDATE_CMD_ENTER_UPDATER]);
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_exit_updater(NULL, 1u, 1u));
+    TEST_ASSERT_EQUAL(CAN_FLASH_HOST_STATUS_INVALID_ARG, can_flash_host_exit_updater(&s_host, 0x800u, 1u));
+    TEST_ASSERT_EQUAL_UINT32(0u, s_commands[CAN_UPDATE_CMD_APP_INFO] + s_commands[CAN_UPDATE_CMD_ENTER_UPDATER] +
+                                 s_commands[CAN_UPDATE_CMD_EXIT_UPDATER]);
 }
 
 static void name_node(uint32_t node, const char *name)
@@ -700,6 +762,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_enter_updater_refused);
     RUN_TEST(test_enter_updater_timeout);
     RUN_TEST(test_enter_updater_malformed);
+    RUN_TEST(test_exit_updater_releases_parked_node);
+    RUN_TEST(test_exit_updater_no_bootable_app_is_a_nak);
+    RUN_TEST(test_exit_updater_refused_mid_session);
+    RUN_TEST(test_exit_updater_silence_is_a_timeout);
+    RUN_TEST(test_exit_updater_lost_ack_looks_like_a_timeout);
     RUN_TEST(test_app_control_invalid_args);
     RUN_TEST(test_discover_mixed_apps_and_updaters);
     RUN_TEST(test_discover_silence_costs_one_window_per_id);

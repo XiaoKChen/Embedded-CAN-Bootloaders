@@ -405,7 +405,9 @@ static can_flash_host_status_t app_request(can_flash_host_t *h, uint16_t cmd_id,
         h->result.nak = f.data[2];
         h->result.arg = f.data[3];
         if (kind == APP_CONTROL_REPLY_UPDATER_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_IN_UPDATER); }
-        if (kind == APP_CONTROL_REPLY_APP_NAK) { return outcome(h, CAN_FLASH_HOST_STATUS_NAK); }
+        if (kind == APP_CONTROL_REPLY_APP_NAK || kind == APP_CONTROL_REPLY_UPDATER_REFUSED) {
+            return outcome(h, CAN_FLASH_HOST_STATUS_NAK);
+        }
         if (info == NULL) { return outcome(h, CAN_FLASH_HOST_STATUS_OK); }
         status = app_info_body(h, reply_id, start, CAN_FLASH_HOST_APP_MS, &f, info);
         if (status == CAN_FLASH_HOST_STATUS_OK || status == CAN_FLASH_HOST_STATUS_TRANSPORT) {
@@ -436,6 +438,14 @@ can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *h, uint16
     if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
     memset(&h->result, 0, sizeof(h->result));
     return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_ENTER_UPDATER, NULL);
+}
+
+can_flash_host_status_t can_flash_host_exit_updater(can_flash_host_t *h, uint16_t cmd_id,
+                                                   uint16_t reply_id)
+{
+    if (!valid_ids(h, cmd_id, reply_id)) { return CAN_FLASH_HOST_STATUS_INVALID_ARG; }
+    memset(&h->result, 0, sizeof(h->result));
+    return app_request(h, cmd_id, reply_id, CAN_UPDATE_CMD_EXIT_UPDATER, NULL);
 }
 
 /* One scan probe: APP_INFO on any reply ID within one SCAN_MS window. TIMEOUT
@@ -507,8 +517,8 @@ can_flash_host_status_t can_flash_host_discover(can_flash_host_t *h, uint16_t fr
 
 void can_flash_host_result_text(const can_flash_host_result_t *r, char *buf, size_t len)
 {
-    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO", "APP_INFO", "ENTER_UPDATER" };
-    static const char *const errors[] = { "OK", "unexpected sequence", "flash failure", "CRC mismatch", "size out of bounds", "bad state", "image rejected" };
+    static const char *const steps[] = { "NONE", "HELLO", "ERASE", "DATA", "SIZE", "VERIFY", "GO", "INFO", "APP_INFO", "ENTER_UPDATER", "EXIT_UPDATER" };
+    static const char *const errors[] = { "OK", "unexpected sequence", "flash failure", "CRC mismatch", "size out of bounds", "bad state", "image rejected", "no bootable app" };
     static const char *const statuses[] = { "success", "invalid argument", "transport failure", "timeout", "rejected", "invalid reply", "image read failed", "scan capacity exceeded", "node is in its updater" };
     if (r == NULL || buf == NULL || len == 0u) { return; }
     const char *step = (unsigned)r->step < sizeof(steps) / sizeof(steps[0]) ? steps[r->step] : "?";

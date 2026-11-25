@@ -116,5 +116,7 @@ uv run tools/can-flash/can_flash.py path/to/app/build/my_app.bin \
 
 `--bitrate 250000` is can-flash's default and must match the node.
 `--enter-bootloader` uses the Airform `/enter_bootloader` route over ISO-TP;
-`--enter-updater` uses the native ENTER_UPDATER frame. All options:
+`--enter-updater` uses the native ENTER_UPDATER frame; `--exit-updater` is its
+inverse and releases a node parked by a shared reset without flashing
+([EXIT_UPDATER](../reference/can-protocol.md#exit_updater-releasing-a-parked-node)). All options:
 [tools/can-flash/README.md](../../tools/can-flash/README.md#usage).

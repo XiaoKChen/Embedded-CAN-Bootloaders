@@ -81,6 +81,7 @@ typedef enum {
     CAN_FLASH_HOST_STEP_INFO = CAN_UPDATE_CMD_INFO,
     CAN_FLASH_HOST_STEP_APP_INFO = CAN_UPDATE_CMD_APP_INFO,
     CAN_FLASH_HOST_STEP_ENTER_UPDATER = CAN_UPDATE_CMD_ENTER_UPDATER,
+    CAN_FLASH_HOST_STEP_EXIT_UPDATER = CAN_UPDATE_CMD_EXIT_UPDATER,
 } can_flash_host_step_t;
 
 typedef struct {
@@ -198,6 +199,16 @@ can_flash_host_status_t can_flash_host_app_info(can_flash_host_t *host, uint16_t
                                                uint16_t reply_id, app_control_info_t *info);
 can_flash_host_status_t can_flash_host_enter_updater(can_flash_host_t *host, uint16_t cmd_id,
                                                     uint16_t reply_id);
+/* EXIT_UPDATER to a node parked in its updater (send it only after discovery said "updater").
+ * Same retry/timing and flush rules as above. Results:
+ *   OK          the updater ACKed {0x79, 0x0A, 0x00, 0x00}; it restarts into its app
+ *   NAK         the updater refused (result.nak: 0x05 session in progress, 0x07 no bootable
+ *               app, 0x02 recovery-counter clear failed); it stays parked
+ *   TIMEOUT     nothing answered: a running app never answers EXIT, and a lost ACK looks the
+ *               same once the node restarted, so confirm with can_flash_host_app_info
+ *   PROTOCOL / TRANSPORT / INVALID_ARG as elsewhere. */
+can_flash_host_status_t can_flash_host_exit_updater(can_flash_host_t *host, uint16_t cmd_id,
+                                                   uint16_t reply_id);
 /* Bounded diagnostic, including step, DATA window/attempts and NAK code/name. */
 void can_flash_host_result_text(const can_flash_host_result_t *result, char *buf, size_t len);
 

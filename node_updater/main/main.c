@@ -259,6 +259,7 @@ static bool selected_app_bootable(void)
              (unsigned long)pdTICKS_TO_MS(xTaskGetTickCount() - started),
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
     refused = (err != ESP_OK);
+    refused_at = xTaskGetTickCount();  /* after the verify, so a slow failed check still holds off a retry */
     return err == ESP_OK;
 }
 

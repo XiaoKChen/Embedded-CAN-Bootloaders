@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Purpose: Assemble legacy-node and board-independent ESP32-S3 updater bundles.
 
-Summary: Generate both provisioning tables with the pinned IDF tool and package
+Summary: Generate the three provisioning tables with the pinned IDF tool and package
 one bootloader/updater pair. Release versions use the same c-cpp-esp32-v* tag as
 the legacy node zip; local builds use git describe for an identifiable snapshot.
-Owns: The provisioning manifest and the universal bundle's six-file contract.
+Owns: The provisioning manifest and the universal bundle's seven-file contract.
 Not here: Per-board cancfg contents (the provisioning tool supplies those).
 Errors: Missing inputs, oversized images and failed partition generation abort.
 """
@@ -38,6 +38,7 @@ def build(repo, idf_path):
     version = version_from_tag(repo)
     tables = {
         "node-4MB": ("partitions.csv", "4MB", "0x20000", "0x80000"),
+        "node-16MB": ("partitions_node_16MB.csv", "16MB", "0x20000", "0x80000"),
         "idu-16MB": ("partitions_idu_16MB.csv", "16MB", "0xfa0000", "0x20000"),
     }
     layouts = {}

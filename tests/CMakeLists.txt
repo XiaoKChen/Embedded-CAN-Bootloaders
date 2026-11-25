@@ -39,6 +39,7 @@ add_library(boot_core STATIC
     ${BOOT_DIR}/board_profile.c
     ${BOOT_DIR}/i2c_bitbang.c
     ${BOOT_DIR}/app_control.c
+    ${BOOT_DIR}/ota_select.c
 )
 target_include_directories(boot_core PUBLIC ${BOOT_DIR})
 
@@ -67,6 +68,7 @@ target_compile_definitions(test_board_profile PRIVATE
 add_host_test(test_i2c_bitbang)
 add_host_test(test_slcan_codec)
 add_host_test(test_app_control)
+add_host_test(test_ota_select)
 
 set(CAN_FLASH_HOST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../components/can_flash_host)
 add_library(can_flash_host STATIC ${CAN_FLASH_HOST_DIR}/can_flash_host.c)

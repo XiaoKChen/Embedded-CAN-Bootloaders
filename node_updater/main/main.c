@@ -17,14 +17,15 @@
  *               (i2c_bitbang.h).
  * Invariants:   In all those cases the user wants the updater, so it always parks serving CAN
  *               Update Protocol v1 — the only exits are a completed update (GO), EXIT_UPDATER
- *               into an already bootable app, or a re-flash over USB/UART. The factory partition (this app) is never written by anything here.
+ *               into an already bootable app, or a re-flash over USB/UART. The factory
+ *               partition (this app) is never written by anything here.
  *               Safety holds always win: default TWAI fallback is skipped if either default
  *               pin is held LOW; no failed-link recovery may reconfigure a held pin or drop the
  *               I2C safe writes. The writes repeat every SAFE_WRITE_PERIOD_MS (the CAN wait is
  *               cut to the next one), each run bounded by I2C_BB_WORST_CASE_US, well inside the
  *               TWAI RX queue's buffering; their failure never stops the updater.
- * Depends on:   can_link.h, can_update.h, dfu_config.h, board_profile.h, i2c_bitbang.h,
- *               cancfg.h, can_updater_client.h, usb_cdc.h.
+ * Depends on:   can_link.h, can_update.h, ota_select.h, dfu_config.h, board_profile.h,
+ *               i2c_bitbang.h, cancfg.h, can_updater_client.h, usb_cdc.h.
  *
  * @see     can_update.h, docs/testing/bench/node-updater.md, docs/concepts/recovery.md
  */
@@ -36,8 +37,9 @@
  *   VERIFY -> engine CRC over esp_partition_read, then esp_ota_end
  *             (ESP image format, chip ID and SHA-256 validation)
  *   GO     -> verified recovery-counter clear, esp_ota_set_boot_partition, restart
- *   EXIT   -> bootable-app check (otadata judged as the bootloader would), recovery-counter
- *             clear, ACK, restart; otadata is never written
+ *   EXIT   -> bootable-app check (ota_select_boot_slot over otadata, then esp_image_verify of
+ *             that slot), recovery-counter clear, abort of any open write session, ACK,
+ *             restart; otadata is never written
  *
  * Power-loss table (the otadata write in GO is the only boot-selection change
  * and ESP-IDF makes it atomic across its two sectors):
@@ -63,7 +65,6 @@
 #include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
-#include "bootloader_common.h"
 #include "spi_flash_mmap.h"
 #include "can_updater_client.h"
 #include "esp_partition.h"
@@ -75,6 +76,7 @@
 
 #include "can_link.h"
 #include "can_update.h"
+#include "ota_select.h"
 #include "dfu_config.h"
 #include "board_profile.h"
 #include "i2c_bitbang.h"
@@ -90,6 +92,8 @@
 #define RX_POLL_TIMEOUT_MS         1000u  /* bounds the watchdog-feed period */
 #define RECOVERY_POLL_DELAY_MS     1000u  /* feed watchdog while USB-only   */
 #define LINK_START_ATTEMPTS        2u     /* profile, then at most defaults */
+#define EXIT_VERIFY_RETRY_MS       1000u  /* a repeated EXIT after a refusal is refused again
+                                           * without another image verify              */
 #define SAFE_WRITE_PERIOD_MS       1000u  /* re-arm a re-powered output chip well before
                                            * the EMC2305's 4 s power-up watchdog       */
 
@@ -119,16 +123,21 @@ static TickType_t         s_last_safe_write;
 /* -----------------------------------------------------------------------------
  * Slot HAL over the ESP-IDF OTA API
  * ----------------------------------------------------------------------------- */
+static void slot_abort(void)
+{
+    if (s_ota_open) {
+        (void)esp_ota_abort(s_ota);
+        s_ota_open = false;
+    }
+    s_ota_written = 0u;
+}
+
 static bool slot_erase(void)
 {
     if (s_target == NULL) {
         return false;
     }
-    if (s_ota_open) {
-        (void)esp_ota_abort(s_ota);  /* abandon the earlier session */
-        s_ota_open = false;
-    }
-    s_ota_written = 0u;
+    slot_abort();  /* abandon the earlier session */
 
     /* Sequential mode erases each 4 KB sector as the write reaches it, so
      * ERASE answers at once instead of wiping ~1.8 MB up front (seconds; the
@@ -196,43 +205,61 @@ static bool slot_activate(void)
 }
 
 
-/* EXIT_UPDATER: would the bootloader start an OTA app from otadata alone? Mirrors
- * bootloader_utility_get_selected_boot_partition (ESP-IDF v5.3, rollback enabled): a
- * PENDING_VERIFY entry is turned ABORTED before the selection, so it is not bootable (an
- * older VALID entry still is); invalid CRC, INVALID/ABORTED or 0xFFFFFFFF entries never are;
- * with no active entry the bootloader falls back to factory, i.e. this updater. The selected
- * slot is the (ota_seq - 1) % app_count one; its image must also pass the bootloader's own
- * image check, else the restart would just land back here. */
+static uint32_t service_safe_writes(uint32_t idle_ms);
+
+/* EXIT_UPDATER: would the bootloader start an OTA app from otadata alone? The slot decision is
+ * ota_select_boot_slot (the bootloader's rule, host-tested); the selected slot's image must also
+ * pass the bootloader's own image check, else the restart would just land back here. The verify
+ * of a 1.75 MB slot takes a moment: the task watchdog and the I2C safe writes are serviced
+ * around it, and a repeat within EXIT_VERIFY_RETRY_MS of a refusal is refused without verifying
+ * again. Static storage keeps the 3.5 KB main stack free. */
 static bool selected_app_bootable(void)
 {
+    static ota_select_entry_t entries[OTA_SELECT_ENTRY_COUNT];
+    static esp_image_metadata_t meta;
+    static TickType_t refused_at;
+    static bool refused;
+
+    if (refused && (xTaskGetTickCount() - refused_at) < pdMS_TO_TICKS(EXIT_VERIFY_RETRY_MS)) {
+        return false;
+    }
+    refused    = true;
+    refused_at = xTaskGetTickCount();
+
     const esp_partition_t *otadata = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
     const uint32_t app_count = esp_ota_get_app_partition_count();
     if (otadata == NULL || app_count == 0u) {
         return false;
     }
-    esp_ota_select_entry_t entries[2];
-    for (uint32_t i = 0u; i < 2u; ++i) {
+    for (uint32_t i = 0u; i < OTA_SELECT_ENTRY_COUNT; ++i) {
         if (esp_partition_read(otadata, i * SPI_FLASH_SEC_SIZE, &entries[i], sizeof(entries[i])) != ESP_OK) {
             return false;
         }
-        if (entries[i].ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            entries[i].ota_state = ESP_OTA_IMG_ABORTED;
-        }
     }
-    const int active = bootloader_common_get_active_otadata(entries);
-    if (active < 0) {
+    const int slot = ota_select_boot_slot(entries, app_count);
+    if (slot < 0) {
         return false;
     }
-    const uint32_t slot = (entries[active].ota_seq - 1u) % app_count;
     const esp_partition_t *app = esp_partition_find_first(
         ESP_PARTITION_TYPE_APP, (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot), NULL);
     if (app == NULL) {
         return false;
     }
     const esp_partition_pos_t pos = { .offset = app->address, .size = app->size };
-    esp_image_metadata_t meta;
-    return esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) == ESP_OK;
+
+    (void)service_safe_writes(0u);
+    (void)esp_task_wdt_reset();
+    const TickType_t started = xTaskGetTickCount();
+    const esp_err_t err = esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta);
+    (void)esp_task_wdt_reset();
+    (void)service_safe_writes(0u);
+    ESP_LOGI(TAG, "EXIT check: slot %d %s in %lu ms (main stack high-water %u bytes free)", slot,
+             (err == ESP_OK) ? "verified" : "rejected",
+             (unsigned long)pdTICKS_TO_MS(xTaskGetTickCount() - started),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    refused = (err != ESP_OK);
+    return err == ESP_OK;
 }
 
 static bool exit_prepare(void)
@@ -479,7 +506,9 @@ static void serve_can_forever(void)
         if (action == CAN_UPDATE_ACTION_RESET || action == CAN_UPDATE_ACTION_EXIT) {
             /* GO: the boot partition is already switched (slot_activate). EXIT_UPDATER:
              * otadata is left alone, the bootloader boots what it already selects. In both
-             * cases can_link_deinit lets the ACK leave before the restart. */
+             * cases can_link_deinit lets the ACK leave before the restart. A failed ACK send
+             * still restarts (the decision is made and the counters are cleared): the host
+             * re-probes APP_INFO and reports "released (ACK lost)". */
             can_link_deinit();
             esp_restart();
         }
@@ -514,6 +543,7 @@ void app_main(void)
         .slot_activate = slot_activate,
         .app_bootable  = selected_app_bootable,
         .exit_prepare  = exit_prepare,
+        .slot_abort    = slot_abort,
     };
     can_update_init(&s_engine, &s_hal, s_cmd_id);
 

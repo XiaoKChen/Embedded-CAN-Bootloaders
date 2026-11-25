@@ -3,6 +3,7 @@
 set(BOOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../src/boot")
 idf_component_register(SRCS "main.c" "usb_cdc.c" "${BOOT_DIR}/board_profile.c"
                             "${BOOT_DIR}/i2c_bitbang.c"
+                            "${BOOT_DIR}/ota_select.c"
                        INCLUDE_DIRS "."
                        REQUIRES boot_core can_link app_update esp_partition can_updater_client
                                 bootloader_support spi_flash

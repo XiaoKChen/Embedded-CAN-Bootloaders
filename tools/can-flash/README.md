@@ -119,12 +119,16 @@ uv run can_flash.py --exit-updater --id-tx 0x07 --id-rx 0x08 --interface slcan -
 ```
 
 The updater clears its recovery counters, ACKs and restarts into the app its
-`otadata` selects (it never writes `otadata`). It answers NAK `0x07` (no
-bootable app: for example after an app-requested entry, which erased
-`otadata`, or an app still `PENDING_VERIFY`) or NAK `0x05` (a transfer is in
-progress) and stays parked; the tool reports the reason and exits non-zero.
-Silence is ambiguous (a lost ACK after the restart, or the node is an app):
-check with `--app-info`. See
+`otadata` selects (it never writes `otadata`; an unconfirmed new image rolls
+back to an older valid one). It is accepted in any session phase until GO has
+activated a slot. It answers NAK `0x07` (nothing bootable: for example after
+an app-requested entry, which erased `otadata`) or `0x02` (counters not
+cleared) and stays parked; the tool reports the reason and exits non-zero. A
+reply with arg `0x00` instead of `0x0A` means an updater from before
+`c-cpp-esp32-v1.4.0`: the tool says it is too old (reinstall over USB). Each attempt
+waits 2 s (the updater verifies its app first); with no reply the tool
+re-probes APP_INFO for 5 s and reports "released (ACK lost)", "still in its
+updater" or "absent". See
 [EXIT_UPDATER](../../docs/reference/can-protocol.md#exit_updater-releasing-a-parked-node).
 
 ### Rebooting a running app remotely (`--enter-bootloader`)
@@ -252,7 +256,7 @@ Options:
 | `--info` | off | ask the parked bootloader (at `--id-tx`/`--id-rx`) for its product name and exit |
 | `--app-info` | off | ask a **running** node app (at `--id-tx`/`--id-rx`) for its project name and version (APP_INFO) and exit; run it alone |
 | `--enter-updater` | off | ask a **running** node app to restart into its CAN updater (ENTER_UPDATER) first; then flash (or, with no firmware, just park it and exit) |
-| `--exit-updater` | off | release a node **parked in its updater** (EXIT_UPDATER, `0x0A`, at `--id-tx`/`--id-rx`): it restarts into its `otadata`-selected app; run it alone |
+| `--exit-updater` | off | release a node **parked in its updater** (EXIT_UPDATER, `0x0A`, at `--id-tx`/`--id-rx`): it restarts into its `otadata`-selected app (2 s per attempt, then up to 5 s of APP_INFO re-probing); run it alone |
 | `--scan` | off | discover **all** parked boards, each on its own cmd/reply IDs, and print a table (see below); run it alone, then flash with `--id-tx`/`--id-rx` |
 | `--scan-from` | `0x700` | first candidate cmd ID to probe with `--scan`, inclusive |
 | `--scan-to` | `0x71F` | last candidate cmd ID to probe with `--scan`, inclusive |
@@ -284,7 +288,7 @@ library would parse, the APP_INFO / ENTER_UPDATER / EXIT_UPDATER golden vectors 
 `tests/test_app_control.c`, `--app-info`/`--enter-updater` against a fake
 running app (which must ignore INFO and EXIT_UPDATER) and against a fake updater
 (whose NAK must be told apart, and which EXIT_UPDATER releases only when an app
-is bootable), and a headless TUI smoke test (via Textual's
+is bootable, with every outcome, a late reply, a legacy updater and a lost ACK), and a headless TUI smoke test (via Textual's
 `App.run_test()`) that the TUI mounts with all its key widgets and that
 argument routing picks the TUI for bare/`--tui` invocations. No hardware
 required.
@@ -308,7 +312,7 @@ Required order: HELLO → SIZE → ERASE → DATA windows → VERIFY → GO.
 | INFO | `0x07` | — | updater identifies itself (5-frame reply, `--info`/`--scan`) |
 | APP_INFO | `0x08` | byte1 = protocol version | answered by a **running app** only (9-frame reply, below) |
 | ENTER_UPDATER | `0x09` | byte1 = protocol version, bytes2..5 = key `0xB007CAFE` (uint32 LE) | running app ACKs, then restarts into its updater |
-| EXIT_UPDATER | `0x0A` | byte1 = protocol version, bytes2..5 = key `0xB007CAFE` (uint32 LE) | idle **updater** ACKs `{0x79, 0x0A, 0x00, 0x00}`, then restarts into its app (`--exit-updater`); NAK `0x05` mid-session, `0x07` no bootable app |
+| EXIT_UPDATER | `0x0A` | byte1 = protocol version, bytes2..5 = key `0xB007CAFE` (uint32 LE) | idle **updater** ACKs `{0x79, 0x0A, 0x00, 0x00}`, then restarts into its app (`--exit-updater`); NAKs carry arg `0x0A`: `0x05` bad request or GO already done, `0x07` nothing bootable, `0x02` counters not cleared; a legacy updater's NAK has arg `0x00` |
 
 Replies: ACK `{0x79, cmd_echo, 0x00, arg, ...}` / NAK `{0x79, cmd_echo, err, arg, ...}`
 with err `0x01` unexpected seq (arg = seq to rewind to), `0x02` flash failure,
